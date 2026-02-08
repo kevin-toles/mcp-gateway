@@ -1,0 +1,48 @@
+# mcp-gateway tool registry configuration
+# Defines all 9 platform tools with metadata for MCP protocol registration.
+# Reference: Strategy §4.1, §6.3 (Dynamic Tool Listing), AC-8.4
+tools:
+  - name: semantic_search
+    description: "Search across code, documentation, and textbooks using semantic similarity"
+    tier: bronze
+    tags: [search, rag]
+
+  - name: hybrid_search
+    description: "Combines semantic search with keyword matching for better precision"
+    tier: bronze
+    tags: [search, rag]
+
+  - name: code_analyze
+    description: "Analyze code for patterns, complexity, dependencies, and quality metrics"
+    tier: silver
+    tags: [code, analysis]
+
+  - name: code_pattern_audit
+    description: "Detect code anti-patterns using dual-net detection with confidence scoring"
+    tier: silver
+    tags: [code, audit]
+
+  - name: graph_query
+    description: "Query the Neo4j knowledge graph using Cypher (read-only)"
+    tier: gold
+    tags: [graph, query]
+
+  - name: llm_complete
+    description: "Generate LLM completion with tiered fallback (local → cloud)"
+    tier: gold
+    tags: [llm, completion]
+
+  - name: run_agent_function
+    description: "Execute a single-purpose agent function by name"
+    tier: gold
+    tags: [agent, function]
+
+  - name: run_discussion
+    description: "Run multi-LLM discussion using a Kitchen Brigade protocol"
+    tier: enterprise
+    tags: [agent, discussion]
+
+  - name: agent_execute
+    description: "Execute an autonomous multi-step agent task"
+    tier: enterprise
+    tags: [agent, execution]

@@ -1,0 +1,39 @@
+# Pre-commit hooks — WBS-MCP1.9 (AC-1.7)
+# Secret scanning to prevent accidental credential commits.
+# Reference: Strategy §8 — DEVSECOPS_SECURITY_TAXONOMY_V1
+
+repos:
+  # ── Standard pre-commit hooks ─────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # ── Yelp detect-secrets ───────────────────────────────────────────
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: "tests/fixtures/.*\\.pem$"
+
+  # ── Gitleaks — comprehensive secret scanner ───────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.22.1
+    hooks:
+      - id: gitleaks
+
+  # ── Ruff — Python linting + formatting ────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
