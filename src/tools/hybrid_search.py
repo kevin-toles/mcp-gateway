@@ -25,7 +25,13 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             semantic_weight=semantic_weight,
             keyword_weight=keyword_weight,
         )
-        result = await dispatcher.dispatch(TOOL_NAME, validated.model_dump())
+        # Map MCP param names → semantic-search API param names
+        payload = validated.model_dump()
+        payload["limit"] = payload.pop("top_k")
+        # hybrid_search uses alpha for vector weight, drop keyword_weight
+        payload["alpha"] = payload.pop("semantic_weight")
+        payload.pop("keyword_weight", None)
+        result = await dispatcher.dispatch(TOOL_NAME, payload)
         return sanitizer.sanitize(result.body)
 
     return hybrid_search

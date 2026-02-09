@@ -27,7 +27,11 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             top_k=top_k,
             threshold=threshold,
         )
-        result = await dispatcher.dispatch(TOOL_NAME, validated.model_dump())
+        # Map MCP param names → semantic-search API param names
+        payload = validated.model_dump()
+        payload["limit"] = payload.pop("top_k")
+        payload["min_score"] = payload.pop("threshold")
+        result = await dispatcher.dispatch(TOOL_NAME, payload)
         return sanitizer.sanitize(result.body)
 
     return semantic_search

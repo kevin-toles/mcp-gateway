@@ -1,6 +1,6 @@
 """FastMCP server — WBS-MCP8 (GREEN).
 
-Creates a FastMCP server instance with all 9 platform tools registered
+Creates a FastMCP server instance with all 6 platform tools registered
 from the ``ToolRegistry``.  Each tool handler validates input via its
 Pydantic model, dispatches to the appropriate backend service, and
 sanitizes the output before returning.
@@ -18,14 +18,11 @@ from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 from src.tool_registry import ToolRegistry
 from src.tools import (
-    agent_execute,
     code_analyze,
     code_pattern_audit,
     graph_query,
     hybrid_search,
     llm_complete,
-    run_agent_function,
-    run_discussion,
     semantic_search,
 )
 
@@ -38,9 +35,6 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "code_pattern_audit": code_pattern_audit.create_handler,
     "graph_query": graph_query.create_handler,
     "llm_complete": llm_complete.create_handler,
-    "run_discussion": run_discussion.create_handler,
-    "run_agent_function": run_agent_function.create_handler,
-    "agent_execute": agent_execute.create_handler,
 }
 
 
@@ -73,8 +67,7 @@ def create_mcp_server(
         factory = _HANDLER_FACTORIES.get(tool_def.name)
         if factory is None:
             raise ValueError(
-                f"No handler factory for tool '{tool_def.name}'. "
-                f"Available: {sorted(_HANDLER_FACTORIES.keys())}"
+                f"No handler factory for tool '{tool_def.name}'. Available: {sorted(_HANDLER_FACTORIES.keys())}"
             )
         handler = factory(dispatcher, sanitizer)
         mcp.tool(

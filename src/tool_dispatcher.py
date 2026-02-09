@@ -1,6 +1,6 @@
 """ToolDispatcher — WBS-MCP2 (GREEN).
 
-HTTP dispatch to backend services.  Each of the 9 platform tools maps
+HTTP dispatch to backend services.  Each of the 6 platform tools maps
 to a ``DispatchRoute`` containing a backend base_url, path, and
 per-tool timeout.  ``ToolDispatcher.dispatch()`` sends an HTTP POST
 and returns a structured ``DispatchResult``.
@@ -17,7 +17,6 @@ import httpx
 
 from src.core.config import Settings
 from src.core.errors import BackendUnavailableError, ToolTimeoutError
-
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -62,11 +61,8 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "hybrid_search": "semantic-search",
     "code_analyze": "code-orchestrator",
     "code_pattern_audit": "code-orchestrator",
-    "graph_query": "ai-agents",
+    "graph_query": "semantic-search",
     "llm_complete": "llm-gateway",
-    "run_agent_function": "ai-agents",
-    "run_discussion": "ai-agents",
-    "agent_execute": "ai-agents",
 }
 
 
@@ -94,24 +90,12 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/audit/patterns",
         ),
         "graph_query": DispatchRoute(
-            base_url=settings.AI_AGENTS_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/query",
         ),
         "llm_complete": DispatchRoute(
             base_url=settings.LLM_GATEWAY_URL,
             path="/v1/completions",
-        ),
-        "run_agent_function": DispatchRoute(
-            base_url=settings.AI_AGENTS_URL,
-            path="/v1/agent/function",
-        ),
-        "run_discussion": DispatchRoute(
-            base_url=settings.AI_AGENTS_URL,
-            path="/v1/agent/discussion",
-        ),
-        "agent_execute": DispatchRoute(
-            base_url=settings.AI_AGENTS_URL,
-            path="/v1/agent/execute",
         ),
     }
 

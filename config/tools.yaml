@@ -1,5 +1,6 @@
 # mcp-gateway tool registry configuration
-# Defines all 9 platform tools with metadata for MCP protocol registration.
+# Defines all 6 platform tools with metadata for MCP protocol registration.
+# ai-agents is NOT in the MCP tool path — tools dispatch direct to backend services.
 # Reference: Strategy §4.1, §6.3 (Dynamic Tool Listing), AC-8.4
 tools:
   - name: semantic_search
@@ -31,18 +32,3 @@ tools:
     description: "Generate LLM completion with tiered fallback (local → cloud)"
     tier: gold
     tags: [llm, completion]
-
-  - name: run_agent_function
-    description: "Execute a single-purpose agent function by name"
-    tier: gold
-    tags: [agent, function]
-
-  - name: run_discussion
-    description: "Run multi-LLM discussion using a Kitchen Brigade protocol"
-    tier: enterprise
-    tags: [agent, discussion]
-
-  - name: agent_execute
-    description: "Execute an autonomous multi-step agent task"
-    tier: enterprise
-    tags: [agent, execution]

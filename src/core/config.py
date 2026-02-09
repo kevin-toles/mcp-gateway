@@ -30,23 +30,22 @@ class Settings(BaseSettings):
     # ── Backend service URLs ────────────────────────────────────────
     LLM_GATEWAY_URL: str = "http://localhost:8080"
     SEMANTIC_SEARCH_URL: str = "http://localhost:8081"
-    AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
 
     # ── Security / OIDC ─────────────────────────────────────────────
-    OIDC_JWKS_URL: str = ""           # JWKS endpoint for JWT validation
-    OIDC_ISSUER: str = ""             # Expected JWT issuer
+    OIDC_JWKS_URL: str = ""  # JWKS endpoint for JWT validation
+    OIDC_ISSUER: str = ""  # Expected JWT issuer
     OIDC_AUDIENCE: str = "ai-platform-tools"
-    AUTH_ENABLED: bool = False        # Disabled for dev, enabled for prod
+    AUTH_ENABLED: bool = False  # Disabled for dev, enabled for prod
 
     # ── Rate limiting ───────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
-    RATE_LIMIT_RPM: int = 100         # Default requests per minute
+    RATE_LIMIT_RPM: int = 100  # Default requests per minute
 
     # ── TLS (Strategy §8.1 — Encryption.IN_TRANSIT) ────────────────
-    TLS_ENABLED: bool = False         # True in production
-    TLS_CERT_PATH: str = ""           # Path to TLS certificate
-    TLS_KEY_PATH: str = ""            # Path to TLS private key
+    TLS_ENABLED: bool = False  # True in production
+    TLS_CERT_PATH: str = ""  # Path to TLS certificate
+    TLS_KEY_PATH: str = ""  # Path to TLS private key
     TLS_MIN_VERSION: str = "TLSv1.3"  # Minimum TLS version
 
     # ── Audit ───────────────────────────────────────────────────────
@@ -68,21 +67,15 @@ def get_ssl_config(settings: Settings) -> dict | None:
         return None
 
     if not settings.TLS_CERT_PATH or not settings.TLS_KEY_PATH:
-        raise ValueError(
-            "TLS_CERT_PATH and TLS_KEY_PATH are required when TLS_ENABLED=true"
-        )
+        raise ValueError("TLS_CERT_PATH and TLS_KEY_PATH are required when TLS_ENABLED=true")
 
     cert_path = Path(settings.TLS_CERT_PATH)
     key_path = Path(settings.TLS_KEY_PATH)
 
     if not cert_path.exists():
-        raise FileNotFoundError(
-            f"TLS certificate not found: {cert_path}"
-        )
+        raise FileNotFoundError(f"TLS certificate not found: {cert_path}")
     if not key_path.exists():
-        raise FileNotFoundError(
-            f"TLS private key not found: {key_path}"
-        )
+        raise FileNotFoundError(f"TLS private key not found: {key_path}")
 
     return {
         "ssl_certfile": str(cert_path),

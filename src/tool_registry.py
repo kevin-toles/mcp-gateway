@@ -14,14 +14,11 @@ import yaml
 from pydantic import BaseModel
 
 from src.models.schemas import (
-    AgentExecuteInput,
     CodeAnalyzeInput,
     CodePatternAuditInput,
     GraphQueryInput,
     HybridSearchInput,
     LLMCompleteInput,
-    RunAgentFunctionInput,
-    RunDiscussionInput,
     SemanticSearchInput,
 )
 
@@ -34,9 +31,6 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "code_pattern_audit": CodePatternAuditInput,
     "graph_query": GraphQueryInput,
     "llm_complete": LLMCompleteInput,
-    "run_agent_function": RunAgentFunctionInput,
-    "run_discussion": RunDiscussionInput,
-    "agent_execute": AgentExecuteInput,
 }
 
 
@@ -112,10 +106,7 @@ class ToolRegistry:
             raise ValueError(f"Duplicate tool name '{name}' in {path}")
 
         if name not in _INPUT_MODELS:
-            raise ValueError(
-                f"Unknown tool '{name}' in {path}. "
-                f"Valid tools: {sorted(_INPUT_MODELS.keys())}"
-            )
+            raise ValueError(f"Unknown tool '{name}' in {path}. Valid tools: {sorted(_INPUT_MODELS.keys())}")
 
         description = item.get("description")
         if not description:

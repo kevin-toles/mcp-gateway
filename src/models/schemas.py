@@ -125,33 +125,6 @@ class LLMCompleteInput(BaseModel):
         return _sanitize_str_field(v)
 
 
-class RunDiscussionInput(BaseModel):
-    """Input for run_discussion tool."""
-
-    protocol_id: str = Field(..., pattern=r"^[A-Z_]{3,50}$")
-    topic: str = Field(..., min_length=1, max_length=5000)
-    context: str = Field(default="", max_length=50000)
-
-    @field_validator("topic", "context", mode="before")
-    @classmethod
-    def sanitize_text(cls, v: str) -> str:
-        return _sanitize_str_field(v)
-
-
-class RunAgentFunctionInput(BaseModel):
-    """Input for run_agent_function tool."""
-
-    function_name: str = Field(..., pattern=r"^[a-z][a-z0-9_-]{2,50}$")
-    input: dict = Field(default_factory=dict)
-
-
-class AgentExecuteInput(BaseModel):
-    """Input for agent_execute tool."""
-
-    task: str = Field(..., min_length=1, max_length=10000)
-    max_steps: int = Field(default=15, ge=1, le=50)
-
-    @field_validator("task", mode="before")
-    @classmethod
-    def sanitize_task(cls, v: str) -> str:
-        return _sanitize_str_field(v)
+# Agent tool schemas (RunDiscussionInput, RunAgentFunctionInput,
+# AgentExecuteInput) removed 2026-02-08: ai-agents is not in the
+# MCP tool path. MCP tools dispatch direct to backend services.
