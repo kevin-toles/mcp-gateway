@@ -22,6 +22,9 @@ _logger = logging.getLogger("mcp_gateway.security")
 # Paths excluded from rate limiting
 _EXCLUDED_PATHS: set[str] = {"/health", "/health/"}
 
+# SSE/streaming paths incompatible with BaseHTTPMiddleware (breaks streaming)
+_SSE_PREFIX: str = "/mcp"
+
 # Window duration in seconds (1 minute)
 _WINDOW_SECONDS: int = 60
 
@@ -36,7 +39,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
         # Skip rate limiting for excluded paths
-        if request.url.path in _EXCLUDED_PATHS:
+        if request.url.path in _EXCLUDED_PATHS or request.url.path.startswith(_SSE_PREFIX):
             return await call_next(request)
 
         tenant_id = self._extract_tenant(request)

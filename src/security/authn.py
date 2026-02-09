@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from jose import JWTError, jwt as jose_jwt
+from jose import JWTError
+from jose import jwt as jose_jwt
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -32,6 +33,9 @@ _ALLOWED_ALGORITHMS: list[str] = ["RS256", "ES256"]
 
 # Paths that never require authentication
 _PUBLIC_PATHS: set[str] = {"/health", "/health/"}
+
+# SSE/streaming paths incompatible with BaseHTTPMiddleware (breaks streaming)
+_SSE_PREFIX: str = "/mcp"
 
 # Required JWT claims (AC-3.5)
 _REQUIRED_CLAIMS: set[str] = {"exp", "iss", "aud", "sub", "tier"}
@@ -221,11 +225,9 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.settings = settings
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # ── Public paths — always allowed ───────────────────────────
-        if request.url.path in _PUBLIC_PATHS:
+        if request.url.path in _PUBLIC_PATHS or request.url.path.startswith(_SSE_PREFIX):
             return await call_next(request)
 
         # ── Dev-mode bypass (AC-3.7) ────────────────────────────────
@@ -239,7 +241,7 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
             auth_metrics.record_rejection()
             return _unauthorized("Missing or malformed Authorization header")
 
-        token = auth_header[len("Bearer "):]
+        token = auth_header[len("Bearer ") :]
         if not token or not token.strip():
             auth_metrics.record_rejection()
             return _unauthorized("Empty bearer token")

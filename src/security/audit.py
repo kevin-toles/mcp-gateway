@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,9 @@ _audit_logger = logging.getLogger("mcp_gateway.audit")
 
 # Paths excluded from audit logging
 _EXCLUDED_PATHS: set[str] = {"/health", "/health/"}
+
+# SSE/streaming paths incompatible with BaseHTTPMiddleware (breaks streaming)
+_SSE_PREFIX: str = "/mcp"
 
 # Maximum length for input_summary
 _MAX_SUMMARY_LEN: int = 200
@@ -137,7 +140,7 @@ def create_audit_entry(
         tool=tool,
         input_hash=hash_input(input_data),
         input_summary=_truncate_summary(input_data),
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         latency_ms=latency_ms,
         status=status,
         status_code=status_code,
@@ -163,10 +166,7 @@ def log_security_event(
 
     CRITICAL severity logs at ERROR level; others at WARNING.
     """
-    msg = (
-        f"SECURITY_EVENT event={event_type} severity={severity.value} "
-        f"detail='{detail}' request_id={request_id}"
-    )
+    msg = f"SECURITY_EVENT event={event_type} severity={severity.value} detail='{detail}' request_id={request_id}"
     if severity == SecuritySeverity.CRITICAL:
         _security_logger.error(msg)
     else:
@@ -198,9 +198,7 @@ class AuditServiceForwarder:
                     timeout=5.0,
                 )
         except Exception:
-            _audit_logger.warning(
-                "Audit-service unavailable — writing to fallback JSONL"
-            )
+            _audit_logger.warning("Audit-service unavailable — writing to fallback JSONL")
             self._write_fallback(entry)
 
     def _write_fallback(self, entry: AuditEntry) -> None:
@@ -222,7 +220,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         self.log_path = log_path
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
-        if request.url.path in _EXCLUDED_PATHS:
+        if request.url.path in _EXCLUDED_PATHS or request.url.path.startswith(_SSE_PREFIX):
             return await call_next(request)
 
         start = time.monotonic()
