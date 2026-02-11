@@ -1,6 +1,6 @@
 # mcp-gateway tool registry configuration
-# Defines all 6 platform tools with metadata for MCP protocol registration.
-# ai-agents is NOT in the MCP tool path — tools dispatch direct to backend services.
+# Defines all platform tools with metadata for MCP protocol registration.
+# ai-agents A2A tools bridge MCP → A2A → Temporal for durable agent execution.
 # Reference: Strategy §4.1, §6.3 (Dynamic Tool Listing), AC-8.4
 tools:
   - name: semantic_search
@@ -32,3 +32,20 @@ tools:
     description: "Generate LLM completion with tiered fallback (local → cloud)"
     tier: gold
     tags: [llm, completion]
+
+  # ── A2A Protocol Tools (MCP ↔ A2A ↔ Temporal bridge) ──────────────
+
+  - name: a2a_send_message
+    description: "Send a message to an AI agent via A2A protocol. Creates a durable task routed through Temporal workflows when available."
+    tier: gold
+    tags: [a2a, agent, temporal]
+
+  - name: a2a_get_task
+    description: "Get the status and results of an A2A agent task by its ID"
+    tier: bronze
+    tags: [a2a, agent, status]
+
+  - name: a2a_cancel_task
+    description: "Cancel a running A2A agent task by its ID"
+    tier: silver
+    tags: [a2a, agent, cancel]

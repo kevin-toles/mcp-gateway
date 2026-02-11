@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # ── Backend service URLs ────────────────────────────────────────
     LLM_GATEWAY_URL: str = "http://localhost:8080"
     SEMANTIC_SEARCH_URL: str = "http://localhost:8081"
+    AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
 
     # ── Security / OIDC ─────────────────────────────────────────────
@@ -47,6 +48,12 @@ class Settings(BaseSettings):
     TLS_CERT_PATH: str = ""  # Path to TLS certificate
     TLS_KEY_PATH: str = ""  # Path to TLS private key
     TLS_MIN_VERSION: str = "TLSv1.3"  # Minimum TLS version
+
+    # ── Resilience (C-5: Circuit Breakers) ───────────────────────
+    CIRCUIT_BREAKER_THRESHOLD: int = 5  # Consecutive failures before OPEN
+    CIRCUIT_BREAKER_RECOVERY_SECONDS: float = 30.0  # Seconds before HALF_OPEN probe
+    DISPATCH_MAX_RETRIES: int = 2  # Max retry attempts for transient failures
+    DISPATCH_RETRY_BASE_DELAY: float = 0.5  # Base delay in seconds (exponential backoff)
 
     # ── Audit ───────────────────────────────────────────────────────
     AUDIT_LOG_PATH: str = "logs/audit.jsonl"

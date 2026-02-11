@@ -18,10 +18,8 @@ Requires:
 - mcp-gateway running on :8087
 """
 
-import json
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -58,25 +56,25 @@ GATEWAY_TOOLS = {
     "code_pattern_audit",
     "graph_query",
     "llm_complete",
-    "run_agent_function",
-    "run_discussion",
-    "agent_execute",
+    "a2a_send_message",
+    "a2a_get_task",
+    "a2a_cancel_task",
 }
 
 # Mapping: legacy tool → gateway tool that supersedes it
 LEGACY_TO_GATEWAY_MAP = {
     # server.py tools
-    "cross_reference": "run_agent_function",
+    "cross_reference": "a2a_send_message",
     "analyze_code": "code_analyze",
-    "generate_code": "run_agent_function",
-    "explain_code": "run_agent_function",
+    "generate_code": "a2a_send_message",
+    "explain_code": "a2a_send_message",
     # agent_functions_server.py tools
-    "extract_structure": "run_agent_function",
-    "summarize_content": "run_agent_function",
-    "analyze_artifact": "run_agent_function",
-    "validate_against_spec": "run_agent_function",
-    "decompose_task": "run_agent_function",
-    "synthesize_outputs": "run_agent_function",
+    "extract_structure": "a2a_send_message",
+    "summarize_content": "a2a_send_message",
+    "analyze_artifact": "a2a_send_message",
+    "validate_against_spec": "a2a_send_message",
+    "decompose_task": "a2a_send_message",
+    "synthesize_outputs": "a2a_send_message",
 }
 
 
@@ -100,9 +98,7 @@ class TestLegacyToolMapping:
 
     def test_all_mappings_point_to_valid_gateway_tools(self) -> None:
         """Every mapping target exists in the gateway tool list."""
-        invalid_targets = {
-            v for v in LEGACY_TO_GATEWAY_MAP.values() if v not in GATEWAY_TOOLS
-        }
+        invalid_targets = {v for v in LEGACY_TO_GATEWAY_MAP.values() if v not in GATEWAY_TOOLS}
         assert not invalid_targets, f"Invalid gateway targets: {invalid_targets}"
 
     def test_gateway_is_superset_of_legacy_capabilities(self) -> None:
@@ -148,8 +144,7 @@ class TestToolRegistryParity:
 
         for legacy_name, gateway_name in LEGACY_TO_GATEWAY_MAP.items():
             assert gateway_name in registered_names, (
-                f"Legacy '{legacy_name}' maps to '{gateway_name}' "
-                f"but '{gateway_name}' not in registry"
+                f"Legacy '{legacy_name}' maps to '{gateway_name}' but '{gateway_name}' not in registry"
             )
 
 
@@ -266,6 +261,4 @@ class TestLiveGatewayParity:
         tools = await mcp_client.list_tools()
         for tool in tools:
             schema = tool.inputSchema
-            assert "properties" in schema, (
-                f"Tool '{tool.name}' missing input schema properties"
-            )
+            assert "properties" in schema, f"Tool '{tool.name}' missing input schema properties"

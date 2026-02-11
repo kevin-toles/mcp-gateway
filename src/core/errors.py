@@ -38,9 +38,20 @@ class ToolTimeoutError(MCPGatewayError):
     def __init__(self, tool_name: str, timeout_seconds: float) -> None:
         self.tool_name = tool_name
         self.timeout_seconds = timeout_seconds
-        super().__init__(
-            f"Tool '{tool_name}' timed out after {timeout_seconds}s"
-        )
+        super().__init__(f"Tool '{tool_name}' timed out after {timeout_seconds}s")
+
+
+class CircuitOpenError(MCPGatewayError):
+    """Raised when a circuit breaker is open and the call is rejected.
+
+    Reference: C-5 — Circuit breaker rejects calls to unhealthy backends
+    to prevent cascading failures.
+    """
+
+    def __init__(self, backend_name: str, retry_after: float) -> None:
+        self.backend_name = backend_name
+        self.retry_after = max(0.0, retry_after)
+        super().__init__(f"Circuit open for '{backend_name}' — retry after {self.retry_after:.1f}s")
 
 
 class ResourceExhaustedError(MCPGatewayError):
@@ -74,6 +85,12 @@ class StructuredErrorResponse(BaseModel):
 
         Never leaks internal details for unhandled exceptions.
         """
+        if isinstance(exc, CircuitOpenError):
+            return cls(
+                error=str(exc),
+                code="CIRCUIT_OPEN",
+                request_id=request_id,
+            )
         if isinstance(exc, BackendUnavailableError):
             return cls(
                 error=str(exc),

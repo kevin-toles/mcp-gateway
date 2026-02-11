@@ -18,6 +18,9 @@ from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 from src.tool_registry import ToolRegistry
 from src.tools import (
+    a2a_cancel_task,
+    a2a_get_task,
+    a2a_send_message,
     code_analyze,
     code_pattern_audit,
     graph_query,
@@ -35,6 +38,9 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "code_pattern_audit": code_pattern_audit.create_handler,
     "graph_query": graph_query.create_handler,
     "llm_complete": llm_complete.create_handler,
+    "a2a_send_message": a2a_send_message.create_handler,
+    "a2a_get_task": a2a_get_task.create_handler,
+    "a2a_cancel_task": a2a_cancel_task.create_handler,
 }
 
 

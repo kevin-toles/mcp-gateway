@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.security.audit import (
-    AuditEntry,
     AuditMiddleware,
     AuditServiceForwarder,
     SecuritySeverity,
@@ -21,7 +20,6 @@ from src.security.audit import (
     hash_input,
     log_security_event,
 )
-
 
 # ── AC-7.1: AuditEntry contains all required fields ─────────────────────
 
@@ -31,10 +29,16 @@ class TestAuditEntryFields:
 
     def test_all_who_fields_present(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="user@example.com", tier="gold",
-            source_ip="10.0.0.1", tool="semantic_search",
-            input_data={"query": "test"}, status="success", status_code=200,
-            latency_ms=42.0, request_id="req-123",
+            tenant_id="t1",
+            actor_sub="user@example.com",
+            tier="gold",
+            source_ip="10.0.0.1",
+            tool="semantic_search",
+            input_data={"query": "test"},
+            status="success",
+            status_code=200,
+            latency_ms=42.0,
+            request_id="req-123",
         )
         assert entry.tenant_id == "t1"
         assert entry.actor_sub == "user@example.com"
@@ -43,9 +47,15 @@ class TestAuditEntryFields:
 
     def test_all_what_fields_present(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="graph_query", input_data={"cypher": "MATCH (n) RETURN n"},
-            status="success", status_code=200, latency_ms=10.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="graph_query",
+            input_data={"cypher": "MATCH (n) RETURN n"},
+            status="success",
+            status_code=200,
+            latency_ms=10.0,
             request_id="req-456",
         )
         assert entry.tool == "graph_query"
@@ -55,9 +65,15 @@ class TestAuditEntryFields:
 
     def test_all_when_fields_present(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="llm_complete", input_data={"prompt": "hello"},
-            status="success", status_code=200, latency_ms=150.5,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="llm_complete",
+            input_data={"prompt": "hello"},
+            status="success",
+            status_code=200,
+            latency_ms=150.5,
             request_id="req-789",
         )
         assert entry.timestamp  # ISO 8601
@@ -66,10 +82,17 @@ class TestAuditEntryFields:
 
     def test_all_outcome_fields_present(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="code_analyze", input_data={"code": "x=1"},
-            status="error", status_code=500, latency_ms=5.0,
-            request_id="req-000", error_code="INTERNAL_ERROR",
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="code_analyze",
+            input_data={"code": "x=1"},
+            status="error",
+            status_code=500,
+            latency_ms=5.0,
+            request_id="req-000",
+            error_code="INTERNAL_ERROR",
             tokens_consumed=42,
         )
         assert entry.status == "error"
@@ -79,10 +102,17 @@ class TestAuditEntryFields:
 
     def test_all_provenance_fields_present(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="run_discussion", input_data={"topic": "arch"},
-            status="success", status_code=200, latency_ms=1000.0,
-            request_id="req-parent", parent_request_id="req-grandparent",
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="a2a_send_message",
+            input_data={"content": "arch"},
+            status="success",
+            status_code=200,
+            latency_ms=1000.0,
+            request_id="req-parent",
+            parent_request_id="req-grandparent",
             agent_depth=2,
         )
         assert entry.request_id == "req-parent"
@@ -91,9 +121,15 @@ class TestAuditEntryFields:
 
     def test_security_flags_field(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="graph_query", input_data={"cypher": "DROP TABLE"},
-            status="denied", status_code=403, latency_ms=1.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="graph_query",
+            input_data={"cypher": "DROP TABLE"},
+            status="denied",
+            status_code=403,
+            latency_ms=1.0,
             request_id="req-sec",
             security_flags=["injection_pattern_detected"],
         )
@@ -101,9 +137,15 @@ class TestAuditEntryFields:
 
     def test_defaults_for_optional_fields(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="semantic_search", input_data={"query": "x"},
-            status="success", status_code=200, latency_ms=5.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="semantic_search",
+            input_data={"query": "x"},
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-def",
         )
         assert entry.error_code is None
@@ -121,9 +163,15 @@ class TestAuditJSONL:
 
     def test_to_json_returns_valid_json(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="semantic_search", input_data={"query": "hello"},
-            status="success", status_code=200, latency_ms=10.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="semantic_search",
+            input_data={"query": "hello"},
+            status="success",
+            status_code=200,
+            latency_ms=10.0,
             request_id="req-json",
         )
         line = entry.to_json()
@@ -132,9 +180,15 @@ class TestAuditJSONL:
 
     def test_to_json_single_line(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="llm_complete", input_data={"prompt": "multi\nline"},
-            status="success", status_code=200, latency_ms=5.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="llm_complete",
+            input_data={"prompt": "multi\nline"},
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-sl",
         )
         line = entry.to_json()
@@ -142,9 +196,15 @@ class TestAuditJSONL:
 
     def test_asdict_roundtrip(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="hybrid_search", input_data={"query": "test"},
-            status="success", status_code=200, latency_ms=8.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="hybrid_search",
+            input_data={"query": "test"},
+            status="success",
+            status_code=200,
+            latency_ms=8.0,
             request_id="req-rt",
         )
         d = asdict(entry)
@@ -161,23 +221,32 @@ class TestNoSecrets:
     def test_input_hashed_not_raw(self) -> None:
         secret_input = {"api_key": "sk-super-secret-key-12345"}
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="llm_complete", input_data=secret_input,
-            status="success", status_code=200, latency_ms=5.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="llm_complete",
+            input_data=secret_input,
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-sec",
         )
         line = entry.to_json()
         assert "sk-super-secret-key-12345" not in line
-        assert entry.input_hash == hashlib.sha256(
-            json.dumps(secret_input, sort_keys=True).encode()
-        ).hexdigest()
+        assert entry.input_hash == hashlib.sha256(json.dumps(secret_input, sort_keys=True).encode()).hexdigest()
 
     def test_jwt_not_in_json(self) -> None:
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
             tool="semantic_search",
             input_data={"token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig"},
-            status="success", status_code=200, latency_ms=5.0,
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-jwt",
         )
         line = entry.to_json()
@@ -186,9 +255,15 @@ class TestNoSecrets:
     def test_input_summary_truncated(self) -> None:
         long_input = {"prompt": "x" * 10000}
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="llm_complete", input_data=long_input,
-            status="success", status_code=200, latency_ms=5.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="llm_complete",
+            input_data=long_input,
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-trunc",
         )
         assert len(entry.input_summary) <= 200
@@ -197,9 +272,15 @@ class TestNoSecrets:
         """Summary truncates when there are many keys."""
         big_input = {f"key_{i:04d}": "v" for i in range(100)}
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="llm_complete", input_data=big_input,
-            status="success", status_code=200, latency_ms=5.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="llm_complete",
+            input_data=big_input,
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-trunc2",
         )
         assert len(entry.input_summary) <= 200
@@ -238,6 +319,7 @@ class TestSecurityEvents:
 
     def test_log_security_event_emits_warning(self, caplog) -> None:
         import logging
+
         with caplog.at_level(logging.WARNING, logger="mcp_gateway.security"):
             log_security_event(
                 event_type="cypher_injection",
@@ -251,6 +333,7 @@ class TestSecurityEvents:
 
     def test_log_security_event_critical_uses_error_level(self, caplog) -> None:
         import logging
+
         with caplog.at_level(logging.ERROR, logger="mcp_gateway.security"):
             log_security_event(
                 event_type="brute_force",
@@ -271,9 +354,15 @@ class TestAuditServiceForwarder:
     async def test_forwards_entry_via_http_post(self) -> None:
         forwarder = AuditServiceForwarder(audit_service_url="http://localhost:8084")
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="semantic_search", input_data={"query": "test"},
-            status="success", status_code=200, latency_ms=10.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="semantic_search",
+            input_data={"query": "test"},
+            status="success",
+            status_code=200,
+            latency_ms=10.0,
             request_id="req-fwd",
         )
         with patch("src.security.audit.httpx.AsyncClient") as mock_client_cls:
@@ -292,9 +381,15 @@ class TestAuditServiceForwarder:
             fallback_path=str(tmp_path / "fallback.jsonl"),
         )
         entry = create_audit_entry(
-            tenant_id="t1", actor_sub="u1", tier="free", source_ip="1.2.3.4",
-            tool="graph_query", input_data={"cypher": "MATCH (n) RETURN n"},
-            status="success", status_code=200, latency_ms=5.0,
+            tenant_id="t1",
+            actor_sub="u1",
+            tier="free",
+            source_ip="1.2.3.4",
+            tool="graph_query",
+            input_data={"cypher": "MATCH (n) RETURN n"},
+            status="success",
+            status_code=200,
+            latency_ms=5.0,
             request_id="req-fb",
         )
         with patch("src.security.audit.httpx.AsyncClient") as mock_client_cls:

@@ -25,9 +25,9 @@ EXPECTED_TOOL_NAMES = {
     "code_pattern_audit",
     "graph_query",
     "llm_complete",
-    "run_agent_function",
-    "run_discussion",
-    "agent_execute",
+    "a2a_send_message",
+    "a2a_get_task",
+    "a2a_cancel_task",
 }
 
 VALID_TOOLS_YAML = """\
@@ -56,18 +56,18 @@ tools:
     description: "LLM completion with fallback"
     tier: gold
     tags: [llm, completion]
-  - name: run_agent_function
-    description: "Run single agent function"
+  - name: a2a_send_message
+    description: "Send message to agent via A2A"
     tier: gold
-    tags: [agent, function]
-  - name: run_discussion
-    description: "Multi-LLM discussion"
-    tier: enterprise
-    tags: [agent, discussion]
-  - name: agent_execute
-    description: "Autonomous agent execution"
-    tier: enterprise
-    tags: [agent, execution]
+    tags: [a2a, agent, temporal]
+  - name: a2a_get_task
+    description: "Get A2A task status"
+    tier: bronze
+    tags: [a2a, agent, status]
+  - name: a2a_cancel_task
+    description: "Cancel A2A task"
+    tier: silver
+    tags: [a2a, agent, cancel]
 """
 
 
@@ -181,22 +181,28 @@ class TestToolsList:
         assert "max_tokens" in props
         assert "model_preference" in props
 
-    async def test_agent_execute_schema_fields(self, mcp_server):
+    async def test_a2a_send_message_schema_fields(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        ae = next(t for t in tools if t.name == "agent_execute")
-        props = ae.inputSchema["properties"]
-        assert "task" in props
-        assert "max_steps" in props
+        sm = next(t for t in tools if t.name == "a2a_send_message")
+        props = sm.inputSchema["properties"]
+        assert "content" in props
+        assert "skill_id" in props
+        assert "context_id" in props
 
-    async def test_run_discussion_schema_fields(self, mcp_server):
+    async def test_a2a_get_task_schema_fields(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        rd = next(t for t in tools if t.name == "run_discussion")
-        props = rd.inputSchema["properties"]
-        assert "protocol_id" in props
-        assert "topic" in props
-        assert "context" in props
+        gt = next(t for t in tools if t.name == "a2a_get_task")
+        props = gt.inputSchema["properties"]
+        assert "task_id" in props
+
+    async def test_a2a_cancel_task_schema_fields(self, mcp_server):
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        ct = next(t for t in tools if t.name == "a2a_cancel_task")
+        props = ct.inputSchema["properties"]
+        assert "task_id" in props
 
     async def test_semantic_search_query_is_required(self, mcp_server):
         async with Client(mcp_server) as client:
@@ -238,7 +244,8 @@ class TestToolsCallValid:
     async def test_graph_query(self, mcp_server, mock_dispatcher):
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "graph_query", {"cypher": "MATCH (n) RETURN n LIMIT 5"},
+                "graph_query",
+                {"cypher": "MATCH (n) RETURN n LIMIT 5"},
             )
         assert not result.is_error
 
@@ -247,24 +254,25 @@ class TestToolsCallValid:
             result = await client.call_tool("llm_complete", {"prompt": "Hello world"})
         assert not result.is_error
 
-    async def test_run_discussion(self, mcp_server, mock_dispatcher):
+    async def test_a2a_send_message(self, mcp_server, mock_dispatcher):
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "run_discussion",
-                {"protocol_id": "ROUNDTABLE_DISCUSSION", "topic": "Testing"},
+                "a2a_send_message",
+                {"content": "Analyze this code"},
             )
         assert not result.is_error
 
-    async def test_run_agent_function(self, mcp_server, mock_dispatcher):
+    async def test_a2a_get_task(self, mcp_server, mock_dispatcher):
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "run_agent_function", {"function_name": "summarize-content"},
+                "a2a_get_task",
+                {"task_id": "task-123"},
             )
         assert not result.is_error
 
-    async def test_agent_execute(self, mcp_server, mock_dispatcher):
+    async def test_a2a_cancel_task(self, mcp_server, mock_dispatcher):
         async with Client(mcp_server) as client:
-            result = await client.call_tool("agent_execute", {"task": "Do something"})
+            result = await client.call_tool("a2a_cancel_task", {"task_id": "task-123"})
         assert not result.is_error
 
 
@@ -292,7 +300,11 @@ class TestToolsCallResponse:
         assert body == original
 
     async def test_dispatches_validated_payload(self, mcp_server, mock_dispatcher):
-        """Handler validates input via Pydantic before dispatch."""
+        """Handler validates input via Pydantic before dispatch.
+
+        Note: semantic_search handler renames top_k→limit and threshold→min_score
+        to match the semantic-search API naming convention.
+        """
         async with Client(mcp_server) as client:
             await client.call_tool(
                 "semantic_search",
@@ -301,8 +313,8 @@ class TestToolsCallResponse:
         payload = mock_dispatcher.dispatch.call_args[0][1]
         assert payload["query"] == "test"
         assert payload["collection"] == "code"
-        assert payload["top_k"] == 5
-        assert payload["threshold"] == 0.8
+        assert payload["limit"] == 5
+        assert payload["min_score"] == 0.8
 
 
 # ── tools/call — error handling (AC-8.3) ───────────────────────────────
@@ -313,14 +325,18 @@ class TestToolsCallErrors:
         """Pydantic validation error (min_length=1) surfaces as MCP tool error."""
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "semantic_search", {"query": ""}, raise_on_error=False,
+                "semantic_search",
+                {"query": ""},
+                raise_on_error=False,
             )
         assert result.is_error
 
     async def test_missing_required_field_returns_error(self, mcp_server):
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "semantic_search", {}, raise_on_error=False,
+                "semantic_search",
+                {},
+                raise_on_error=False,
             )
         assert result.is_error
 
@@ -328,17 +344,22 @@ class TestToolsCallErrors:
         """Cypher write operations rejected by input validation."""
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "graph_query", {"cypher": "CREATE (n:Test)"}, raise_on_error=False,
+                "graph_query",
+                {"cypher": "CREATE (n:Test)"},
+                raise_on_error=False,
             )
         assert result.is_error
 
     async def test_backend_unavailable_returns_error(self, mcp_server, mock_dispatcher):
         mock_dispatcher.dispatch.side_effect = BackendUnavailableError(
-            "semantic-search", "Connection refused",
+            "semantic-search",
+            "Connection refused",
         )
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "semantic_search", {"query": "test"}, raise_on_error=False,
+                "semantic_search",
+                {"query": "test"},
+                raise_on_error=False,
             )
         assert result.is_error
 
@@ -346,7 +367,9 @@ class TestToolsCallErrors:
         mock_dispatcher.dispatch.side_effect = ToolTimeoutError("semantic_search", 30.0)
         async with Client(mcp_server) as client:
             result = await client.call_tool(
-                "semantic_search", {"query": "test"}, raise_on_error=False,
+                "semantic_search",
+                {"query": "test"},
+                raise_on_error=False,
             )
         assert result.is_error
 

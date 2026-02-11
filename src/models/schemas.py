@@ -128,3 +128,31 @@ class LLMCompleteInput(BaseModel):
 # Agent tool schemas (RunDiscussionInput, RunAgentFunctionInput,
 # AgentExecuteInput) removed 2026-02-08: ai-agents is not in the
 # MCP tool path. MCP tools dispatch direct to backend services.
+
+
+# ── A2A Protocol tool schemas (MCP ↔ A2A bridge) ───────────────────────
+
+
+class A2ASendMessageInput(BaseModel):
+    """Input for a2a_send_message tool — create a task via A2A protocol."""
+
+    content: str = Field(..., min_length=1, max_length=50000, description="Message content to send to the agent")
+    skill_id: str = Field(default="", max_length=100, description="Target skill/function ID (optional)")
+    context_id: str = Field(default="", max_length=100, description="Context ID for task grouping (optional)")
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class A2AGetTaskInput(BaseModel):
+    """Input for a2a_get_task tool — retrieve task status and results."""
+
+    task_id: str = Field(..., min_length=1, max_length=100, description="The A2A task ID to retrieve")
+
+
+class A2ACancelTaskInput(BaseModel):
+    """Input for a2a_cancel_task tool — cancel a running task."""
+
+    task_id: str = Field(..., min_length=1, max_length=100, description="The A2A task ID to cancel")

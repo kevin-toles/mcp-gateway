@@ -19,9 +19,9 @@ EXPECTED_TOOL_NAMES = {
     "code_pattern_audit",
     "graph_query",
     "llm_complete",
-    "run_agent_function",
-    "run_discussion",
-    "agent_execute",
+    "a2a_send_message",
+    "a2a_get_task",
+    "a2a_cancel_task",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -54,18 +54,18 @@ tools:
     description: "LLM completion with fallback"
     tier: gold
     tags: [llm, completion]
-  - name: run_agent_function
-    description: "Run single agent function"
+  - name: a2a_send_message
+    description: "Send message to agent via A2A"
     tier: gold
-    tags: [agent, function]
-  - name: run_discussion
-    description: "Multi-LLM discussion"
-    tier: enterprise
-    tags: [agent, discussion]
-  - name: agent_execute
-    description: "Autonomous agent execution"
-    tier: enterprise
-    tags: [agent, execution]
+    tags: [a2a, agent, temporal]
+  - name: a2a_get_task
+    description: "Get A2A task status"
+    tier: bronze
+    tags: [a2a, agent, status]
+  - name: a2a_cancel_task
+    description: "Cancel A2A task"
+    tier: silver
+    tags: [a2a, agent, cancel]
 """
 
 
@@ -254,9 +254,7 @@ class TestToolRegistryInputModels:
     def test_every_tool_has_input_model(self, registry):
         for tool in registry.list_all():
             assert tool.input_model is not None
-            assert issubclass(tool.input_model, BaseModel), (
-                f"{tool.name} input_model is not a Pydantic BaseModel"
-            )
+            assert issubclass(tool.input_model, BaseModel), f"{tool.name} input_model is not a Pydantic BaseModel"
 
     @pytest.mark.parametrize(
         "tool_name,expected_model_name",
@@ -267,9 +265,9 @@ class TestToolRegistryInputModels:
             ("code_pattern_audit", "CodePatternAuditInput"),
             ("graph_query", "GraphQueryInput"),
             ("llm_complete", "LLMCompleteInput"),
-            ("run_discussion", "RunDiscussionInput"),
-            ("run_agent_function", "RunAgentFunctionInput"),
-            ("agent_execute", "AgentExecuteInput"),
+            ("a2a_send_message", "A2ASendMessageInput"),
+            ("a2a_get_task", "A2AGetTaskInput"),
+            ("a2a_cancel_task", "A2ACancelTaskInput"),
         ],
     )
     def test_input_model_name(self, registry, tool_name, expected_model_name):

@@ -15,18 +15,17 @@ import pytest
 
 from src.core.errors import BackendUnavailableError, ToolTimeoutError
 
-
 # ── Route table expectations ────────────────────────────────────────────
 EXPECTED_ROUTES = {
     "semantic_search": {"base_url": "http://localhost:8081", "path": "/v1/search"},
     "hybrid_search": {"base_url": "http://localhost:8081", "path": "/v1/search/hybrid"},
     "code_analyze": {"base_url": "http://localhost:8083", "path": "/v1/analyze"},
     "code_pattern_audit": {"base_url": "http://localhost:8083", "path": "/v1/audit/patterns"},
-    "graph_query": {"base_url": "http://localhost:8082", "path": "/v1/graph/query"},
+    "graph_query": {"base_url": "http://localhost:8081", "path": "/v1/graph/query"},
     "llm_complete": {"base_url": "http://localhost:8080", "path": "/v1/completions"},
-    "run_agent_function": {"base_url": "http://localhost:8082", "path": "/v1/agent/function"},
-    "run_discussion": {"base_url": "http://localhost:8082", "path": "/v1/agent/discussion"},
-    "agent_execute": {"base_url": "http://localhost:8082", "path": "/v1/agent/execute"},
+    "a2a_send_message": {"base_url": "http://localhost:8082", "path": "/a2a/v1/message:send"},
+    "a2a_get_task": {"base_url": "http://localhost:8082", "path": "/a2a/v1/tasks"},
+    "a2a_cancel_task": {"base_url": "http://localhost:8082", "path": "/a2a/v1/tasks"},
 }
 
 
@@ -66,9 +65,7 @@ class TestRouteTable:
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_ROUTES.items()))
     def test_route_path(self, dispatcher, tool_name, expected):
         route = dispatcher.get_route(tool_name)
-        assert route.path == expected["path"], (
-            f"{tool_name}: expected path={expected['path']}, got {route.path}"
-        )
+        assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
     def test_total_route_count_is_nine(self, dispatcher):
         assert len(dispatcher.routes) == 9
@@ -120,6 +117,7 @@ class TestDispatchRouting:
 
         async def mock_handler(request: httpx.Request) -> httpx.Response:
             import json
+
             captured_body.update(json.loads(request.content))
             return httpx.Response(200, json={"ok": True})
 
@@ -411,9 +409,7 @@ class TestConnectionPooling:
     @pytest.mark.asyncio
     async def test_get_client_prefers_injected_client(self, dispatcher):
         """When _client is set (test injection), _get_client returns it."""
-        mock_client = httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda r: httpx.Response(200))
-        )
+        mock_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
         dispatcher._client = mock_client
         result = dispatcher._get_client("http://localhost:9999")
         assert result is mock_client

@@ -14,6 +14,9 @@ import yaml
 from pydantic import BaseModel
 
 from src.models.schemas import (
+    A2ACancelTaskInput,
+    A2AGetTaskInput,
+    A2ASendMessageInput,
     CodeAnalyzeInput,
     CodePatternAuditInput,
     GraphQueryInput,
@@ -31,6 +34,9 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "code_pattern_audit": CodePatternAuditInput,
     "graph_query": GraphQueryInput,
     "llm_complete": LLMCompleteInput,
+    "a2a_send_message": A2ASendMessageInput,
+    "a2a_get_task": A2AGetTaskInput,
+    "a2a_cancel_task": A2ACancelTaskInput,
 }
 
 
