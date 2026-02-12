@@ -114,6 +114,20 @@ class AuditEntry:
         return json.dumps(asdict(self), separators=(",", ":"), default=str)
 
 
+
+@dataclass
+class AuditContext:
+    """Provenance and security context for audit entries.
+
+    Groups tracing/provenance parameters to reduce function parameter count.
+    """
+
+    request_id: str = ""
+    parent_request_id: str | None = None
+    agent_depth: int = 0
+    security_flags: list[str] = field(default_factory=list)
+
+
 def create_audit_entry(
     *,
     tenant_id: str,
@@ -125,14 +139,12 @@ def create_audit_entry(
     status: str,
     status_code: int,
     latency_ms: float,
-    request_id: str,
     error_code: str | None = None,
     tokens_consumed: int = 0,
-    parent_request_id: str | None = None,
-    agent_depth: int = 0,
-    security_flags: list[str] | None = None,
+    context: AuditContext | None = None,
 ) -> AuditEntry:
     """Factory for ``AuditEntry`` with auto-hashing and timestamp."""
+    ctx = context or AuditContext()
     return AuditEntry(
         tenant_id=tenant_id,
         actor_sub=actor_sub,
@@ -147,10 +159,10 @@ def create_audit_entry(
         status_code=status_code,
         error_code=error_code,
         tokens_consumed=tokens_consumed,
-        request_id=request_id,
-        parent_request_id=parent_request_id,
-        agent_depth=agent_depth,
-        security_flags=security_flags or [],
+        request_id=ctx.request_id,
+        parent_request_id=ctx.parent_request_id,
+        agent_depth=ctx.agent_depth,
+        security_flags=ctx.security_flags,
     )
 
 
@@ -242,7 +254,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
             status="success" if response.status_code < 400 else "error",
             status_code=response.status_code,
             latency_ms=round(latency_ms, 2),
-            request_id=request_id,
+            context=AuditContext(request_id=request_id),
         )
 
         # Write to JSONL
