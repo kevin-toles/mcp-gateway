@@ -92,11 +92,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         "code_analyze": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
-            path="/v1/analyze",
+            path="/api/v1/analyze",
         ),
         "code_pattern_audit": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
-            path="/v1/audit/patterns",
+            path="/api/v1/audit/patterns",
         ),
         "graph_query": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
