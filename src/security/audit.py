@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import aiofiles
 import httpx
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -199,14 +200,14 @@ class AuditServiceForwarder:
                 )
         except Exception:
             _audit_logger.warning("Audit-service unavailable — writing to fallback JSONL")
-            self._write_fallback(entry)
+            await self._write_fallback(entry)
 
-    def _write_fallback(self, entry: AuditEntry) -> None:
+    async def _write_fallback(self, entry: AuditEntry) -> None:
         """Append entry to local JSONL fallback file."""
         path = Path(self.fallback_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(entry.to_json() + "\n")
+        async with aiofiles.open(path, "a") as f:
+            await f.write(entry.to_json() + "\n")
 
 
 # ── AuditMiddleware ─────────────────────────────────────────────────────
@@ -247,7 +248,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # Write to JSONL
         path = Path(self.log_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(entry.to_json() + "\n")
+        async with aiofiles.open(path, "a") as f:
+            await f.write(entry.to_json() + "\n")
 
         return response

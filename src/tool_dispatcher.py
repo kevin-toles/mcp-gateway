@@ -171,6 +171,58 @@ class ToolDispatcher:
         """Return the ``DispatchRoute`` for *tool_name*, or ``None``."""
         return self.routes.get(tool_name)
 
+    async def _check_circuit_breaker(self, cb) -> None:
+        """Pre-check the circuit breaker; translate open-circuit errors."""
+        try:
+            await cb.pre_check()
+        except Exception as exc:
+            from src.resilience.circuit_breaker import (
+                CircuitOpenError as _CBOpenError,
+            )
+
+            if isinstance(exc, _CBOpenError):
+                raise CircuitOpenError(exc.backend_name, exc.retry_after) from exc
+            raise
+
+    async def _send_request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        payload: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        """Send a single HTTP request (GET or POST)."""
+        if method.upper() == "GET":
+            return await client.get(url, params=payload or None, timeout=timeout)
+        return await client.post(url, json=payload, timeout=timeout)
+
+    async def _retry_delay(
+        self,
+        attempt: int,
+        attempts: int,
+        label: str,
+        reason: str,
+    ) -> None:
+        """Log a warning and sleep for exponential backoff."""
+        delay = self._retry_base_delay * (2**attempt)
+        logger.warning(
+            "%s for %s (attempt %d/%d), retrying in %.1fs",
+            reason,
+            label,
+            attempt + 1,
+            attempts,
+            delay,
+        )
+        await asyncio.sleep(delay)
+
+    def _parse_body(self, response: httpx.Response) -> dict:
+        """Safely parse a JSON response body."""
+        try:
+            return response.json()
+        except Exception:
+            return {}
+
     async def dispatch(
         self,
         tool_name: str,
@@ -207,117 +259,104 @@ class ToolDispatcher:
         url = f"{route.base_url}{path}"
         service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
         client = self._get_client(route.base_url)
-
-        # C-5: Get the circuit breaker for this backend
         cb = self._cb_registry.get(service_name)
 
         last_exc: Exception | None = None
-        attempts = 1 + self._max_retries  # 1 initial + N retries
+        attempts = 1 + self._max_retries
 
         for attempt in range(attempts):
-            # Circuit breaker pre-check (raises CircuitOpenError if open)
-            try:
-                await cb.pre_check()
-            except Exception as exc:
-                # Wrap circuit open errors for structured error response
-                from src.resilience.circuit_breaker import (
-                    CircuitOpenError as _CBOpenError,
-                )
+            await self._check_circuit_breaker(cb)
+            result = await self._attempt_dispatch(
+                client,
+                cb,
+                method,
+                url,
+                payload,
+                route,
+                tool_name,
+                service_name,
+                attempt,
+                attempts,
+            )
+            if result is not None:
+                return result
 
-                if isinstance(exc, _CBOpenError):
-                    raise CircuitOpenError(exc.backend_name, exc.retry_after) from exc
-                raise
-
-            start = time.monotonic()
-            try:
-                if method.upper() == "GET":
-                    response = await client.get(
-                        url,
-                        params=payload or None,
-                        timeout=route.timeout,
-                    )
-                else:
-                    response = await client.post(
-                        url,
-                        json=payload,
-                        timeout=route.timeout,
-                    )
-
-                elapsed_ms = (time.monotonic() - start) * 1000
-
-                # Check for retryable HTTP status codes
-                if response.status_code in self._RETRYABLE_STATUS_CODES:
-                    await cb.on_failure()
-                    last_exc = BackendUnavailableError(
-                        service_name,
-                        f"HTTP {response.status_code}",
-                    )
-                    if attempt < attempts - 1:
-                        delay = self._retry_base_delay * (2**attempt)
-                        logger.warning(
-                            "Retryable status %d from %s (attempt %d/%d), retrying in %.1fs",
-                            response.status_code,
-                            service_name,
-                            attempt + 1,
-                            attempts,
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    # Exhausted retries
-                    raise last_exc
-
-                # Success path
-                await cb.on_success()
-
-                try:
-                    body = response.json()
-                except Exception:
-                    body = {}
-
-                return DispatchResult(
-                    status_code=response.status_code,
-                    body=body,
-                    headers=dict(response.headers),
-                    elapsed_ms=round(elapsed_ms, 2),
-                )
-
-            except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
-                await cb.on_failure()
-                last_exc = ToolTimeoutError(tool_name, route.timeout)
-                if attempt < attempts - 1:
-                    delay = self._retry_base_delay * (2**attempt)
-                    logger.warning(
-                        "Timeout for %s (attempt %d/%d), retrying in %.1fs",
-                        tool_name,
-                        attempt + 1,
-                        attempts,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise last_exc
-
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                await cb.on_failure()
-                last_exc = BackendUnavailableError(service_name, "Connection failed")
-                if attempt < attempts - 1:
-                    delay = self._retry_base_delay * (2**attempt)
-                    logger.warning(
-                        "Connection failed to %s (attempt %d/%d), retrying in %.1fs",
-                        service_name,
-                        attempt + 1,
-                        attempts,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise last_exc
-
-        # Should not reach here, but just in case
         if last_exc is not None:
             raise last_exc
         raise BackendUnavailableError(service_name, "All retry attempts exhausted")
+
+    async def _attempt_dispatch(
+        self,
+        client: httpx.AsyncClient,
+        cb,
+        method: str,
+        url: str,
+        payload: dict,
+        route: DispatchRoute,
+        tool_name: str,
+        service_name: str,
+        attempt: int,
+        attempts: int,
+    ) -> DispatchResult | None:
+        """Execute a single dispatch attempt; return result or None to retry."""
+        start = time.monotonic()
+        try:
+            response = await self._send_request(client, method, url, payload, route.timeout)
+            elapsed_ms = (time.monotonic() - start) * 1000
+
+            if response.status_code in self._RETRYABLE_STATUS_CODES:
+                return await self._handle_retryable_status(
+                    cb,
+                    service_name,
+                    response.status_code,
+                    attempt,
+                    attempts,
+                )
+
+            await cb.on_success()
+            return DispatchResult(
+                status_code=response.status_code,
+                body=self._parse_body(response),
+                headers=dict(response.headers),
+                elapsed_ms=round(elapsed_ms, 2),
+            )
+
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+            await cb.on_failure()
+            exc = ToolTimeoutError(tool_name, route.timeout)
+            if attempt < attempts - 1:
+                await self._retry_delay(attempt, attempts, tool_name, "Timeout")
+                return None
+            raise exc from None
+
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            await cb.on_failure()
+            exc = BackendUnavailableError(service_name, "Connection failed")
+            if attempt < attempts - 1:
+                await self._retry_delay(attempt, attempts, service_name, "Connection failed")
+                return None
+            raise exc from None
+
+    async def _handle_retryable_status(
+        self,
+        cb,
+        service_name: str,
+        status_code: int,
+        attempt: int,
+        attempts: int,
+    ) -> None:
+        """Handle a retryable HTTP status code; raise on final attempt."""
+        await cb.on_failure()
+        exc = BackendUnavailableError(service_name, f"HTTP {status_code}")
+        if attempt < attempts - 1:
+            await self._retry_delay(
+                attempt,
+                attempts,
+                service_name,
+                f"Retryable status {status_code}",
+            )
+            return None
+        raise exc
 
     @property
     def circuit_breakers(self) -> CircuitBreakerRegistry:

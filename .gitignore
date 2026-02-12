@@ -46,3 +46,4 @@ Thumbs.db
 *.key
 *.crt
 !tests/fixtures/*.pem
+.scannerwork/

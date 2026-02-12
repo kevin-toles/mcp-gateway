@@ -57,6 +57,9 @@ dependencies = [
 
     # Logging
     "structlog>=24.1.0",
+
+    # Async file I/O
+    "aiofiles>=23.2.0",
 ]
 
 [project.optional-dependencies]
