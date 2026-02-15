@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastmcp import Context
 from pydantic import ValidationError
 
 from src.core.config import Settings
@@ -65,6 +66,7 @@ def sanitizer():
 WORKFLOW_TOOLS = [
     "convert_pdf",
     "extract_book_metadata",
+    "batch_extract_metadata",
     "generate_taxonomy",
     "enrich_book_metadata",
     "enhance_guideline",
@@ -118,7 +120,7 @@ class TestToolRegistryWorkflow:
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 15
+        assert len(registry.list_all()) == 16
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -135,7 +137,12 @@ EXPECTED_WORKFLOW_ROUTES = {
     "extract_book_metadata": {
         "base_url": "http://localhost:8083",
         "path": "/api/v1/workflows/extract-book",
-        "timeout": 300.0,
+        "timeout": None,
+    },
+    "batch_extract_metadata": {
+        "base_url": "http://localhost:8083",
+        "path": "/api/v1/workflows/extract-book",
+        "timeout": None,
     },
     "generate_taxonomy": {
         "base_url": "http://localhost:8083",
@@ -181,12 +188,14 @@ class TestWorkflowRouteTable:
         assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
-    def test_route_timeout_300s(self, dispatcher, tool_name, expected):
+    def test_route_timeout_matches_expected(self, dispatcher, tool_name, expected):
         route = dispatcher.get_route(tool_name)
-        assert route.timeout == 300.0, f"{tool_name}: expected timeout=300.0, got {route.timeout}"
+        assert route.timeout == expected["timeout"], (
+            f"{tool_name}: expected timeout={expected['timeout']}, got {route.timeout}"
+        )
 
-    def test_total_route_count_is_15(self, dispatcher):
-        assert len(dispatcher.routes) == 15
+    def test_total_route_count_is_16(self, dispatcher):
+        assert len(dispatcher.routes) == 16
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -216,6 +225,7 @@ class TestWorkflowServiceNames:
         [
             ("convert_pdf", "code-orchestrator"),
             ("extract_book_metadata", "code-orchestrator"),
+            ("batch_extract_metadata", "code-orchestrator"),
             ("generate_taxonomy", "code-orchestrator"),
             ("enrich_book_metadata", "ai-agents"),
             ("enhance_guideline", "ai-agents"),
@@ -314,6 +324,63 @@ class TestExtractBookMetadataSchema:
 
         with pytest.raises(ValidationError):
             ExtractBookMetadataInput()
+
+
+class TestBatchExtractMetadataSchema:
+    """Input validation for batch_extract_metadata tool."""
+
+    def test_valid_minimal(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        m = BatchExtractMetadataInput(input_dir="/tmp/books")
+        assert m.input_dir == "/tmp/books"
+        assert m.output_dir is None
+        assert m.file_pattern == "*.json"
+        assert m.skip_existing is True
+
+    def test_valid_full(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        m = BatchExtractMetadataInput(
+            input_dir="/tmp/books",
+            output_dir="/tmp/metadata",
+            file_pattern="*.json",
+            skip_existing=False,
+        )
+        assert m.input_dir == "/tmp/books"
+        assert m.output_dir == "/tmp/metadata"
+        assert m.file_pattern == "*.json"
+        assert m.skip_existing is False
+
+    def test_rejects_empty_input_dir(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        with pytest.raises(ValidationError):
+            BatchExtractMetadataInput(input_dir="")
+
+    def test_rejects_missing_input_dir(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        with pytest.raises(ValidationError):
+            BatchExtractMetadataInput()
+
+    def test_defaults_file_pattern(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        m = BatchExtractMetadataInput(input_dir="/tmp/books")
+        assert m.file_pattern == "*.json"
+
+    def test_defaults_skip_existing_true(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        m = BatchExtractMetadataInput(input_dir="/tmp/books")
+        assert m.skip_existing is True
+
+    def test_accepts_custom_file_pattern(self):
+        from src.models.schemas import BatchExtractMetadataInput
+
+        m = BatchExtractMetadataInput(input_dir="/tmp/books", file_pattern="book_*.json")
+        assert m.file_pattern == "book_*.json"
 
 
 class TestGenerateTaxonomySchema:
@@ -689,6 +756,417 @@ class TestExtractBookMetadataHandler:
             await handler(input_path="")
 
 
+class TestBatchExtractMetadataHandler:
+    """Test the batch_extract_metadata tool handler — 295-line dispatch loop."""
+
+    @pytest.fixture
+    def books_dir(self, tmp_path):
+        """Create a temp directory with 3 book JSON files.
+
+        Uses a nested subdir so sibling 'metadata' dir is unique per test.
+        """
+        d = tmp_path / "books"
+        d.mkdir()
+        for name in ["book_alpha.json", "book_beta.json", "book_gamma.json"]:
+            (d / name).write_text('{"title": "test"}')
+        return d
+
+    @pytest.fixture
+    def co_success_result(self):
+        """CO response for a successful single-book extraction."""
+        return _make_result({
+            "total_chapters": 5,
+            "unique_keywords": 42,
+            "unique_concepts": 18,
+            "total_code_blocks": 7,
+            "total_ascii_diagrams": 2,
+            "output_path": "/tmp/meta/book_metadata.json",
+            "chapter_results": [
+                {
+                    "chapter_number": 1,
+                    "title": "Introduction",
+                    "keywords_count": 10,
+                    "concepts_count": 4,
+                    "summary_length": 300,
+                    "code_blocks_count": 2,
+                    "status": "success",
+                },
+                {
+                    "chapter_number": 2,
+                    "title": "Basics",
+                    "keywords_count": 8,
+                    "concepts_count": 3,
+                    "summary_length": 250,
+                    "code_blocks_count": 1,
+                    "status": "success",
+                },
+            ],
+        })
+
+    # ── Discovery & dispatching ─────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_discovers_books_in_directory(self, books_dir, co_success_result, sanitizer):
+        """Handler discovers all .json files in input_dir."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir))
+
+        assert result["total_processed"] == 3
+        assert d.dispatch.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_dispatches_extract_book_metadata_tool(self, books_dir, co_success_result, sanitizer):
+        """Each book dispatches with tool_name='extract_book_metadata'."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        await handler(input_dir=str(books_dir))
+
+        for call in d.dispatch.call_args_list:
+            assert call[0][0] == "extract_book_metadata"
+
+    @pytest.mark.asyncio
+    async def test_dispatches_correct_payload_per_book(self, books_dir, co_success_result, sanitizer):
+        """Each dispatch sends the correct input_path and output_path."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        out_dir = str(books_dir / "output")
+        await handler(input_dir=str(books_dir), output_dir=out_dir)
+
+        dispatched_inputs = [call[0][1]["input_path"] for call in d.dispatch.call_args_list]
+        dispatched_outputs = [call[0][1]["output_path"] for call in d.dispatch.call_args_list]
+
+        for inp in dispatched_inputs:
+            assert inp.startswith(str(books_dir))
+            assert inp.endswith(".json")
+
+        for out in dispatched_outputs:
+            assert out.startswith(out_dir)
+            assert out.endswith("_metadata.json")
+
+    # ── Empty directory ─────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_empty_directory_returns_no_files(self, tmp_path, sanitizer):
+        """Empty dir returns status='no_files'."""
+        d = AsyncMock(spec=ToolDispatcher)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(tmp_path))
+
+        assert result["status"] == "no_files"
+        d.dispatch.assert_not_called()
+
+    # ── Skip existing ───────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_skip_existing_skips_processed_books(self, books_dir, co_success_result, sanitizer):
+        """Books with existing metadata files are skipped."""
+        import os
+
+        # Default output dir is sibling "metadata" dir
+        meta_dir = books_dir.parent / "metadata"
+        meta_dir.mkdir(exist_ok=True)
+        # Pre-create metadata for book_alpha
+        (meta_dir / "book_alpha_metadata.json").write_text("{}")
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir), skip_existing=True)
+
+        assert result["skipped"] == 1
+        assert result["total_processed"] == 2
+        assert d.dispatch.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skip_existing_false_processes_all(self, books_dir, co_success_result, sanitizer):
+        """skip_existing=False processes all books even if metadata exists."""
+        meta_dir = books_dir.parent / "metadata"
+        meta_dir.mkdir(exist_ok=True)
+        (meta_dir / "book_alpha_metadata.json").write_text("{}")
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir), skip_existing=False)
+
+        assert result["skipped"] == 0
+        assert result["total_processed"] == 3
+
+    @pytest.mark.asyncio
+    async def test_all_skipped_returns_all_skipped(self, books_dir, sanitizer):
+        """When all books have existing metadata, return status='all_skipped'."""
+        meta_dir = books_dir.parent / "metadata"
+        meta_dir.mkdir(exist_ok=True)
+        for name in ["book_alpha", "book_beta", "book_gamma"]:
+            (meta_dir / f"{name}_metadata.json").write_text("{}")
+
+        d = AsyncMock(spec=ToolDispatcher)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir), skip_existing=True)
+
+        assert result["status"] == "all_skipped"
+        assert result["skipped"] == 3
+        d.dispatch.assert_not_called()
+
+    # ── Output directory resolution ─────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_default_output_dir_is_sibling_metadata(self, books_dir, co_success_result, sanitizer):
+        """Without output_dir, handler creates a sibling 'metadata' dir."""
+        import os
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        await handler(input_dir=str(books_dir))
+
+        expected_meta_dir = os.path.join(os.path.dirname(str(books_dir).rstrip("/")), "metadata")
+        assert os.path.isdir(expected_meta_dir)
+
+    @pytest.mark.asyncio
+    async def test_explicit_output_dir_is_created(self, books_dir, co_success_result, sanitizer):
+        """Explicit output_dir is created if it doesn't exist."""
+        import os
+
+        custom_out = str(books_dir / "custom_output")
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        await handler(input_dir=str(books_dir), output_dir=custom_out)
+
+        assert os.path.isdir(custom_out)
+
+    # ── Success result structure ────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_success_result_structure(self, books_dir, co_success_result, sanitizer):
+        """Verify the complete result dict on successful batch."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir))
+
+        assert result["status"] == "complete"
+        assert result["total_processed"] == 3
+        assert result["succeeded"] == 3
+        assert result["failed"] == 0
+        assert result["skipped"] == 0
+        assert isinstance(result["duration_s"], float)
+        assert len(result["results"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_per_book_result_fields(self, books_dir, co_success_result, sanitizer):
+        """Each book result has expected fields from CO response."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir))
+
+        book_result = result["results"][0]
+        assert book_result["status"] == "success"
+        assert book_result["total_chapters"] == 5
+        assert book_result["unique_keywords"] == 42
+        assert book_result["unique_concepts"] == 18
+        assert book_result["total_code_blocks"] == 7
+        assert book_result["total_ascii_diagrams"] == 2
+        assert isinstance(book_result["elapsed_s"], float)
+
+    # ── Error handling ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_dispatch_error_counted_as_failed(self, books_dir, sanitizer):
+        """A book that raises on dispatch is counted as failed."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(side_effect=RuntimeError("CO connection refused"))
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir))
+
+        assert result["status"] == "complete"
+        assert result["succeeded"] == 0
+        assert result["failed"] == 3
+        assert all(r["status"] == "failed" for r in result["results"])
+        assert all("CO connection refused" in r["error"] for r in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_mixed_results(self, books_dir, co_success_result, sanitizer):
+        """Mix of success and failure: counts are correct."""
+        call_count = 0
+
+        async def alternating_dispatch(tool_name, payload):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("Timeout on book 2")
+            return co_success_result
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(side_effect=alternating_dispatch)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir))
+
+        assert result["succeeded"] == 2
+        assert result["failed"] == 1
+        assert result["total_processed"] == 3
+
+    @pytest.mark.asyncio
+    async def test_unexpected_body_type_counted_as_failed(self, books_dir, sanitizer):
+        """Non-dict CO response body is counted as failed."""
+        bad_result = _make_result({"output_path": "/tmp/out.json"})
+        # Simulate sanitizer returning a non-dict (e.g., a list)
+        s = OutputSanitizer()
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=_make_result({}))
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        # Monkey-patch the sanitizer to return a string
+        original_sanitize = s.sanitize
+        call_idx = [0]
+
+        def bad_sanitize(body):
+            call_idx[0] += 1
+            if call_idx[0] == 1:
+                return "not a dict"  # type: ignore
+            return original_sanitize(body)
+
+        s.sanitize = bad_sanitize
+
+        handler = create_handler(d, s)
+        result = await handler(input_dir=str(books_dir))
+
+        # First book gets bad response, rest are fine
+        assert result["failed"] >= 1
+
+    # ── Custom file pattern ─────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_custom_file_pattern_filters_correctly(self, tmp_path, co_success_result, sanitizer):
+        """Only files matching file_pattern are discovered."""
+        (tmp_path / "book_one.json").write_text("{}")
+        (tmp_path / "book_two.json").write_text("{}")
+        (tmp_path / "notes.txt").write_text("ignore me")
+        (tmp_path / "readme.md").write_text("ignore me")
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(tmp_path), file_pattern="*.json")
+
+        assert result["total_processed"] == 2
+
+    @pytest.mark.asyncio
+    async def test_wildcard_pattern_matches_all(self, tmp_path, co_success_result, sanitizer):
+        """file_pattern='*' discovers all files."""
+        (tmp_path / "a.json").write_text("{}")
+        (tmp_path / "b.txt").write_text("{}")
+
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(tmp_path), file_pattern="*")
+
+        assert result["total_processed"] == 2
+
+    # ── Input validation ────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_input_dir(self, sanitizer):
+        """Empty input_dir is rejected by Pydantic validation."""
+        d = AsyncMock(spec=ToolDispatcher)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        with pytest.raises(ValidationError):
+            await handler(input_dir="")
+
+    # ── Progress context reporting ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_ctx_receives_progress_reports(self, books_dir, co_success_result, sanitizer):
+        """When ctx is provided, it receives info() and report_progress() calls."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        ctx = AsyncMock()
+        ctx.info = AsyncMock()
+        ctx.report_progress = AsyncMock()
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        await handler(input_dir=str(books_dir), ctx=ctx)
+
+        # At minimum: batch header + per-book start + per-chapter + completion + final summary
+        assert ctx.info.call_count > 0
+        assert ctx.report_progress.call_count > 0
+
+    @pytest.mark.asyncio
+    async def test_runs_without_ctx(self, books_dir, co_success_result, sanitizer):
+        """Handler works fine when ctx=None (no MCP context)."""
+        d = AsyncMock(spec=ToolDispatcher)
+        d.dispatch = AsyncMock(return_value=co_success_result)
+
+        from src.tools.batch_extract_metadata import create_handler
+
+        handler = create_handler(d, sanitizer)
+        result = await handler(input_dir=str(books_dir), ctx=None)
+
+        assert result["status"] == "complete"
+        assert result["succeeded"] == 3
+
+
 class TestGenerateTaxonomyHandler:
     """Test the generate_taxonomy tool handler."""
 
@@ -927,9 +1405,10 @@ EXPECTED_ALL_TOOL_NAMES = {
     "a2a_send_message",
     "a2a_get_task",
     "a2a_cancel_task",
-    # 5 workflow tools
+    # 6 workflow tools
     "convert_pdf",
     "extract_book_metadata",
+    "batch_extract_metadata",
     "generate_taxonomy",
     "enrich_book_metadata",
     "enhance_guideline",
@@ -957,12 +1436,12 @@ class TestToolsListWorkflow:
 
         return create_mcp_server(registry, mock_dispatcher, sanitizer)
 
-    async def test_returns_15_tools(self, mcp_server):
+    async def test_returns_16_tools(self, mcp_server):
         from fastmcp import Client
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 15
+        assert len(tools) == 16
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client
@@ -978,7 +1457,7 @@ class TestToolsListWorkflow:
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
         workflow_tools = [t for t in tools if t.name in WORKFLOW_TOOLS]
-        assert len(workflow_tools) == 6
+        assert len(workflow_tools) == 7
         for tool in workflow_tools:
             assert tool.description, f"{tool.name} missing description"
 
@@ -1000,6 +1479,18 @@ class TestToolsListWorkflow:
         tool = next(t for t in tools if t.name == "extract_book_metadata")
         props = tool.inputSchema["properties"]
         assert "input_path" in props
+
+    async def test_batch_extract_metadata_schema_fields(self, mcp_server):
+        from fastmcp import Client
+
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        tool = next(t for t in tools if t.name == "batch_extract_metadata")
+        props = tool.inputSchema["properties"]
+        assert "input_dir" in props
+        assert "output_dir" in props
+        assert "file_pattern" in props
+        assert "skip_existing" in props
 
     async def test_generate_taxonomy_schema_fields(self, mcp_server):
         from fastmcp import Client

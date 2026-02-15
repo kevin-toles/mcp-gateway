@@ -138,6 +138,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/api/v1/workflows/extract-book",
             timeout=None,  # No timeout — matches original script
         ),
+        "batch_extract_metadata": DispatchRoute(
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/extract-book",
+            timeout=None,  # No timeout — batch loops per-book via extract_book_metadata route
+        ),
         "generate_taxonomy": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
             path="/api/v1/workflows/generate-taxonomy",
