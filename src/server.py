@@ -21,8 +21,15 @@ from src.tools import (
     a2a_cancel_task,
     a2a_get_task,
     a2a_send_message,
+    analyze_taxonomy_coverage,
+    batch_extract_metadata,
     code_analyze,
     code_pattern_audit,
+    convert_pdf,
+    enhance_guideline,
+    enrich_book_metadata,
+    extract_book_metadata,
+    generate_taxonomy,
     graph_query,
     hybrid_search,
     llm_complete,
@@ -41,6 +48,15 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "a2a_send_message": a2a_send_message.create_handler,
     "a2a_get_task": a2a_get_task.create_handler,
     "a2a_cancel_task": a2a_cancel_task.create_handler,
+    # Workflow tools (WBS-WF6)
+    "convert_pdf": convert_pdf.create_handler,
+    "extract_book_metadata": extract_book_metadata.create_handler,
+    "batch_extract_metadata": batch_extract_metadata.create_handler,
+    "generate_taxonomy": generate_taxonomy.create_handler,
+    "enrich_book_metadata": enrich_book_metadata.create_handler,
+    "enhance_guideline": enhance_guideline.create_handler,
+    # Taxonomy Analysis (WBS-TAP9)
+    "analyze_taxonomy_coverage": analyze_taxonomy_coverage.create_handler,
 }
 
 

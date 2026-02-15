@@ -39,7 +39,7 @@ class DispatchRoute:
 
     base_url: str
     path: str
-    timeout: float = 30.0
+    timeout: float | None = 30.0
 
 
 @dataclass
@@ -72,6 +72,15 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "a2a_send_message": "ai-agents",
     "a2a_get_task": "ai-agents",
     "a2a_cancel_task": "ai-agents",
+    # Workflow tools (WBS-WF6)
+    "convert_pdf": "code-orchestrator",
+    "extract_book_metadata": "code-orchestrator",
+    "batch_extract_metadata": "code-orchestrator",
+    "generate_taxonomy": "code-orchestrator",
+    "enrich_book_metadata": "ai-agents",
+    "enhance_guideline": "ai-agents",
+    # Taxonomy Analysis (WBS-TAP9)
+    "analyze_taxonomy_coverage": "code-orchestrator",
 }
 
 
@@ -91,12 +100,12 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/search/hybrid",
         ),
         "code_analyze": DispatchRoute(
-            base_url=settings.CODE_ORCHESTRATOR_URL,
-            path="/api/v1/analyze",
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/patterns/detect",
         ),
         "code_pattern_audit": DispatchRoute(
-            base_url=settings.CODE_ORCHESTRATOR_URL,
-            path="/api/v1/audit/patterns",
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/patterns/detect",
         ),
         "graph_query": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
@@ -104,7 +113,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         "llm_complete": DispatchRoute(
             base_url=settings.LLM_GATEWAY_URL,
-            path="/v1/completions",
+            path="/v1/chat/completions",
         ),
         "a2a_send_message": DispatchRoute(
             base_url=settings.AI_AGENTS_URL,
@@ -117,6 +126,38 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "a2a_cancel_task": DispatchRoute(
             base_url=settings.AI_AGENTS_URL,
             path="/a2a/v1/tasks",  # /{task_id}:cancel appended at dispatch time
+        ),
+        # Workflow tools (WBS-WF6) — 300s timeout for long-running pipelines
+        "convert_pdf": DispatchRoute(
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/convert-pdf",
+            timeout=300.0,
+        ),
+        "extract_book_metadata": DispatchRoute(
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/extract-book",
+            timeout=None,  # No timeout — matches original script
+        ),
+        "generate_taxonomy": DispatchRoute(
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/generate-taxonomy",
+            timeout=300.0,
+        ),
+        "enrich_book_metadata": DispatchRoute(
+            base_url=settings.AI_AGENTS_URL,
+            path="/v1/workflows/enrich-book",
+            timeout=300.0,
+        ),
+        "enhance_guideline": DispatchRoute(
+            base_url=settings.AI_AGENTS_URL,
+            path="/v1/workflows/enhance-guideline",
+            timeout=300.0,
+        ),
+        # Taxonomy Analysis (WBS-TAP9)
+        "analyze_taxonomy_coverage": DispatchRoute(
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/analyze-taxonomy-coverage",
+            timeout=300.0,
         ),
     }
 
@@ -190,7 +231,7 @@ class ToolDispatcher:
         method: str,
         url: str,
         payload: dict,
-        timeout: float,
+        timeout: float | None,
     ) -> httpx.Response:
         """Send a single HTTP request (GET or POST)."""
         if method.upper() == "GET":
@@ -323,7 +364,7 @@ class ToolDispatcher:
 
         except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
             await cb.on_failure()
-            exc = ToolTimeoutError(tool_name, route.timeout)
+            exc = ToolTimeoutError(tool_name, route.timeout or 0.0)
             if attempt < attempts - 1:
                 await self._retry_delay(attempt, attempts, tool_name, "Timeout")
                 return None
@@ -362,6 +403,51 @@ class ToolDispatcher:
     def circuit_breakers(self) -> CircuitBreakerRegistry:
         """Expose circuit breaker registry for health/metrics endpoints."""
         return self._cb_registry
+
+    async def dispatch_stream(
+        self,
+        tool_name: str,
+        payload: dict,
+        *,
+        method: str = "POST",
+        params: dict | None = None,
+    ):
+        """Dispatch and yield raw SSE lines from a streaming backend response.
+
+        Uses the same route table and circuit breakers as ``dispatch()``,
+        but reads the response as a stream, yielding each line as it arrives.
+
+        Yields:
+            Raw text lines from the SSE response (e.g. ``event: chapter\\n``).
+        """
+        route = self.get_route(tool_name)
+        if route is None:
+            raise ValueError(f"Unknown tool: {tool_name}")
+
+        url = f"{route.base_url}{route.path}"
+        service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
+        client = self._get_client(route.base_url)
+        cb = self._cb_registry.get(service_name)
+
+        await self._check_circuit_breaker(cb)
+
+        try:
+            async with client.stream(
+                method,
+                url,
+                json=payload,
+                params=params,
+                timeout=route.timeout,
+            ) as response:
+                await cb.on_success()
+                async for line in response.aiter_lines():
+                    yield line
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            await cb.on_failure()
+            raise BackendUnavailableError(service_name, "Connection failed")
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+            await cb.on_failure()
+            raise ToolTimeoutError(tool_name, route.timeout or 0.0)
 
     async def close(self) -> None:
         """Close all pooled httpx clients."""

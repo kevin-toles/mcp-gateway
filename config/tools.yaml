@@ -49,3 +49,40 @@ tools:
     description: "Cancel a running A2A agent task by its ID"
     tier: silver
     tags: [a2a, agent, cancel]
+
+  # ── Workflow tools (WBS-WF6) ──────────────────────────────────────
+  - name: convert_pdf
+    description: "Convert a PDF file to structured JSON. Extracts text per page with optional OCR fallback and detects chapters. Requires code-orchestrator (:8083)."
+    tier: gold
+    tags: [workflow, pdf, conversion]
+
+  - name: extract_book_metadata
+    description: "Extract metadata, keywords, concepts, and code blocks from a book JSON file. Requires code-orchestrator (:8083)."
+    tier: gold
+    tags: [workflow, extraction, metadata]
+
+  - name: batch_extract_metadata
+    description: "Extract metadata from all books in a directory with live progress reporting. Processes each book sequentially through CO, reporting book-by-book progress. Requires code-orchestrator (:8083)."
+    tier: gold
+    tags: [workflow, extraction, metadata, batch]
+
+  - name: generate_taxonomy
+    description: "Generate a concept taxonomy from tier-organized book JSON files. Requires code-orchestrator (:8083)."
+    tier: gold
+    tags: [workflow, taxonomy, concepts]
+
+  - name: enrich_book_metadata
+    description: "Enrich book metadata with MSEP (multi-source enrichment pipeline). Requires ai-agents (:8082)."
+    tier: gold
+    tags: [workflow, enrichment, msep]
+
+  - name: enhance_guideline
+    description: "Enhance a guideline's chapters via LLM with cross-book context. Requires ai-agents (:8082)."
+    tier: gold
+    tags: [workflow, enhancement, llm]
+
+  # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────
+  - name: analyze_taxonomy_coverage
+    description: "Analyze taxonomy coverage against the knowledge base. Runs full INGEST→GENERATE→SEARCH→SCORE→REPORT pipeline. Requires code-orchestrator (:8083)."
+    tier: gold
+    tags: [workflow, taxonomy, analysis, coverage]

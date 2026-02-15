@@ -28,6 +28,14 @@ EXPECTED_TOOL_NAMES = {
     "a2a_send_message",
     "a2a_get_task",
     "a2a_cancel_task",
+    # Workflow tools (WBS-WF6)
+    "convert_pdf",
+    "extract_book_metadata",
+    "generate_taxonomy",
+    "enrich_book_metadata",
+    "enhance_guideline",
+    # Taxonomy Analysis (WBS-TAP9)
+    "analyze_taxonomy_coverage",
 }
 
 VALID_TOOLS_YAML = """\
@@ -68,6 +76,30 @@ tools:
     description: "Cancel A2A task"
     tier: silver
     tags: [a2a, agent, cancel]
+  - name: convert_pdf
+    description: "Convert PDF to JSON"
+    tier: gold
+    tags: [workflow, pdf, conversion]
+  - name: extract_book_metadata
+    description: "Extract book metadata"
+    tier: gold
+    tags: [workflow, extraction, metadata]
+  - name: generate_taxonomy
+    description: "Generate concept taxonomy"
+    tier: gold
+    tags: [workflow, taxonomy, concepts]
+  - name: enrich_book_metadata
+    description: "Enrich book metadata via MSEP"
+    tier: gold
+    tags: [workflow, enrichment, msep]
+  - name: enhance_guideline
+    description: "Enhance guideline via LLM"
+    tier: gold
+    tags: [workflow, enhancement, llm]
+  - name: analyze_taxonomy_coverage
+    description: "Analyze taxonomy coverage"
+    tier: gold
+    tags: [workflow, taxonomy, analysis, coverage]
 """
 
 
@@ -119,10 +151,10 @@ class TestCreateMCPServer:
 
 
 class TestToolsList:
-    async def test_returns_9_tools(self, mcp_server):
+    async def test_returns_15_tools(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 9
+        assert len(tools) == 15
 
     async def test_tool_names(self, mcp_server):
         async with Client(mcp_server) as client:

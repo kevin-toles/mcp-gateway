@@ -22,6 +22,15 @@ EXPECTED_TOOL_NAMES = {
     "a2a_send_message",
     "a2a_get_task",
     "a2a_cancel_task",
+    # Workflow tools (WBS-WF6)
+    "convert_pdf",
+    "extract_book_metadata",
+    "batch_extract_metadata",
+    "generate_taxonomy",
+    "enrich_book_metadata",
+    "enhance_guideline",
+    # Taxonomy Analysis (WBS-TAP9)
+    "analyze_taxonomy_coverage",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -66,6 +75,34 @@ tools:
     description: "Cancel A2A task"
     tier: silver
     tags: [a2a, agent, cancel]
+  - name: convert_pdf
+    description: "Convert PDF to JSON"
+    tier: gold
+    tags: [workflow, pdf, conversion]
+  - name: extract_book_metadata
+    description: "Extract book metadata"
+    tier: gold
+    tags: [workflow, extraction, metadata]
+  - name: batch_extract_metadata
+    description: "Batch extract metadata from all books in a directory"
+    tier: gold
+    tags: [workflow, extraction, metadata, batch]
+  - name: generate_taxonomy
+    description: "Generate concept taxonomy"
+    tier: gold
+    tags: [workflow, taxonomy, concepts]
+  - name: enrich_book_metadata
+    description: "Enrich book metadata via MSEP"
+    tier: gold
+    tags: [workflow, enrichment, msep]
+  - name: enhance_guideline
+    description: "Enhance guideline via LLM"
+    tier: gold
+    tags: [workflow, enhancement, llm]
+  - name: analyze_taxonomy_coverage
+    description: "Analyze taxonomy coverage"
+    tier: gold
+    tags: [workflow, taxonomy, analysis, coverage]
 """
 
 
@@ -128,9 +165,9 @@ class TestToolRegistryLoading:
         registry = ToolRegistry(yaml_path)
         assert registry.tool_count > 0
 
-    def test_loads_9_tools(self, yaml_path):
+    def test_loads_16_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 9
+        assert registry.tool_count == 16
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -226,13 +263,13 @@ class TestToolRegistryAccess:
     def test_get_unknown_returns_none(self, registry):
         assert registry.get("nonexistent") is None
 
-    def test_list_all_returns_9(self, registry):
+    def test_list_all_returns_16(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 9
+        assert len(tools) == 16
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 9
+        assert registry.tool_count == 16
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -286,5 +323,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 9
+        assert registry.tool_count == 16
         assert registry.tool_names() == EXPECTED_TOOL_NAMES

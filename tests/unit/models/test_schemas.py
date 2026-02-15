@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 
 class TestAllSchemasExist:
-    """AC-4.6: All 9 tool input schemas must be importable."""
+    """AC-4.6: All 14 tool input schemas must be importable."""
 
     @pytest.mark.parametrize(
         "name",
@@ -36,6 +36,14 @@ class TestAllSchemasExist:
             "A2ASendMessageInput",
             "A2AGetTaskInput",
             "A2ACancelTaskInput",
+            # Workflow tools (WBS-WF6)
+            "ConvertPDFInput",
+            "ExtractBookMetadataInput",
+            "GenerateTaxonomyInput",
+            "EnrichBookMetadataInput",
+            "EnhanceGuidelineInput",
+            # Taxonomy Analysis (WBS-TAP9)
+            "AnalyzeTaxonomyCoverageInput",
         ],
     )
     def test_schema_importable(self, name):
@@ -43,12 +51,12 @@ class TestAllSchemasExist:
 
         assert hasattr(schemas, name), f"{name} not found in schemas module"
 
-    def test_exactly_nine_tool_schemas(self):
-        """There should be exactly 9 tool input models."""
+    def test_exactly_14_tool_schemas(self):
+        """There should be exactly 14 tool input models."""
         from src.models import schemas
 
         tool_models = [n for n in dir(schemas) if n.endswith("Input") and not n.startswith("_")]
-        assert len(tool_models) == 9
+        assert len(tool_models) == 16
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -589,3 +597,103 @@ class TestCrossModelSanitization:
             "A2AGetTaskInput": {"task_id": "x"},
             "A2ACancelTaskInput": {"task_id": "x"},
         }[schema_name]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# WBS-TAP9: AnalyzeTaxonomyCoverageInput validation
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestAnalyzeTaxonomyCoverageInput:
+    """Validation for analyze_taxonomy_coverage input schema."""
+
+    def test_valid_minimal(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        m = AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/taxonomy.json")
+        assert m.taxonomy_path == "/tmp/taxonomy.json"
+        assert m.output_path is None
+        assert m.collection == "all"
+        assert m.top_k == 10
+        assert m.threshold == 0.3
+        assert m.max_leaf_nodes == 500
+        assert m.subtree_root is None
+        assert m.concurrency == 10
+        assert m.include_evidence is True
+        assert m.scoring_weights is None
+
+    def test_valid_full(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        m = AnalyzeTaxonomyCoverageInput(
+            taxonomy_path="/tmp/taxonomy.json",
+            output_path="/tmp/out.json",
+            collection="code_chunks",
+            top_k=20,
+            threshold=0.5,
+            max_leaf_nodes=1000,
+            subtree_root="algorithms",
+            concurrency=5,
+            include_evidence=False,
+            scoring_weights={"semantic": 0.7, "keyword": 0.3},
+        )
+        assert m.output_path == "/tmp/out.json"
+        assert m.collection == "code_chunks"
+        assert m.top_k == 20
+        assert m.threshold == 0.5
+        assert m.max_leaf_nodes == 1000
+        assert m.subtree_root == "algorithms"
+        assert m.concurrency == 5
+        assert m.include_evidence is False
+        assert m.scoring_weights == {"semantic": 0.7, "keyword": 0.3}
+
+    def test_rejects_empty_taxonomy_path(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="")
+
+    def test_rejects_missing_taxonomy_path(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput()
+
+    def test_rejects_top_k_out_of_range(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", top_k=0)
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", top_k=101)
+
+    def test_rejects_threshold_out_of_range(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", threshold=-0.1)
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", threshold=1.1)
+
+    def test_rejects_concurrency_out_of_range(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", concurrency=0)
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", concurrency=51)
+
+    def test_rejects_max_leaf_nodes_out_of_range(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", max_leaf_nodes=0)
+        with pytest.raises(ValidationError):
+            AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/t.json", max_leaf_nodes=5001)
+
+    def test_sanitizes_taxonomy_path(self):
+        from src.models.schemas import AnalyzeTaxonomyCoverageInput
+
+        m = AnalyzeTaxonomyCoverageInput(taxonomy_path="/tmp/tax\x00.json")
+        assert "\x00" not in m.taxonomy_path
+        assert m.taxonomy_path == "/tmp/tax.json"

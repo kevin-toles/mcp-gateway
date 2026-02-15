@@ -19,10 +19,10 @@ from src.core.errors import BackendUnavailableError, ToolTimeoutError
 EXPECTED_ROUTES = {
     "semantic_search": {"base_url": "http://localhost:8081", "path": "/v1/search"},
     "hybrid_search": {"base_url": "http://localhost:8081", "path": "/v1/search/hybrid"},
-    "code_analyze": {"base_url": "http://localhost:8083", "path": "/v1/analyze"},
-    "code_pattern_audit": {"base_url": "http://localhost:8083", "path": "/v1/audit/patterns"},
+    "code_analyze": {"base_url": "http://localhost:8084", "path": "/v1/patterns/detect"},
+    "code_pattern_audit": {"base_url": "http://localhost:8084", "path": "/v1/patterns/detect"},
     "graph_query": {"base_url": "http://localhost:8081", "path": "/v1/graph/query"},
-    "llm_complete": {"base_url": "http://localhost:8080", "path": "/v1/completions"},
+    "llm_complete": {"base_url": "http://localhost:8080", "path": "/v1/chat/completions"},
     "a2a_send_message": {"base_url": "http://localhost:8082", "path": "/a2a/v1/message:send"},
     "a2a_get_task": {"base_url": "http://localhost:8082", "path": "/a2a/v1/tasks"},
     "a2a_cancel_task": {"base_url": "http://localhost:8082", "path": "/a2a/v1/tasks"},
@@ -67,8 +67,8 @@ class TestRouteTable:
         route = dispatcher.get_route(tool_name)
         assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
-    def test_total_route_count_is_nine(self, dispatcher):
-        assert len(dispatcher.routes) == 9
+    def test_total_route_count_is_15(self, dispatcher):
+        assert len(dispatcher.routes) == 15
 
 
 class TestDispatchRouting:

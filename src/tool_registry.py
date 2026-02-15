@@ -17,8 +17,15 @@ from src.models.schemas import (
     A2ACancelTaskInput,
     A2AGetTaskInput,
     A2ASendMessageInput,
+    AnalyzeTaxonomyCoverageInput,
+    BatchExtractMetadataInput,
     CodeAnalyzeInput,
     CodePatternAuditInput,
+    ConvertPDFInput,
+    EnhanceGuidelineInput,
+    EnrichBookMetadataInput,
+    ExtractBookMetadataInput,
+    GenerateTaxonomyInput,
     GraphQueryInput,
     HybridSearchInput,
     LLMCompleteInput,
@@ -37,6 +44,15 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "a2a_send_message": A2ASendMessageInput,
     "a2a_get_task": A2AGetTaskInput,
     "a2a_cancel_task": A2ACancelTaskInput,
+    # Workflow tools (WBS-WF6)
+    "convert_pdf": ConvertPDFInput,
+    "extract_book_metadata": ExtractBookMetadataInput,
+    "batch_extract_metadata": BatchExtractMetadataInput,
+    "generate_taxonomy": GenerateTaxonomyInput,
+    "enrich_book_metadata": EnrichBookMetadataInput,
+    "enhance_guideline": EnhanceGuidelineInput,
+    # Taxonomy Analysis (WBS-TAP9)
+    "analyze_taxonomy_coverage": AnalyzeTaxonomyCoverageInput,
 }
 
 
