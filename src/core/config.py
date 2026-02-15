@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     SEMANTIC_SEARCH_URL: str = "http://localhost:8081"
     AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
+    AUDIT_SERVICE_URL: str = "http://localhost:8084"
 
     # ── Security / OIDC ─────────────────────────────────────────────
     OIDC_JWKS_URL: str = ""  # JWKS endpoint for JWT validation

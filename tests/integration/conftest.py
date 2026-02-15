@@ -5,11 +5,9 @@ All integration tests are marked with ``@pytest.mark.integration``.
 Run them with: ``pytest tests/integration/ -m integration``
 """
 
-import asyncio
 import os
 from pathlib import Path
 
-import httpx
 import pytest
 
 
@@ -17,20 +15,10 @@ def pytest_collection_modifyitems(config, items):
     """Auto-skip integration tests when INTEGRATION env var is not set."""
     if os.environ.get("INTEGRATION", "").lower() in ("1", "true", "yes"):
         return
-    skip_marker = pytest.mark.skip(
-        reason="Set INTEGRATION=1 to run integration tests with live services"
-    )
+    skip_marker = pytest.mark.skip(reason="Set INTEGRATION=1 to run integration tests with live services")
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_marker)
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Session-scoped event loop for async fixtures."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture(scope="session")

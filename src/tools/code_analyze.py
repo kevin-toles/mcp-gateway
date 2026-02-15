@@ -1,10 +1,24 @@
-"""code_analyze tool handler — WBS-MCP8."""
+"""code_analyze tool handler — WBS-MCP8, TWR6 (GREEN).
+
+Dispatches to audit-service :8084 POST /v1/patterns/detect.
+Transforms MCP input {code, language, analysis_type} into
+audit-service format {code, language, file_path}.
+"""
 
 from src.models.schemas import CodeAnalyzeInput
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 
 TOOL_NAME = "code_analyze"
+
+
+def _build_audit_payload(validated: CodeAnalyzeInput) -> dict:
+    """Transform MCP input into audit-service /v1/patterns/detect request."""
+    return {
+        "code": validated.code,
+        "language": validated.language,
+        "file_path": "<mcp-input>",
+    }
 
 
 def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
@@ -21,7 +35,8 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             language=language,
             analysis_type=analysis_type,
         )
-        result = await dispatcher.dispatch(TOOL_NAME, validated.model_dump())
+        payload = _build_audit_payload(validated)
+        result = await dispatcher.dispatch(TOOL_NAME, payload)
         return sanitizer.sanitize(result.body)
 
     return code_analyze
