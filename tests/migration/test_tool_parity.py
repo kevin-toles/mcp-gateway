@@ -62,9 +62,12 @@ GATEWAY_TOOLS = {
     # Workflow tools (WBS-WF6)
     "convert_pdf",
     "extract_book_metadata",
+    "batch_extract_metadata",
     "generate_taxonomy",
     "enrich_book_metadata",
     "enhance_guideline",
+    # Taxonomy Analysis (WBS-TAP9)
+    "analyze_taxonomy_coverage",
 }
 
 # Mapping: legacy tool → gateway tool that supersedes it
@@ -112,9 +115,9 @@ class TestLegacyToolMapping:
         assert len(GATEWAY_TOOLS) >= len(LEGACY_SERVER_TOOLS)
         assert len(GATEWAY_TOOLS) >= len(LEGACY_AGENT_FUNCTION_TOOLS)
 
-    def test_gateway_has_exactly_14_tools(self) -> None:
-        """Gateway exposes exactly 14 tools per WBS spec."""
-        assert len(GATEWAY_TOOLS) == 14
+    def test_gateway_has_exactly_16_tools(self) -> None:
+        """Gateway exposes exactly 16 tools per WBS spec."""
+        assert len(GATEWAY_TOOLS) == 16
 
     def test_combined_legacy_tools_all_covered(self) -> None:
         """Union of both legacy sets is fully covered by mappings."""
@@ -126,12 +129,12 @@ class TestLegacyToolMapping:
 class TestToolRegistryParity:
     """Verify mcp-gateway ToolRegistry covers all gateway tools."""
 
-    def test_registry_loads_all_14_tools(self) -> None:
-        """ToolRegistry loads exactly 14 tools from config/tools.yaml."""
+    def test_registry_loads_all_16_tools(self) -> None:
+        """ToolRegistry loads exactly 16 tools from config/tools.yaml."""
         from src.tool_registry import ToolRegistry
 
         registry = ToolRegistry(_TOOLS_YAML)
-        assert registry.tool_count == 14
+        assert registry.tool_count == 16
 
     def test_registry_tool_names_match_gateway_set(self) -> None:
         """ToolRegistry tool names match the expected GATEWAY_TOOLS set."""
@@ -175,11 +178,11 @@ class TestMCPServerParity:
         """MCP server identifies as mcp-gateway."""
         assert mcp_server.name == "mcp-gateway"
 
-    def test_mcp_server_exposes_14_tools(self, mcp_server) -> None:
-        """MCP server has exactly 14 registered tools."""
+    def test_mcp_server_exposes_16_tools(self, mcp_server) -> None:
+        """MCP server has exactly 16 registered tools."""
         # FastMCP stores tools in _tool_manager
         tools = mcp_server._tool_manager._tools
-        assert len(tools) == 14
+        assert len(tools) == 16
 
     def test_mcp_server_tool_names_cover_gateway_set(self, mcp_server) -> None:
         """MCP server tool names match GATEWAY_TOOLS."""
@@ -245,10 +248,10 @@ class TestLiveGatewayParity:
         async with Client("http://localhost:8087/mcp") as client:
             yield client
 
-    async def test_tools_list_returns_14_tools(self, mcp_client) -> None:
-        """tools/list returns exactly 14 tools from live gateway."""
+    async def test_tools_list_returns_16_tools(self, mcp_client) -> None:
+        """tools/list returns exactly 16 tools from live gateway."""
         tools = await mcp_client.list_tools()
-        assert len(tools) == 14
+        assert len(tools) == 16
 
     async def test_tools_list_names_match_gateway_set(self, mcp_client) -> None:
         """tools/list tool names match GATEWAY_TOOLS."""
