@@ -1,6 +1,6 @@
 """MCP protocol integration tests — WBS-MCP9.
 
-AC-9.4  All 9 tools callable through MCP protocol
+AC-9.4  All 22 tools callable through MCP protocol
 AC-9.8  Real MCP server, real tool registry — no mocks
 
 Tests use ``fastmcp.Client`` against the in-process MCP server to verify
@@ -11,11 +11,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
+from src.core.config import Settings
 from src.security.output_sanitizer import OutputSanitizer
 from src.server import create_mcp_server
 from src.tool_dispatcher import ToolDispatcher
 from src.tool_registry import ToolRegistry
-from src.core.config import Settings
 
 pytestmark = pytest.mark.integration
 
@@ -42,29 +42,48 @@ def mcp_server():
 
 
 class TestMCPToolsList:
-    """tools/list returns all 9 tools with correct metadata."""
+    """tools/list returns all 22 tools with correct metadata."""
 
-    async def test_list_returns_all_nine_tools(self, mcp_server):
+    async def test_list_returns_all_tools(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
             tool_names = {t.name for t in tools}
             expected = {
+                # Search
                 "semantic_search",
                 "hybrid_search",
+                # Code analysis
                 "code_analyze",
                 "code_pattern_audit",
+                # Graph / LLM
                 "graph_query",
                 "llm_complete",
-                "run_discussion",
-                "run_agent_function",
-                "agent_execute",
+                # A2A agent tools
+                "a2a_send_message",
+                "a2a_get_task",
+                "a2a_cancel_task",
+                # Book / document pipeline
+                "convert_pdf",
+                "extract_book_metadata",
+                "batch_extract_metadata",
+                "generate_taxonomy",
+                "enrich_book_metadata",
+                "enhance_guideline",
+                "analyze_taxonomy_coverage",
+                # AMVE architecture analysis (AEI-7)
+                "amve_detect_patterns",
+                "amve_detect_boundaries",
+                "amve_detect_communication",
+                "amve_build_call_graph",
+                "amve_evaluate_fitness",
+                "amve_generate_architecture_log",
             }
             assert tool_names == expected
 
-    async def test_tool_count_is_nine(self, mcp_server):
+    async def test_tool_count_is_twenty_two(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-            assert len(tools) == 9
+            assert len(tools) == 22
 
     async def test_each_tool_has_description(self, mcp_server):
         async with Client(mcp_server) as client:
@@ -95,12 +114,15 @@ class TestMCPToolsCall:
     async def test_call_semantic_search_with_valid_input(self, mcp_server):
         """If backend is running, returns result; if not, returns backend error."""
         async with Client(mcp_server) as client:
-            result = await client.call_tool("semantic_search", {
-                "query": "integration test",
-                "collection": "all",
-                "top_k": 3,
-                "threshold": 0.5,
-            })
+            result = await client.call_tool(
+                "semantic_search",
+                {
+                    "query": "integration test",
+                    "collection": "all",
+                    "top_k": 3,
+                    "threshold": 0.5,
+                },
+            )
             # Either succeeds (backend up) or returns error (backend down)
             # Both are valid MCP responses — we just verify protocol integrity
             assert result is not None
@@ -108,18 +130,24 @@ class TestMCPToolsCall:
     async def test_call_graph_query_with_valid_cypher(self, mcp_server):
         """graph_query tool processes valid Cypher."""
         async with Client(mcp_server) as client:
-            result = await client.call_tool("graph_query", {
-                "cypher": "MATCH (n) RETURN count(n) AS total LIMIT 1",
-            })
+            result = await client.call_tool(
+                "graph_query",
+                {
+                    "cypher": "MATCH (n) RETURN count(n) AS total LIMIT 1",
+                },
+            )
             assert result is not None
 
     async def test_call_llm_complete_with_valid_prompt(self, mcp_server):
         """llm_complete tool processes valid prompt."""
         async with Client(mcp_server) as client:
-            result = await client.call_tool("llm_complete", {
-                "prompt": "Say hello in one word",
-                "max_tokens": 5,
-            })
+            result = await client.call_tool(
+                "llm_complete",
+                {
+                    "prompt": "Say hello in one word",
+                    "max_tokens": 5,
+                },
+            )
             assert result is not None
 
     async def test_call_with_missing_required_field(self, mcp_server):
@@ -149,4 +177,4 @@ class TestMCPProtocolIntegrity:
 
         results = await asyncio.gather(*[list_once() for _ in range(5)])
         for tools in results:
-            assert len(tools) == 9
+            assert len(tools) == 22

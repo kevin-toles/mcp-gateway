@@ -1,6 +1,6 @@
 """End-to-end tool dispatch integration tests — WBS-MCP9, WF7.8.
 
-AC-9.4  All 14 tools callable end-to-end through mcp-gateway with live backends
+AC-9.4  All 22 tools callable end-to-end through mcp-gateway with live backends
 AC-9.8  All mocks replaced with real service calls
 AC-WF7.8: MCP workflow tool calls dispatch end-to-end
 
@@ -166,17 +166,16 @@ class TestLLMCompleteE2E:
         assert result.elapsed_ms > 0
 
 
-class TestRunAgentFunctionE2E:
-    """Tool: run_agent_function → ai-agents :8082."""
+class TestA2ASendMessageE2E:
+    """Tool: a2a_send_message → ai-agents :8082."""
 
     async def test_dispatch_returns_result(self, dispatcher):
         if not await _check_backend("http://localhost:8082/health"):
             pytest.skip("ai-agents not running on :8082")
         result = await dispatcher.dispatch(
-            "run_agent_function",
+            "a2a_send_message",
             {
-                "function_name": "summarize-content",
-                "input": {"content": "integration test content"},
+                "content": "integration test message",
             },
         )
         assert 100 <= result.status_code < 600, f"Invalid HTTP status: {result.status_code}"
@@ -184,17 +183,16 @@ class TestRunAgentFunctionE2E:
         assert result.elapsed_ms > 0
 
 
-class TestRunDiscussionE2E:
-    """Tool: run_discussion → ai-agents :8082."""
+class TestA2AGetTaskE2E:
+    """Tool: a2a_get_task → ai-agents :8082."""
 
     async def test_dispatch_returns_result(self, dispatcher):
         if not await _check_backend("http://localhost:8082/health"):
             pytest.skip("ai-agents not running on :8082")
         result = await dispatcher.dispatch(
-            "run_discussion",
+            "a2a_get_task",
             {
-                "protocol_id": "ROUNDTABLE_DISCUSSION",
-                "inputs": {"topic": "integration test"},
+                "task_id": "integration-test-task",
             },
         )
         assert 100 <= result.status_code < 600, f"Invalid HTTP status: {result.status_code}"
@@ -202,16 +200,16 @@ class TestRunDiscussionE2E:
         assert result.elapsed_ms > 0
 
 
-class TestAgentExecuteE2E:
-    """Tool: agent_execute → ai-agents :8082."""
+class TestA2ACancelTaskE2E:
+    """Tool: a2a_cancel_task → ai-agents :8082."""
 
     async def test_dispatch_returns_result(self, dispatcher):
         if not await _check_backend("http://localhost:8082/health"):
             pytest.skip("ai-agents not running on :8082")
         result = await dispatcher.dispatch(
-            "agent_execute",
+            "a2a_cancel_task",
             {
-                "task": "echo integration test",
+                "task_id": "integration-test-task",
             },
         )
         assert 100 <= result.status_code < 600, f"Invalid HTTP status: {result.status_code}"
@@ -312,31 +310,45 @@ class TestEnhanceGuidelineE2E:
         assert result.elapsed_ms > 0
 
 
-# ── AC-9.8 / AC-WF7.8: All 14 tools have e2e tests ────────────────────
+# ── AC-9.8 / AC-WF7.8: All tools have e2e tests ────────────────────────
 
 
 class TestAllToolsCovered:
-    """Meta-test: verify all 14 tools have e2e test coverage."""
+    """Meta-test: verify all tools have e2e test coverage."""
 
     def test_all_tools_have_e2e_class(self, dispatcher):
         """Every tool in the route table must have a test class above."""
         expected_tools = {
+            # Semantic search
             "semantic_search",
             "hybrid_search",
+            # Code analysis
             "code_analyze",
             "code_pattern_audit",
+            # Graph / LLM
             "graph_query",
             "llm_complete",
-            "run_agent_function",
-            "run_discussion",
-            "agent_execute",
+            # A2A agent tools
+            "a2a_send_message",
+            "a2a_get_task",
+            "a2a_cancel_task",
+            # Book / document pipeline
             "extract_book_metadata",
+            "batch_extract_metadata",
             "generate_taxonomy",
             "convert_pdf",
             "enrich_book_metadata",
             "enhance_guideline",
+            "analyze_taxonomy_coverage",
+            # AMVE architecture analysis (AEI-7)
+            "amve_detect_patterns",
+            "amve_detect_boundaries",
+            "amve_detect_communication",
+            "amve_build_call_graph",
+            "amve_evaluate_fitness",
+            "amve_generate_architecture_log",
         }
         assert set(dispatcher.routes.keys()) == expected_tools
 
-    def test_route_count_is_fourteen(self, dispatcher):
-        assert len(dispatcher.routes) == 14
+    def test_route_count_is_twenty_two(self, dispatcher):
+        assert len(dispatcher.routes) == 22
