@@ -21,6 +21,12 @@ from src.tools import (
     a2a_cancel_task,
     a2a_get_task,
     a2a_send_message,
+    amve_build_call_graph,
+    amve_detect_boundaries,
+    amve_detect_communication,
+    amve_detect_patterns,
+    amve_evaluate_fitness,
+    amve_generate_architecture_log,
     analyze_taxonomy_coverage,
     batch_extract_metadata,
     code_analyze,
@@ -57,6 +63,13 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "enhance_guideline": enhance_guideline.create_handler,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": analyze_taxonomy_coverage.create_handler,
+    # AMVE tools (AEI-7)
+    "amve_detect_patterns": amve_detect_patterns.create_handler,
+    "amve_detect_boundaries": amve_detect_boundaries.create_handler,
+    "amve_detect_communication": amve_detect_communication.create_handler,
+    "amve_build_call_graph": amve_build_call_graph.create_handler,
+    "amve_evaluate_fitness": amve_evaluate_fitness.create_handler,
+    "amve_generate_architecture_log": amve_generate_architecture_log.create_handler,
 }
 
 

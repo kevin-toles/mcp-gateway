@@ -292,3 +292,93 @@ class AnalyzeTaxonomyCoverageInput(BaseModel):
     @classmethod
     def sanitize_taxonomy_path(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+
+# ── AMVE tool schemas (AEI-7) ──────────────────────────────────────────
+
+
+class AMVEAnalysisInput(BaseModel):
+    """Input for amve_detect_patterns, amve_detect_boundaries, amve_build_call_graph."""
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Path to source directory or file to analyze",
+    )
+    include_confidence: bool = Field(
+        default=False,
+        description="Include confidence scores in results",
+    )
+
+    @field_validator("source_path", mode="before")
+    @classmethod
+    def sanitize_source_path(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class AMVECommunicationInput(BaseModel):
+    """Input for amve_detect_communication -- consolidated events + messaging."""
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Path to source directory or file to analyze",
+    )
+    scope: str = Field(
+        default="all",
+        pattern=r"^(all|events|messaging)$",
+        description="Detection scope: events, messaging, or all",
+    )
+    include_confidence: bool = Field(
+        default=False,
+        description="Include confidence scores in results",
+    )
+
+    @field_validator("source_path", mode="before")
+    @classmethod
+    def sanitize_source_path(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class AMVEEvaluateFitnessInput(BaseModel):
+    """Input for amve_evaluate_fitness -- evaluate fitness functions against a snapshot."""
+
+    snapshot_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Architecture snapshot ID to evaluate",
+    )
+    fitness_function_ids: list[str] | None = Field(
+        default=None,
+        description="Optional list of specific fitness function IDs to evaluate",
+    )
+
+    @field_validator("snapshot_id", mode="before")
+    @classmethod
+    def sanitize_snapshot_id(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class AMVEGenerateArchitectureLogInput(BaseModel):
+    """Input for amve_generate_architecture_log -- batch scan with baseline comparison."""
+
+    source_paths: list[str] = Field(
+        ...,
+        min_length=1,
+        description="List of source paths to scan",
+    )
+    violations: list[dict] = Field(
+        default_factory=list,
+        description="Known violations to include in scan",
+    )
+    patterns: list[dict] = Field(
+        default_factory=list,
+        description="Known patterns to include in scan",
+    )
+    baseline_json: dict | None = Field(
+        default=None,
+        description="Optional baseline snapshot for delta comparison",
+    )

@@ -31,6 +31,13 @@ EXPECTED_TOOL_NAMES = {
     "enhance_guideline",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage",
+    # AMVE tools (AEI-7)
+    "amve_detect_patterns",
+    "amve_detect_boundaries",
+    "amve_detect_communication",
+    "amve_build_call_graph",
+    "amve_evaluate_fitness",
+    "amve_generate_architecture_log",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -103,6 +110,30 @@ tools:
     description: "Analyze taxonomy coverage"
     tier: gold
     tags: [workflow, taxonomy, analysis, coverage]
+  - name: amve_detect_patterns
+    description: "Detect architecture patterns"
+    tier: gold
+    tags: [amve, architecture, patterns, analysis]
+  - name: amve_detect_boundaries
+    description: "Detect service boundaries"
+    tier: gold
+    tags: [amve, architecture, boundaries, analysis]
+  - name: amve_detect_communication
+    description: "Detect communication patterns"
+    tier: gold
+    tags: [amve, architecture, communication, events, messaging]
+  - name: amve_build_call_graph
+    description: "Build call graph"
+    tier: gold
+    tags: [amve, architecture, call-graph, analysis]
+  - name: amve_evaluate_fitness
+    description: "Evaluate architecture fitness"
+    tier: gold
+    tags: [amve, architecture, fitness, evaluation]
+  - name: amve_generate_architecture_log
+    description: "Generate architecture log"
+    tier: gold
+    tags: [amve, architecture, batch-scan, baseline]
 """
 
 
@@ -165,9 +196,9 @@ class TestToolRegistryLoading:
         registry = ToolRegistry(yaml_path)
         assert registry.tool_count > 0
 
-    def test_loads_16_tools(self, yaml_path):
+    def test_loads_22_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 16
+        assert registry.tool_count == 22
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -263,13 +294,13 @@ class TestToolRegistryAccess:
     def test_get_unknown_returns_none(self, registry):
         assert registry.get("nonexistent") is None
 
-    def test_list_all_returns_16(self, registry):
+    def test_list_all_returns_22(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 16
+        assert len(tools) == 22
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 16
+        assert registry.tool_count == 22
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -323,5 +354,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 16
+        assert registry.tool_count == 22
         assert registry.tool_names() == EXPECTED_TOOL_NAMES

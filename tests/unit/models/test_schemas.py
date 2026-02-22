@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 
 class TestAllSchemasExist:
-    """AC-4.6: All 14 tool input schemas must be importable."""
+    """AC-4.6: All 20 tool input schemas must be importable."""
 
     @pytest.mark.parametrize(
         "name",
@@ -51,12 +51,12 @@ class TestAllSchemasExist:
 
         assert hasattr(schemas, name), f"{name} not found in schemas module"
 
-    def test_exactly_14_tool_schemas(self):
-        """There should be exactly 14 tool input models."""
+    def test_exactly_20_tool_schemas(self):
+        """There should be exactly 20 tool input models."""
         from src.models import schemas
 
         tool_models = [n for n in dir(schemas) if n.endswith("Input") and not n.startswith("_")]
-        assert len(tool_models) == 16
+        assert len(tool_models) == 20
 
 
 # ═══════════════════════════════════════════════════════════════════════

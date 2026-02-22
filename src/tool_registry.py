@@ -17,6 +17,10 @@ from src.models.schemas import (
     A2ACancelTaskInput,
     A2AGetTaskInput,
     A2ASendMessageInput,
+    AMVEAnalysisInput,
+    AMVECommunicationInput,
+    AMVEEvaluateFitnessInput,
+    AMVEGenerateArchitectureLogInput,
     AnalyzeTaxonomyCoverageInput,
     BatchExtractMetadataInput,
     CodeAnalyzeInput,
@@ -53,6 +57,13 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "enhance_guideline": EnhanceGuidelineInput,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": AnalyzeTaxonomyCoverageInput,
+    # AMVE tools (AEI-7)
+    "amve_detect_patterns": AMVEAnalysisInput,
+    "amve_detect_boundaries": AMVEAnalysisInput,
+    "amve_detect_communication": AMVECommunicationInput,
+    "amve_build_call_graph": AMVEAnalysisInput,
+    "amve_evaluate_fitness": AMVEEvaluateFitnessInput,
+    "amve_generate_architecture_log": AMVEGenerateArchitectureLogInput,
 }
 
 

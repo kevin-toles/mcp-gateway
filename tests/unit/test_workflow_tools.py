@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from fastmcp import Context
 from pydantic import ValidationError
 
 from src.core.config import Settings
@@ -113,14 +112,14 @@ class TestToolRegistryWorkflow:
             tool = registry.get(tool_name)
             assert "workflow" in tool.tags, f"{tool_name} missing 'workflow' tag"
 
-    def test_registry_total_is_15(self):
+    def test_registry_total_is_22(self):
         from pathlib import Path
 
         from src.tool_registry import ToolRegistry
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 16
+        assert len(registry.list_all()) == 22
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -194,8 +193,8 @@ class TestWorkflowRouteTable:
             f"{tool_name}: expected timeout={expected['timeout']}, got {route.timeout}"
         )
 
-    def test_total_route_count_is_16(self, dispatcher):
-        assert len(dispatcher.routes) == 16
+    def test_total_route_count_is_22(self, dispatcher):
+        assert len(dispatcher.routes) == 22
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -774,34 +773,36 @@ class TestBatchExtractMetadataHandler:
     @pytest.fixture
     def co_success_result(self):
         """CO response for a successful single-book extraction."""
-        return _make_result({
-            "total_chapters": 5,
-            "unique_keywords": 42,
-            "unique_concepts": 18,
-            "total_code_blocks": 7,
-            "total_ascii_diagrams": 2,
-            "output_path": "/tmp/meta/book_metadata.json",
-            "chapter_results": [
-                {
-                    "chapter_number": 1,
-                    "title": "Introduction",
-                    "keywords_count": 10,
-                    "concepts_count": 4,
-                    "summary_length": 300,
-                    "code_blocks_count": 2,
-                    "status": "success",
-                },
-                {
-                    "chapter_number": 2,
-                    "title": "Basics",
-                    "keywords_count": 8,
-                    "concepts_count": 3,
-                    "summary_length": 250,
-                    "code_blocks_count": 1,
-                    "status": "success",
-                },
-            ],
-        })
+        return _make_result(
+            {
+                "total_chapters": 5,
+                "unique_keywords": 42,
+                "unique_concepts": 18,
+                "total_code_blocks": 7,
+                "total_ascii_diagrams": 2,
+                "output_path": "/tmp/meta/book_metadata.json",
+                "chapter_results": [
+                    {
+                        "chapter_number": 1,
+                        "title": "Introduction",
+                        "keywords_count": 10,
+                        "concepts_count": 4,
+                        "summary_length": 300,
+                        "code_blocks_count": 2,
+                        "status": "success",
+                    },
+                    {
+                        "chapter_number": 2,
+                        "title": "Basics",
+                        "keywords_count": 8,
+                        "concepts_count": 3,
+                        "summary_length": 250,
+                        "code_blocks_count": 1,
+                        "status": "success",
+                    },
+                ],
+            }
+        )
 
     # ── Discovery & dispatching ─────────────────────────────────────
 
@@ -876,7 +877,6 @@ class TestBatchExtractMetadataHandler:
     @pytest.mark.asyncio
     async def test_skip_existing_skips_processed_books(self, books_dir, co_success_result, sanitizer):
         """Books with existing metadata files are skipped."""
-        import os
 
         # Default output dir is sibling "metadata" dir
         meta_dir = books_dir.parent / "metadata"
@@ -1414,6 +1414,13 @@ EXPECTED_ALL_TOOL_NAMES = {
     "enhance_guideline",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage",
+    # AMVE tools (AEI-7)
+    "amve_detect_patterns",
+    "amve_detect_boundaries",
+    "amve_detect_communication",
+    "amve_build_call_graph",
+    "amve_evaluate_fitness",
+    "amve_generate_architecture_log",
 }
 
 
@@ -1436,12 +1443,12 @@ class TestToolsListWorkflow:
 
         return create_mcp_server(registry, mock_dispatcher, sanitizer)
 
-    async def test_returns_16_tools(self, mcp_server):
+    async def test_returns_22_tools(self, mcp_server):
         from fastmcp import Client
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 16
+        assert len(tools) == 22
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client

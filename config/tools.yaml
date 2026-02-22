@@ -86,3 +86,34 @@ tools:
     description: "Analyze taxonomy coverage against the knowledge base. Runs full INGEST→GENERATE→SEARCH→SCORE→REPORT pipeline. Requires code-orchestrator (:8083)."
     tier: gold
     tags: [workflow, taxonomy, analysis, coverage]
+
+  # ── AMVE Architecture Analysis (AEI-7) ────────────────────────────────
+  - name: amve_detect_patterns
+    description: "Detect architecture patterns in source code via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, patterns, analysis]
+
+  - name: amve_detect_boundaries
+    description: "Detect service boundaries in source code via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, boundaries, analysis]
+
+  - name: amve_detect_communication
+    description: "Detect event-driven and message bus patterns with scope routing via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, communication, events, messaging]
+
+  - name: amve_build_call_graph
+    description: "Build call graph from source code via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, call-graph, analysis]
+
+  - name: amve_evaluate_fitness
+    description: "Evaluate architecture fitness functions against a snapshot via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, fitness, evaluation]
+
+  - name: amve_generate_architecture_log
+    description: "Generate architecture log via batch scan with optional baseline comparison via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, batch-scan, baseline]

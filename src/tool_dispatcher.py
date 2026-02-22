@@ -81,6 +81,13 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "enhance_guideline": "ai-agents",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": "code-orchestrator",
+    # AMVE tools (AEI-7)
+    "amve_detect_patterns": "amve",
+    "amve_detect_boundaries": "amve",
+    "amve_detect_communication": "amve",
+    "amve_build_call_graph": "amve",
+    "amve_evaluate_fitness": "amve",
+    "amve_generate_architecture_log": "amve",
 }
 
 
@@ -127,11 +134,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.AI_AGENTS_URL,
             path="/a2a/v1/tasks",  # /{task_id}:cancel appended at dispatch time
         ),
-        # Workflow tools (WBS-WF6) — 300s timeout for long-running pipelines
+        # Workflow tools (WBS-WF6) — 900s timeout for large PDFs (compiler books ~800pg)
         "convert_pdf": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
             path="/api/v1/workflows/convert-pdf",
-            timeout=300.0,
+            timeout=900.0,
         ),
         "extract_book_metadata": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
@@ -163,6 +170,31 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.CODE_ORCHESTRATOR_URL,
             path="/api/v1/workflows/analyze-taxonomy-coverage",
             timeout=300.0,
+        ),
+        # AMVE tools (AEI-7)
+        "amve_detect_patterns": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/analysis/patterns",
+        ),
+        "amve_detect_boundaries": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/analysis/boundaries",
+        ),
+        "amve_detect_communication": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/analysis/communication",
+        ),
+        "amve_build_call_graph": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/analysis/call-graph",
+        ),
+        "amve_evaluate_fitness": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/fitness/evaluate",
+        ),
+        "amve_generate_architecture_log": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/architecture/batch-scan",
         ),
     }
 

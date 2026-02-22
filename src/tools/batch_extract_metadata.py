@@ -60,6 +60,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         output_dir: str | None = None,
         file_pattern: str = "*.json",
         skip_existing: bool = True,
+        enable_summary: bool = False,
         ctx: Context | None = None,
     ) -> dict:
         """Extract metadata from all books in a directory.
@@ -76,6 +77,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             output_dir: Directory for metadata output (defaults to sibling 'metadata' dir).
             file_pattern: Glob pattern for book files (default: *.json).
             skip_existing: Skip books that already have metadata output files.
+            enable_summary: Whether to generate LLM summaries (default: False for speed).
         """
         validated = BatchExtractMetadataInput(
             input_dir=input_dir,
@@ -83,6 +85,9 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             file_pattern=file_pattern,
             skip_existing=skip_existing,
         )
+
+        # Store enable_summary for use in dispatch loop
+        _enable_summary = enable_summary
 
         # Resolve output directory (mirrors original METADATA_EXTRACTION_CONFIG)
         out_dir = validated.output_dir
@@ -153,7 +158,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
                     "input_path": book_path,
                     "output_path": out_path,
                     "chapters": None,  # let CO auto-detect
-                    "options": None,
+                    "options": {"enable_summary": _enable_summary},
                 }
                 result = await dispatcher.dispatch(TOOL_NAME, payload)
                 body = sanitizer.sanitize(result.body)

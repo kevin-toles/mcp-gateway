@@ -67,8 +67,8 @@ class TestRouteTable:
         route = dispatcher.get_route(tool_name)
         assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
-    def test_total_route_count_is_16(self, dispatcher):
-        assert len(dispatcher.routes) == 16
+    def test_total_route_count_is_22(self, dispatcher):
+        assert len(dispatcher.routes) == 22
 
 
 class TestDispatchRouting:
