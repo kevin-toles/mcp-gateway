@@ -38,6 +38,8 @@ EXPECTED_TOOL_NAMES = {
     "amve_build_call_graph",
     "amve_evaluate_fitness",
     "amve_generate_architecture_log",
+    # Dead Code Detection (AEI-17)
+    "amve_detect_dead_code",
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan",
     "audit_code_metrics",
@@ -138,6 +140,10 @@ tools:
     description: "Generate architecture log"
     tier: gold
     tags: [amve, architecture, batch-scan, baseline]
+  - name: amve_detect_dead_code
+    description: "Detect dead code via AMVE"
+    tier: gold
+    tags: [amve, architecture, dead-code, unused-imports]
   - name: audit_security_scan
     description: "Scan source code for security vulnerabilities"
     tier: silver
@@ -214,7 +220,7 @@ class TestToolRegistryLoading:
 
     def test_loads_25_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 25
+        assert registry.tool_count == 26
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -312,11 +318,11 @@ class TestToolRegistryAccess:
 
     def test_list_all_returns_25(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 25
+        assert len(tools) == 26
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 25
+        assert registry.tool_count == 26
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -370,5 +376,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 25
+        assert registry.tool_count == 26
         assert registry.tool_names() == EXPECTED_TOOL_NAMES

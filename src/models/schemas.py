@@ -424,3 +424,21 @@ class AuditCorpusSearchInput(BaseModel):
     )
     top_k: int = Field(default=10, ge=1, le=100, description="Max results per collection")
     threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")
+
+
+# ── AMVE Dead Code Detection (AEI-17) ───────────────────────────────────────
+
+
+class AMVEDetectDeadCodeInput(BaseModel):
+    """Input for amve_detect_dead_code — detect dead code in a source tree."""
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="Path to source directory or file to analyse for dead code",
+    )
+    include_unused_imports: bool = Field(
+        default=True,
+        description="Whether to include unused-import analysis (tree-sitter)",
+    )

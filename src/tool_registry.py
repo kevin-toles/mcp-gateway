@@ -19,6 +19,7 @@ from src.models.schemas import (
     A2ASendMessageInput,
     AMVEAnalysisInput,
     AMVECommunicationInput,
+    AMVEDetectDeadCodeInput,
     AMVEEvaluateFitnessInput,
     AMVEGenerateArchitectureLogInput,
     AnalyzeTaxonomyCoverageInput,
@@ -67,6 +68,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "amve_build_call_graph": AMVEAnalysisInput,
     "amve_evaluate_fitness": AMVEEvaluateFitnessInput,
     "amve_generate_architecture_log": AMVEGenerateArchitectureLogInput,
+    # AEI-17: Dead code detection
+    "amve_detect_dead_code": AMVEDetectDeadCodeInput,
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan": AuditSecurityScanInput,
     "audit_code_metrics": AuditCodeMetricsInput,

@@ -24,6 +24,7 @@ from src.tools import (
     amve_build_call_graph,
     amve_detect_boundaries,
     amve_detect_communication,
+    amve_detect_dead_code,
     amve_detect_patterns,
     amve_evaluate_fitness,
     amve_generate_architecture_log,
@@ -73,6 +74,8 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "amve_build_call_graph": amve_build_call_graph.create_handler,
     "amve_evaluate_fitness": amve_evaluate_fitness.create_handler,
     "amve_generate_architecture_log": amve_generate_architecture_log.create_handler,
+    # AEI-17
+    "amve_detect_dead_code": amve_detect_dead_code.create_handler,
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan": audit_security_scan.create_handler,
     "audit_code_metrics": audit_code_metrics.create_handler,

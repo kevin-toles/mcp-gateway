@@ -56,7 +56,7 @@ class TestAllSchemasExist:
         from src.models import schemas
 
         tool_models = [n for n in dir(schemas) if n.endswith("Input") and not n.startswith("_")]
-        assert len(tool_models) == 23
+        assert len(tool_models) == 24
 
 
 # ═══════════════════════════════════════════════════════════════════════

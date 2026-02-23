@@ -119,7 +119,7 @@ class TestToolRegistryWorkflow:
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 25
+        assert len(registry.list_all()) == 26
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -194,7 +194,7 @@ class TestWorkflowRouteTable:
         )
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 25
+        assert len(dispatcher.routes) == 26
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -1421,6 +1421,8 @@ EXPECTED_ALL_TOOL_NAMES = {
     "amve_build_call_graph",
     "amve_evaluate_fitness",
     "amve_generate_architecture_log",
+    # Dead Code Detection (AEI-17)
+    "amve_detect_dead_code",
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan",
     "audit_code_metrics",
@@ -1452,7 +1454,7 @@ class TestToolsListWorkflow:
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 25
+        assert len(tools) == 26
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client

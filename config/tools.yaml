@@ -118,6 +118,12 @@ tools:
     tier: gold
     tags: [amve, architecture, batch-scan, baseline]
 
+  # AEI-17: Dead Code Detection
+  - name: amve_detect_dead_code
+    description: "Detect dead code (unused functions + unused imports) in a source tree via AMVE. Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, dead-code, unused-imports]
+
   # ── Audit Service Tools (WBS-AEI13) ─────────────────────────────────────
   - name: audit_security_scan
     description: "Scan source code for security vulnerabilities using regex, AST, and semantic detection. Requires audit-service (:8084)."
