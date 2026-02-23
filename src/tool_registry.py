@@ -25,6 +25,7 @@ from src.models.schemas import (
     AnalyzeTaxonomyCoverageInput,
     AuditCodeMetricsInput,
     AuditCorpusSearchInput,
+    AuditDependencyAssessInput,
     AuditSecurityScanInput,
     BatchExtractMetadataInput,
     CodeAnalyzeInput,
@@ -74,6 +75,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "audit_security_scan": AuditSecurityScanInput,
     "audit_code_metrics": AuditCodeMetricsInput,
     "audit_corpus_search": AuditCorpusSearchInput,
+    # AEI-18: Dependency assessment
+    "audit_dependency_assess": AuditDependencyAssessInput,
 }
 
 

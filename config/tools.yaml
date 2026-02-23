@@ -139,3 +139,14 @@ tools:
     description: "Search the code corpus and textbook chapters using Qdrant vector similarity. Requires audit-service (:8084)."
     tier: gold
     tags: [audit, search, rag]
+
+
+  - name: audit_dependency_assess
+    description: >
+      Analyse declared dependencies for health violations including DEP_DEAD,
+      DEP_HEAVY, DEP_PASSTHROUGH, DEP_LOW_RATIO, DEP_UNSTABLE, and
+      DEP_FACADE_CANDIDATE. Returns dependency_health_score in [0,100],
+      zone classification (healthy/tolerable/questionable/bloated), and
+      Martin metrics per package. Requires audit-service (:8084).
+    tier: bronze
+    tags: [audit, dependency, metrics]

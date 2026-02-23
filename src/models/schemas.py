@@ -442,3 +442,35 @@ class AMVEDetectDeadCodeInput(BaseModel):
         default=True,
         description="Whether to include unused-import analysis (tree-sitter)",
     )
+
+
+# -- Dependency Assessment (AEI-18) ----------------------------------------
+
+
+class AuditDependencyAssessInput(BaseModel):
+    """Input for audit_dependency_assess -- assess declared dependency health.
+
+    Scans the project at *source_path*, parses the manifest, and computes
+    Martin instability, import ratio, and dependency weight per package.
+    Returns a health score, zone classification, and violation list.
+    """
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="Absolute path to the Python source directory to scan for imports.",
+    )
+    manifest_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path to pyproject.toml or requirements.txt. If omitted the tool auto-detects from source_path."
+        ),
+    )
+    include_transitive: bool = Field(
+        default=True,
+        description=(
+            "Whether to include transitive dependency counting via pip show. "
+            "Set False to skip transitive BFS for faster scans."
+        ),
+    )

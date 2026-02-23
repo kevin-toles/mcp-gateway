@@ -94,6 +94,8 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "audit_security_scan": "audit-service",
     "audit_code_metrics": "audit-service",
     "audit_corpus_search": "audit-service",
+    # AEI-18: Dependency assessment
+    "audit_dependency_assess": "audit-service",
 }
 
 
@@ -219,6 +221,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "audit_corpus_search": DispatchRoute(
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/audit/corpus",
+        ),
+        # AEI-18: Dependency assessment
+        "audit_dependency_assess": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/dependency",
         ),
     }
 
