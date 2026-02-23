@@ -1,20 +1,19 @@
-"""E2E: amve_evaluate_fitness via MCP SSE — WBS-AEI8.
+"""E2E: amve_evaluate_fitness via MCP SSE — WBS-AEI8 / WBS-AEIBF1.
 
-AC-AEI8.4: amve_evaluate_fitness returns per-function scores and overall
-            fitness score for a real architecture snapshot.
+AC-AEI8.4:   amve_evaluate_fitness returns per-function scores and overall
+             fitness score for a real architecture snapshot.
+AC-AEIBF1.3: POST /v1/fitness/evaluate builds EvaluateFitnessRequest from
+             snapshot_id (source path) + FitnessFunctionRegistry.
+AC-AEIBF1.4: All 5 previously-skipped tests pass against a real AMVE instance.
 
 Calls AMVE :8088/v1/fitness/evaluate via the full MCP stack:
   FastMCP Client → mcp-gateway → ToolDispatcher → AMVE :8088/v1/fitness/evaluate
 
-The fitness endpoint returns (when working):
+The fitness endpoint returns:
   {"overall_passed": bool, "overall_score": float, "results": [{function_id,
    function_name, passed, score, details}]}
 
-Known limitation: AMVE fitness_routes.py passes snapshot_id (str) to a use
-case that expects EvaluateFitnessRequest (dataclass).  Until that AMVE bug
-is fixed, the endpoint returns HTTP 500 and the gateway returns {}.
-
-Built-in fitness functions:
+Built-in fitness functions (from FitnessFunctionRegistry):
   FF-001: Circular Dependencies (structural)
   FF-002: Component Coupling (relationship)
   FF-003: Code Similarity (semantic)
@@ -70,11 +69,9 @@ class TestAMVEEvaluateFitnessE2E:
                 },
             )
         body = _extract_body(result)
-        if not _is_valid_fitness_response(body):
-            pytest.skip(
-                "AMVE fitness endpoint returned error/empty (known AMVE bug: "
-                "fitness_routes.py passes str instead of EvaluateFitnessRequest)"
-            )
+        assert _is_valid_fitness_response(body), (
+            f"Expected valid fitness response with overall_passed/overall_score/results, got: {body!r}"
+        )
         assert body["overall_passed"] is not None
         assert body["overall_score"] is not None
         assert isinstance(body["results"], list)
@@ -92,8 +89,7 @@ class TestAMVEEvaluateFitnessE2E:
                 },
             )
         body = _extract_body(result)
-        if not _is_valid_fitness_response(body):
-            pytest.skip("AMVE fitness endpoint returned error (known AMVE bug)")
+        assert _is_valid_fitness_response(body), f"Expected valid fitness response, got: {body!r}"
         score = body["overall_score"]
         assert 0.0 <= score <= 1.0, f"overall_score {score} out of range [0.0, 1.0]"
 
@@ -110,8 +106,7 @@ class TestAMVEEvaluateFitnessE2E:
                 },
             )
         body = _extract_body(result)
-        if not _is_valid_fitness_response(body):
-            pytest.skip("AMVE fitness endpoint returned error (known AMVE bug)")
+        assert _is_valid_fitness_response(body), f"Expected valid fitness response, got: {body!r}"
         results = body["results"]
         assert len(results) >= 1, "Expected at least 1 fitness function result"
         required_keys = {"function_id", "passed", "score", "details"}
@@ -133,10 +128,13 @@ class TestAMVEEvaluateFitnessE2E:
                 },
             )
         body = _extract_body(result)
-        if not _is_valid_fitness_response(body):
-            pytest.skip("AMVE fitness endpoint returned error (known AMVE bug)")
+        assert _is_valid_fitness_response(body), f"Expected valid fitness response, got: {body!r}"
         result_ids = {r["function_id"] for r in body["results"]}
         assert len(result_ids) >= 1, "Expected at least 1 result"
+        # All returned ids must be from the requested set
+        assert result_ids <= {"FF-001", "FF-002"}, (
+            f"Unexpected function ids returned: {result_ids - {'FF-001', 'FF-002'}}"
+        )
 
     async def test_overall_passed_is_boolean(self, mcp_server):
         """overall_passed must be a boolean."""
@@ -151,8 +149,7 @@ class TestAMVEEvaluateFitnessE2E:
                 },
             )
         body = _extract_body(result)
-        if not _is_valid_fitness_response(body):
-            pytest.skip("AMVE fitness endpoint returned error (known AMVE bug)")
+        assert _is_valid_fitness_response(body), f"Expected valid fitness response, got: {body!r}"
         assert isinstance(body["overall_passed"], bool), (
             f"overall_passed should be bool, got {type(body['overall_passed'])}"
         )
