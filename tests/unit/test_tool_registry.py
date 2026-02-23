@@ -38,6 +38,10 @@ EXPECTED_TOOL_NAMES = {
     "amve_build_call_graph",
     "amve_evaluate_fitness",
     "amve_generate_architecture_log",
+    # Audit Service tools (WBS-AEI13)
+    "audit_security_scan",
+    "audit_code_metrics",
+    "audit_corpus_search",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -134,6 +138,18 @@ tools:
     description: "Generate architecture log"
     tier: gold
     tags: [amve, architecture, batch-scan, baseline]
+  - name: audit_security_scan
+    description: "Scan source code for security vulnerabilities"
+    tier: silver
+    tags: [audit, security, code]
+  - name: audit_code_metrics
+    description: "Compute pillar scores for source code"
+    tier: silver
+    tags: [audit, metrics, code]
+  - name: audit_corpus_search
+    description: "Search code corpus via Qdrant"
+    tier: gold
+    tags: [audit, search, rag]
 """
 
 
@@ -196,9 +212,9 @@ class TestToolRegistryLoading:
         registry = ToolRegistry(yaml_path)
         assert registry.tool_count > 0
 
-    def test_loads_22_tools(self, yaml_path):
+    def test_loads_25_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 22
+        assert registry.tool_count == 25
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -294,13 +310,13 @@ class TestToolRegistryAccess:
     def test_get_unknown_returns_none(self, registry):
         assert registry.get("nonexistent") is None
 
-    def test_list_all_returns_22(self, registry):
+    def test_list_all_returns_25(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 22
+        assert len(tools) == 25
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 22
+        assert registry.tool_count == 25
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -354,5 +370,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 22
+        assert registry.tool_count == 25
         assert registry.tool_names() == EXPECTED_TOOL_NAMES

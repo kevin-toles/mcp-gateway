@@ -117,3 +117,19 @@ tools:
     description: "Generate architecture log via batch scan with optional baseline comparison via AMVE. Requires AMVE service (:8088)."
     tier: gold
     tags: [amve, architecture, batch-scan, baseline]
+
+  # ── Audit Service Tools (WBS-AEI13) ─────────────────────────────────────
+  - name: audit_security_scan
+    description: "Scan source code for security vulnerabilities using regex, AST, and semantic detection. Requires audit-service (:8084)."
+    tier: silver
+    tags: [audit, security, code]
+
+  - name: audit_code_metrics
+    description: "Compute structural, architectural, and eloquence pillar scores for source code. Requires audit-service (:8084)."
+    tier: silver
+    tags: [audit, metrics, code]
+
+  - name: audit_corpus_search
+    description: "Search the code corpus and textbook chapters using Qdrant vector similarity. Requires audit-service (:8084)."
+    tier: gold
+    tags: [audit, search, rag]

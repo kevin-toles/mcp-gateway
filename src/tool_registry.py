@@ -22,6 +22,9 @@ from src.models.schemas import (
     AMVEEvaluateFitnessInput,
     AMVEGenerateArchitectureLogInput,
     AnalyzeTaxonomyCoverageInput,
+    AuditCodeMetricsInput,
+    AuditCorpusSearchInput,
+    AuditSecurityScanInput,
     BatchExtractMetadataInput,
     CodeAnalyzeInput,
     CodePatternAuditInput,
@@ -64,6 +67,10 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "amve_build_call_graph": AMVEAnalysisInput,
     "amve_evaluate_fitness": AMVEEvaluateFitnessInput,
     "amve_generate_architecture_log": AMVEGenerateArchitectureLogInput,
+    # Audit Service tools (WBS-AEI13)
+    "audit_security_scan": AuditSecurityScanInput,
+    "audit_code_metrics": AuditCodeMetricsInput,
+    "audit_corpus_search": AuditCorpusSearchInput,
 }
 
 

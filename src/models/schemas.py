@@ -382,3 +382,45 @@ class AMVEGenerateArchitectureLogInput(BaseModel):
         default=None,
         description="Optional baseline snapshot for delta comparison",
     )
+
+
+# ── Audit Service schemas (WBS-AEI13) ──────────────────────────────────────
+
+
+class AuditSecurityScanInput(BaseModel):
+    """Input for audit_security_scan — scan source code for security vulnerabilities."""
+
+    code: str = Field(..., description="Source code to scan")
+    language: str = Field(default="python", description="Programming language")
+    mode: str = Field(default="quick", description="Scan mode: quick or full")
+    domains: list[str] | None = Field(
+        default=None,
+        description="Optional security domains to scan (e.g. injection, secrets)",
+    )
+    severity_threshold: str = Field(
+        default="low",
+        description="Minimum severity to report: low, medium, high, critical",
+    )
+
+
+class AuditCodeMetricsInput(BaseModel):
+    """Input for audit_code_metrics — compute per-pillar code metrics."""
+
+    code: str = Field(..., description="Source code to analyse")
+    language: str = Field(default="python", description="Programming language")
+    pillars: list[str] = Field(
+        default_factory=lambda: ["structural", "architectural", "eloquence"],
+        description="Pillars to compute: structural, architectural, eloquence",
+    )
+
+
+class AuditCorpusSearchInput(BaseModel):
+    """Input for audit_corpus_search — search code corpus via Qdrant."""
+
+    query: str = Field(..., description="Search query text")
+    collections: list[str] = Field(
+        default_factory=lambda: ["code_chunks", "chapters"],
+        description="Qdrant collections to search",
+    )
+    top_k: int = Field(default=10, ge=1, le=100, description="Max results per collection")
+    threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")

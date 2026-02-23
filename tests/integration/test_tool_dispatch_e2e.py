@@ -229,7 +229,7 @@ class TestExtractBookMetadataE2E:
         result = await dispatcher.dispatch(
             "extract_book_metadata",
             {
-                "input_path": "/tmp/nonexistent_test_book.json",
+                "input_path": "/tmp/nonexistent_test_book.json"  # noqa: S108,
             },
         )
         # 422 expected for non-existent file — validates dispatch + endpoint reachability
@@ -247,7 +247,7 @@ class TestGenerateTaxonomyE2E:
         result = await dispatcher.dispatch(
             "generate_taxonomy",
             {
-                "tier_books": {"test": ["/tmp/nonexistent.json"]},
+                "tier_books": {"test": ["/tmp/nonexistent.json"]}  # noqa: S108,
             },
         )
         assert 100 <= result.status_code < 600, f"Invalid HTTP status: {result.status_code}"
@@ -264,7 +264,7 @@ class TestConvertPDFE2E:
         result = await dispatcher.dispatch(
             "convert_pdf",
             {
-                "input_path": "/tmp/nonexistent_test.pdf",
+                "input_path": "/tmp/nonexistent_test.pdf"  # noqa: S108,
             },
         )
         # 422 expected for non-existent file
@@ -282,7 +282,7 @@ class TestEnrichBookMetadataE2E:
         result = await dispatcher.dispatch(
             "enrich_book_metadata",
             {
-                "input_path": "/tmp/nonexistent_metadata.json",
+                "input_path": "/tmp/nonexistent_metadata.json"  # noqa: S108,
             },
         )
         # 422 expected for non-existent file
@@ -300,8 +300,8 @@ class TestEnhanceGuidelineE2E:
         result = await dispatcher.dispatch(
             "enhance_guideline",
             {
-                "book_path": "/tmp/nonexistent_book.json",
-                "aggregate_path": "/tmp/nonexistent_agg.json",
+                "book_path": "/tmp/nonexistent_book.json",  # noqa: S108
+                "aggregate_path": "/tmp/nonexistent_agg.json",  # noqa: S108
             },
         )
         # 422 expected for non-existent files

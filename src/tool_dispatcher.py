@@ -88,6 +88,10 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "amve_build_call_graph": "amve",
     "amve_evaluate_fitness": "amve",
     "amve_generate_architecture_log": "amve",
+    # Audit Service (WBS-AEI13)
+    "audit_security_scan": "audit-service",
+    "audit_code_metrics": "audit-service",
+    "audit_corpus_search": "audit-service",
 }
 
 
@@ -195,6 +199,19 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "amve_generate_architecture_log": DispatchRoute(
             base_url=settings.AMVE_SERVICE_URL,
             path="/v1/architecture/batch-scan",
+        ),
+        # Audit Service (WBS-AEI13)
+        "audit_security_scan": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/security",
+        ),
+        "audit_code_metrics": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/metrics",
+        ),
+        "audit_corpus_search": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/corpus",
         ),
     }
 

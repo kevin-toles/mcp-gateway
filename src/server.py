@@ -28,6 +28,9 @@ from src.tools import (
     amve_evaluate_fitness,
     amve_generate_architecture_log,
     analyze_taxonomy_coverage,
+    audit_code_metrics,
+    audit_corpus_search,
+    audit_security_scan,
     batch_extract_metadata,
     code_analyze,
     code_pattern_audit,
@@ -70,6 +73,10 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "amve_build_call_graph": amve_build_call_graph.create_handler,
     "amve_evaluate_fitness": amve_evaluate_fitness.create_handler,
     "amve_generate_architecture_log": amve_generate_architecture_log.create_handler,
+    # Audit Service tools (WBS-AEI13)
+    "audit_security_scan": audit_security_scan.create_handler,
+    "audit_code_metrics": audit_code_metrics.create_handler,
+    "audit_corpus_search": audit_corpus_search.create_handler,
 }
 
 

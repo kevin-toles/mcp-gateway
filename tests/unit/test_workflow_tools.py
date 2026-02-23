@@ -112,14 +112,14 @@ class TestToolRegistryWorkflow:
             tool = registry.get(tool_name)
             assert "workflow" in tool.tags, f"{tool_name} missing 'workflow' tag"
 
-    def test_registry_total_is_22(self):
+    def test_registry_total_is_25(self):
         from pathlib import Path
 
         from src.tool_registry import ToolRegistry
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 22
+        assert len(registry.list_all()) == 25
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -193,8 +193,8 @@ class TestWorkflowRouteTable:
             f"{tool_name}: expected timeout={expected['timeout']}, got {route.timeout}"
         )
 
-    def test_total_route_count_is_22(self, dispatcher):
-        assert len(dispatcher.routes) == 22
+    def test_total_route_count_is_25(self, dispatcher):
+        assert len(dispatcher.routes) == 25
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -1421,6 +1421,10 @@ EXPECTED_ALL_TOOL_NAMES = {
     "amve_build_call_graph",
     "amve_evaluate_fitness",
     "amve_generate_architecture_log",
+    # Audit Service tools (WBS-AEI13)
+    "audit_security_scan",
+    "audit_code_metrics",
+    "audit_corpus_search",
 }
 
 
@@ -1443,12 +1447,12 @@ class TestToolsListWorkflow:
 
         return create_mcp_server(registry, mock_dispatcher, sanitizer)
 
-    async def test_returns_22_tools(self, mcp_server):
+    async def test_returns_25_tools(self, mcp_server):
         from fastmcp import Client
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 22
+        assert len(tools) == 25
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client
