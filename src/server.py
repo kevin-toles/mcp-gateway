@@ -31,6 +31,8 @@ from src.tools import (
     analyze_taxonomy_coverage,
     audit_code_metrics,
     audit_corpus_search,
+    audit_dependency_assess,
+    audit_resolve_lookup,
     audit_security_scan,
     batch_extract_metadata,
     code_analyze,
@@ -80,6 +82,10 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "audit_security_scan": audit_security_scan.create_handler,
     "audit_code_metrics": audit_code_metrics.create_handler,
     "audit_corpus_search": audit_corpus_search.create_handler,
+    # AEI-18: Dependency assessment
+    "audit_dependency_assess": audit_dependency_assess.create_handler,
+    # AEI-20: Resolution lookup
+    "audit_resolve_lookup": audit_resolve_lookup.create_handler,
 }
 
 

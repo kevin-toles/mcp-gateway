@@ -26,6 +26,7 @@ from src.models.schemas import (
     AuditCodeMetricsInput,
     AuditCorpusSearchInput,
     AuditDependencyAssessInput,
+    AuditResolveLookupInput,
     AuditSecurityScanInput,
     BatchExtractMetadataInput,
     CodeAnalyzeInput,
@@ -77,6 +78,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "audit_corpus_search": AuditCorpusSearchInput,
     # AEI-18: Dependency assessment
     "audit_dependency_assess": AuditDependencyAssessInput,
+    # AEI-20: Resolution lookup
+    "audit_resolve_lookup": AuditResolveLookupInput,
 }
 
 

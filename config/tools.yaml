@@ -150,3 +150,16 @@ tools:
       Martin metrics per package. Requires audit-service (:8084).
     tier: bronze
     tags: [audit, dependency, metrics]
+
+  - name: audit_resolve_lookup
+    description: >
+      Look up the full resolution evidence chain for a violation type.
+      Searches the resolution knowledge base (Qdrant :6335) and returns:
+      the matched violation type, the governing principle, the resolution
+      pattern (technique + effort estimate), documentation references
+      (source book + chapter), and optional code examples from the corpus.
+      Works across all 5 pillars: structural, architectural, eloquence,
+      security, dependency. Requires audit-service (:8084) and
+      qdrant-resolution (:6335).
+    tier: gold
+    tags: [audit, resolve, compliance, evidence-chain]

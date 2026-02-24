@@ -46,6 +46,8 @@ EXPECTED_TOOL_NAMES = {
     "audit_corpus_search",
     # AEI-18: Dependency assessment
     "audit_dependency_assess",
+    # AEI-20: Resolution lookup
+    "audit_resolve_lookup",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -162,6 +164,10 @@ tools:
     description: "Analyse declared dependencies for health violations"
     tier: bronze
     tags: [audit, dependency, metrics]
+  - name: audit_resolve_lookup
+    description: "Look up resolution evidence chain for a violation type"
+    tier: gold
+    tags: [audit, resolve, compliance, evidence-chain]
 """
 
 
@@ -226,7 +232,7 @@ class TestToolRegistryLoading:
 
     def test_loads_25_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 27
+        assert registry.tool_count == 28
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -324,11 +330,11 @@ class TestToolRegistryAccess:
 
     def test_list_all_returns_25(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 27
+        assert len(tools) == 28
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 27
+        assert registry.tool_count == 28
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -382,5 +388,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 27
+        assert registry.tool_count == 28
         assert registry.tool_names() == EXPECTED_TOOL_NAMES

@@ -474,3 +474,34 @@ class AuditDependencyAssessInput(BaseModel):
             "Set False to skip transitive BFS for faster scans."
         ),
     )
+
+
+# -- Resolution Lookup (AEI-20) ----------------------------------------
+
+
+class AuditResolveLookupInput(BaseModel):
+    """Input for audit_resolve_lookup — look up resolution evidence chain.
+
+    Searches the resolution knowledge base (Qdrant :6335) to return the full
+    evidence chain: violation → principle → resolution pattern → code examples.
+    """
+
+    violation_type: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "Violation type identifier or description to look up. "
+            "E.g. 'sql_injection', 'DEP_LOW_RATIO', 'circular_dependency'."
+        ),
+    )
+    pillar: str | None = Field(
+        default=None,
+        description=("Optional pillar hint: structural, architectural, eloquence, security, or dependency."),
+    )
+    include_code_examples: bool = Field(
+        default=True,
+        description=(
+            "When True (default), fetches matching code examples from the code_chunks corpus via semantic-search."
+        ),
+    )

@@ -119,19 +119,14 @@ class TestToolRegistryWorkflow:
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 26
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# AC-WF6.3: Dispatch routes — 5 workflow tools with timeout=300s
-# ═══════════════════════════════════════════════════════════════════════
+        assert len(registry.list_all()) == 28
 
 
 EXPECTED_WORKFLOW_ROUTES = {
     "convert_pdf": {
         "base_url": "http://localhost:8083",
         "path": "/api/v1/workflows/convert-pdf",
-        "timeout": 300.0,
+        "timeout": 900.0,
     },
     "extract_book_metadata": {
         "base_url": "http://localhost:8083",
@@ -194,7 +189,7 @@ class TestWorkflowRouteTable:
         )
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 26
+        assert len(dispatcher.routes) == 28
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -1427,6 +1422,10 @@ EXPECTED_ALL_TOOL_NAMES = {
     "audit_security_scan",
     "audit_code_metrics",
     "audit_corpus_search",
+    # AEI-18: Dependency assessment
+    "audit_dependency_assess",
+    # AEI-20: Resolution lookup
+    "audit_resolve_lookup",
 }
 
 
@@ -1454,7 +1453,7 @@ class TestToolsListWorkflow:
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 26
+        assert len(tools) == 28
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client
