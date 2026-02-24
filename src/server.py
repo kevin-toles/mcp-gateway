@@ -33,6 +33,8 @@ from src.tools import (
     audit_corpus_search,
     audit_dependency_assess,
     audit_resolve_lookup,
+    audit_search_cves,
+    audit_search_exploits,
     audit_security_scan,
     batch_extract_metadata,
     code_analyze,
@@ -86,6 +88,9 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "audit_dependency_assess": audit_dependency_assess.create_handler,
     # AEI-20: Resolution lookup
     "audit_resolve_lookup": audit_resolve_lookup.create_handler,
+    # AEI-23: VRE quarantine tools
+    "audit_search_exploits": audit_search_exploits.create_handler,
+    "audit_search_cves": audit_search_cves.create_handler,
 }
 
 

@@ -163,3 +163,28 @@ tools:
       qdrant-resolution (:6335).
     tier: gold
     tags: [audit, resolve, compliance, evidence-chain]
+
+
+  # AEI-23: VRE Quarantine Infrastructure
+  - name: audit_search_exploits
+    description: >
+      Search the vulnerability quarantine knowledge base (Qdrant :6336) for
+      exploit vectors matching a natural-language query. Uses CodeBERT
+      (768-dim) embeddings via code-orchestrator (:8083) to embed the query
+      and performs vector similarity search on the vuln_exploits collection.
+      Optional CWE ID filter restricts results to specific vulnerability
+      classes. Returns ranked ExploitMatch objects with CVE ID, CWE IDs,
+      CVSS score, severity, and exploit code. Requires audit-service (:8084)
+      and qdrant-quarantine (:6336).
+    tier: silver
+    tags: [audit, security, exploit, cve, vre]
+
+  - name: audit_search_cves
+    description: >
+      Query the CVE structured database (PostgreSQL :5432) for CVE records
+      filtered by CWE identifier, severity level, and/or affected ecosystem.
+      Returns structured CVERecord objects with CVSS scores, publication date,
+      and reference URLs. All filters are optional — omitting them returns up
+      to 'limit' records. Requires audit-service (:8084) and PostgreSQL (:5432).
+    tier: silver
+    tags: [audit, security, cve, cwe, vulnerability]

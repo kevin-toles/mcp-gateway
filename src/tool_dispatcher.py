@@ -98,6 +98,9 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "audit_dependency_assess": "audit-service",
     # AEI-20: Resolution lookup
     "audit_resolve_lookup": "audit-service",
+    # AEI-23: VRE quarantine tools
+    "audit_search_exploits": "audit-service",
+    "audit_search_cves": "audit-service",
 }
 
 
@@ -233,6 +236,15 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "audit_resolve_lookup": DispatchRoute(
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/audit/resolve",
+        ),
+        # AEI-23: VRE quarantine tools
+        "audit_search_exploits": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/exploits",
+        ),
+        "audit_search_cves": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/cves",
         ),
     }
 

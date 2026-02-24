@@ -52,11 +52,11 @@ class TestAllSchemasExist:
         assert hasattr(schemas, name), f"{name} not found in schemas module"
 
     def test_exactly_23_tool_schemas(self):
-        """There should be exactly 26 tool input models (25 baseline + 1 AEI-20 AuditResolveLookupInput)."""
+        """There should be exactly 28 tool input models (25 baseline + AEI-20 + AEI-23 ×2)."""
         from src.models import schemas
 
         tool_models = [n for n in dir(schemas) if n.endswith("Input") and not n.startswith("_")]
-        assert len(tool_models) == 26
+        assert len(tool_models) == 28
 
 
 # ═══════════════════════════════════════════════════════════════════════

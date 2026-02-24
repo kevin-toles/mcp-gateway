@@ -48,6 +48,9 @@ EXPECTED_TOOL_NAMES = {
     "audit_dependency_assess",
     # AEI-20: Resolution lookup
     "audit_resolve_lookup",
+    # AEI-23: VRE quarantine tools
+    "audit_search_exploits",
+    "audit_search_cves",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -168,6 +171,14 @@ tools:
     description: "Look up resolution evidence chain for a violation type"
     tier: gold
     tags: [audit, resolve, compliance, evidence-chain]
+  - name: audit_search_exploits
+    description: "Search VRE exploit repository for CVEs matching a description"
+    tier: gold
+    tags: [audit, security, vre, exploits]
+  - name: audit_search_cves
+    description: "Look up structured CVE records from the VRE quarantine store"
+    tier: gold
+    tags: [audit, security, vre, cve]
 """
 
 
@@ -232,7 +243,7 @@ class TestToolRegistryLoading:
 
     def test_loads_25_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 28
+        assert registry.tool_count == 30
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -330,11 +341,11 @@ class TestToolRegistryAccess:
 
     def test_list_all_returns_25(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 28
+        assert len(tools) == 30
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 28
+        assert registry.tool_count == 30
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -388,5 +399,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 28
+        assert registry.tool_count == 30
         assert registry.tool_names() == EXPECTED_TOOL_NAMES

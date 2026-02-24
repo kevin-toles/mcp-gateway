@@ -351,8 +351,8 @@ class TestMCPA2ATemporalChain:
         assert settings.AI_AGENTS_URL == "http://localhost:8082"
 
     def test_dispatcher_has_25_routes(self, dispatcher):
-        """Dispatcher maintains 28 total routes (including AEI-18 dependency + AEI-20 resolve)."""
-        assert len(dispatcher.routes) == 28
+        """Dispatcher maintains 30 total routes (including AEI-18 dependency + AEI-20 resolve + AEI-23 VRE)."""
+        assert len(dispatcher.routes) == 30
 
     def test_a2a_tools_registered_in_yaml(self):
         """All 3 A2A tools are in the tool registry YAML."""

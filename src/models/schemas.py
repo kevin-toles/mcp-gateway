@@ -505,3 +505,68 @@ class AuditResolveLookupInput(BaseModel):
             "When True (default), fetches matching code examples from the code_chunks corpus via semantic-search."
         ),
     )
+
+
+# -- VRE Quarantine Tools (AEI-23) ----------------------------------------
+
+
+class AuditSearchExploitsInput(BaseModel):
+    """Input for audit_search_exploits — search quarantine Qdrant for exploit vectors.
+
+    Searches the vuln_exploits collection on qdrant-quarantine (:6336) using
+    CodeBERT vector embeddings. Returns ranked exploit matches with CVE
+    cross-references.
+    """
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description=(
+            "Natural-language description of the vulnerability pattern to search "
+            "for (e.g. 'sql injection unsanitised user input')."
+        ),
+    )
+    cwe_ids: list[str] | None = Field(
+        default=None,
+        description=("Optional list of CWE IDs to restrict results (e.g. ['CWE-89', 'CWE-79'])."),
+    )
+    top_k: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of exploit matches to return.",
+    )
+    min_similarity: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum cosine similarity score (0-1) for returned matches.",
+    )
+
+
+class AuditSearchCVEsInput(BaseModel):
+    """Input for audit_search_cves — query PostgreSQL for CVE records.
+
+    Filters the vuln_cve_records table by CWE ID, severity, and/or ecosystem.
+    Returns structured CVE records with CVSS scores and references.
+    """
+
+    cwe_id: str | None = Field(
+        default=None,
+        description="Filter by CWE identifier (e.g. 'CWE-89'). Optional.",
+    )
+    severity: str | None = Field(
+        default=None,
+        description=("Filter by severity level ('critical', 'high', 'medium', 'low'). Optional."),
+    )
+    ecosystem: str | None = Field(
+        default=None,
+        description=("Filter by affected ecosystem (e.g. 'python', 'npm', 'java'). Optional."),
+    )
+    limit: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        description="Maximum number of CVE records to return (default 50).",
+    )
