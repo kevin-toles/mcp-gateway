@@ -26,6 +26,7 @@ from src.models.schemas import (
     AuditCodeMetricsInput,
     AuditCorpusSearchInput,
     AuditDependencyAssessInput,
+    AuditQualityScanInput,
     AuditResolveLookupInput,
     AuditSearchCVEsInput,
     AuditSearchExploitsInput,
@@ -85,6 +86,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     # AEI-23: VRE quarantine tools
     "audit_search_exploits": AuditSearchExploitsInput,
     "audit_search_cves": AuditSearchCVEsInput,
+    # Phase 7: Quality audit (pattern compliance + anti-patterns)
+    "audit_quality_scan": AuditQualityScanInput,
 }
 
 

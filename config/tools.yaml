@@ -188,3 +188,15 @@ tools:
       to 'limit' records. Requires audit-service (:8084) and PostgreSQL (:5432).
     tier: silver
     tags: [audit, security, cve, cwe, vulnerability]
+
+  - name: audit_quality_scan
+    description: >
+      Audit source code for coding pattern violations and structural
+      anti-patterns. Runs CP001-CP011 (function design, naming, idioms),
+      SA001-SA008 (test smells, dead abstractions, framework leakage), and
+      SEC001-SEC008 (wildcard imports, unsafe yaml, disabled SSL, etc.) plus
+      structural anti-pattern detection (Blob/God Class, Lava Flow, Boat Anchor,
+      Redundant Wrapper, Premature Abstraction) using stdlib AST — no external
+      dependencies required. Requires audit-service (:8084).
+    tier: bronze
+    tags: [audit, quality, patterns, antipatterns, static-analysis]

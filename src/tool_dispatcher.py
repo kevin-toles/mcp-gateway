@@ -246,6 +246,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/audit/cves",
         ),
+        # Phase 7: Quality audit (pattern compliance + anti-patterns)
+        "audit_quality_scan": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/quality",
+        ),
     }
 
 
@@ -529,12 +534,12 @@ class ToolDispatcher:
                 await cb.on_success()
                 async for line in response.aiter_lines():
                     yield line
-        except (httpx.ConnectError, httpx.ConnectTimeout):
+        except (httpx.ConnectError, httpx.ConnectTimeout) as err:
             await cb.on_failure()
-            raise BackendUnavailableError(service_name, "Connection failed")
-        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+            raise BackendUnavailableError(service_name, "Connection failed") from err
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as err:
             await cb.on_failure()
-            raise ToolTimeoutError(tool_name, route.timeout or 0.0)
+            raise ToolTimeoutError(tool_name, route.timeout or 0.0) from err
 
     async def close(self) -> None:
         """Close all pooled httpx clients."""

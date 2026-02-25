@@ -32,6 +32,7 @@ from src.tools import (
     audit_code_metrics,
     audit_corpus_search,
     audit_dependency_assess,
+    audit_quality_scan,
     audit_resolve_lookup,
     audit_search_cves,
     audit_search_exploits,
@@ -91,6 +92,7 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     # AEI-23: VRE quarantine tools
     "audit_search_exploits": audit_search_exploits.create_handler,
     "audit_search_cves": audit_search_cves.create_handler,
+    "audit_quality_scan": audit_quality_scan.create_handler,
 }
 
 

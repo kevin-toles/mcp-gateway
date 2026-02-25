@@ -570,3 +570,37 @@ class AuditSearchCVEsInput(BaseModel):
         le=500,
         description="Maximum number of CVE records to return (default 50).",
     )
+
+
+# -- Quality Audit (Phase 7) -----------------------------------------------
+
+
+class AuditQualityScanInput(BaseModel):
+    """Input for audit_quality_scan — pattern compliance and anti-pattern detection.
+
+    Runs CP001-CP011 (coding patterns), SA001-SA008 (static analysis),
+    SEC001-SEC008 (security rules), and structural anti-pattern detection
+    (Blob, Lava Flow, Boat Anchor, Redundant Wrapper, Premature Abstraction).
+    """
+
+    code: str = Field(..., description="Source code to audit")
+    language: str = Field(
+        default="python",
+        description="Language hint (currently Python AST only)",
+    )
+    rule_categories: list[str] | None = Field(
+        default=None,
+        description=(
+            "Restrict to specific rule categories: function_design, naming, "
+            "idiom, structure, test_quality, api_design, architecture, security. "
+            "Null means all categories."
+        ),
+    )
+    severity_threshold: str = Field(
+        default="info",
+        description="Minimum severity to include: info | warning | error",
+    )
+    include_antipatterns: bool = Field(
+        default=True,
+        description="Run structural anti-pattern detector (Blob, Lava Flow, etc.)",
+    )
