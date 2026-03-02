@@ -31,6 +31,7 @@ from src.models.schemas import (
     AuditSearchCVEsInput,
     AuditSearchExploitsInput,
     AuditSecurityScanInput,
+    BatchEnrichMetadataInput,
     BatchExtractMetadataInput,
     CodeAnalyzeInput,
     CodePatternAuditInput,
@@ -63,6 +64,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "batch_extract_metadata": BatchExtractMetadataInput,
     "generate_taxonomy": GenerateTaxonomyInput,
     "enrich_book_metadata": EnrichBookMetadataInput,
+    "batch_enrich_metadata": BatchEnrichMetadataInput,
     "enhance_guideline": EnhanceGuidelineInput,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": AnalyzeTaxonomyCoverageInput,

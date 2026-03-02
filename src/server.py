@@ -37,6 +37,7 @@ from src.tools import (
     audit_search_cves,
     audit_search_exploits,
     audit_security_scan,
+    batch_enrich_metadata,
     batch_extract_metadata,
     code_analyze,
     code_pattern_audit,
@@ -69,6 +70,7 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "batch_extract_metadata": batch_extract_metadata.create_handler,
     "generate_taxonomy": generate_taxonomy.create_handler,
     "enrich_book_metadata": enrich_book_metadata.create_handler,
+    "batch_enrich_metadata": batch_enrich_metadata.create_handler,
     "enhance_guideline": enhance_guideline.create_handler,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": analyze_taxonomy_coverage.create_handler,

@@ -168,14 +168,21 @@ class TestAuditSearchCVEsInputSchema:
 
         assert "limit" in AuditSearchCVEsInput.model_fields
 
-    def test_all_fields_default_to_none_or_50(self):
+    def test_limit_defaults_to_50(self):
+        """limit field defaults to 50; all-None filter check moved to test_audit_vre_schemas.py (PDW3.7)."""
         from src.models.schemas import AuditSearchCVEsInput
 
-        obj = AuditSearchCVEsInput()
-        assert obj.cwe_id is None
+        # Need at least one filter now (AC-PDW3.4 model_validator)
+        obj = AuditSearchCVEsInput(cwe_id="CWE-89")
+        assert obj.limit == 50
+
+    def test_optional_filter_fields_accept_none_individually(self):
+        """Each filter field accepts None when others are set."""
+        from src.models.schemas import AuditSearchCVEsInput
+
+        obj = AuditSearchCVEsInput(cwe_id="CWE-89", severity=None, ecosystem=None)
         assert obj.severity is None
         assert obj.ecosystem is None
-        assert obj.limit == 50
 
     def test_valid_construction_all_fields(self):
         from src.models.schemas import AuditSearchCVEsInput

@@ -6,7 +6,7 @@ constraints, null-byte stripping, and Unicode NFC normalization.
 Reference: Strategy §4.3 (Input Validation), §8 APP_SEC.API_SECURITY.INPUT_VALIDATION
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.security.cypher_validator import CypherValidationError, validate_cypher
 from src.security.input_validators import sanitize_string
@@ -228,18 +228,44 @@ class GenerateTaxonomyInput(BaseModel):
 
 
 class EnrichBookMetadataInput(BaseModel):
-    """Input for enrich_book_metadata tool — enrich metadata via MSEP."""
+    """Input for enrich_book_metadata tool — enrich metadata via CO pipeline (DMA-§2.3)."""
 
     input_path: str = Field(..., min_length=1, max_length=1000, description="Path to WF1 metadata JSON file")
     output_path: str | None = Field(
         default=None, max_length=1000, description="Path to write enriched output (auto-generated if omitted)"
     )
-    taxonomy_path: str | None = Field(default=None, max_length=1000, description="Path to WF2 taxonomy JSON file")
-    mode: str = Field(default="msep", pattern=r"^(msep|basic)$", description="Enrichment mode")
+    taxonomy_path: str | None = Field(default=None, max_length=1000, description="Path to taxonomy JSON file")
+    mode: str = Field(default="direct_co", description="Enrichment mode (informational)")
 
     @field_validator("input_path", mode="before")
     @classmethod
     def sanitize_input_path(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class BatchEnrichMetadataInput(BaseModel):
+    """Input for batch_enrich_metadata tool — batch enrich all metadata files in a directory."""
+
+    metadata_dir: str = Field(
+        default="/Users/kevintoles/POC/ai-platform-data/books/metadata",
+        min_length=1,
+        max_length=1000,
+        description="Directory containing *_metadata.json files",
+    )
+    output_dir: str = Field(
+        default="/Users/kevintoles/POC/ai-platform-data/books/enriched",
+        min_length=1,
+        max_length=1000,
+        description="Output directory for enriched JSON files",
+    )
+    taxonomy_path: str | None = Field(default=None, max_length=1000, description="Path to taxonomy JSON file")
+    resume: bool = Field(default=True, description="Skip books that already have an enriched output file")
+    limit: int = Field(default=0, ge=0, description="Cap at N books (0 = no limit)")
+    book: str = Field(default="", max_length=500, description="Process only books whose filename contains this string")
+
+    @field_validator("metadata_dir", "output_dir", mode="before")
+    @classmethod
+    def sanitize_dir(cls, v: str) -> str:
         return _sanitize_str_field(v)
 
 
@@ -510,7 +536,28 @@ class AuditResolveLookupInput(BaseModel):
 # -- VRE Quarantine Tools (AEI-23) ----------------------------------------
 
 
-class AuditSearchExploitsInput(BaseModel):
+class AuditToolBase(BaseModel):
+    """Shared base for audit search tools with result-ranking controls.
+
+    PDW3.9 REFACTOR: Extracts common ``top_k`` and ``min_similarity``
+    pagination/ranking fields so VRE search schemas don't redeclare them.
+    """
+
+    top_k: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of results to return.",
+    )
+    min_similarity: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity score threshold for returned results.",
+    )
+
+
+class AuditSearchExploitsInput(AuditToolBase):
     """Input for audit_search_exploits — search quarantine Qdrant for exploit vectors.
 
     Searches the vuln_exploits collection on qdrant-quarantine (:6336) using
@@ -531,18 +578,7 @@ class AuditSearchExploitsInput(BaseModel):
         default=None,
         description=("Optional list of CWE IDs to restrict results (e.g. ['CWE-89', 'CWE-79'])."),
     )
-    top_k: int = Field(
-        default=10,
-        ge=1,
-        le=100,
-        description="Maximum number of exploit matches to return.",
-    )
-    min_similarity: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=1.0,
-        description="Minimum cosine similarity score (0-1) for returned matches.",
-    )
+    # top_k and min_similarity inherited from AuditToolBase (PDW3.9 REFACTOR)
 
 
 class AuditSearchCVEsInput(BaseModel):
@@ -570,6 +606,19 @@ class AuditSearchCVEsInput(BaseModel):
         le=500,
         description="Maximum number of CVE records to return (default 50).",
     )
+
+    @model_validator(mode="after")
+    def require_at_least_one_filter(self) -> "AuditSearchCVEsInput":
+        """Reject queries with no filter criteria.
+
+        AC-PDW3.4: At least one of ``cwe_id``, ``severity``, or ``ecosystem``
+        must be provided.  A fully unfiltered CVE query would scan the entire
+        ``vuln_cve_records`` table and is disallowed for both performance and
+        security-signal clarity reasons.
+        """
+        if self.cwe_id is None and self.severity is None and self.ecosystem is None:
+            raise ValueError("At least one filter is required: provide cwe_id, severity, or ecosystem.")
+        return self
 
 
 # -- Quality Audit (Phase 7) -----------------------------------------------

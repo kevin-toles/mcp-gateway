@@ -72,9 +72,14 @@ tools:
     tags: [workflow, taxonomy, concepts]
 
   - name: enrich_book_metadata
-    description: "Enrich book metadata with MSEP (multi-source enrichment pipeline). Requires ai-agents (:8082)."
+    description: "Enrich a single book's extracted metadata to DMA-§2.3 format via CO pipeline (keywords/concepts/classify/similarity/topics). No ai-agents dependency. Requires code-orchestrator (:8083)."
     tier: gold
-    tags: [workflow, enrichment, msep]
+    tags: [workflow, enrichment, dma, direct_co]
+
+  - name: batch_enrich_metadata
+    description: "Batch-enrich all *_metadata.json files in a directory to DMA-§2.3 format. Accepts metadata_dir, output_dir, taxonomy_path, resume, limit, book filter. Requires code-orchestrator (:8083)."
+    tier: gold
+    tags: [workflow, enrichment, batch, dma, direct_co]
 
   - name: enhance_guideline
     description: "Enhance a guideline's chapters via LLM with cross-book context. Requires ai-agents (:8082)."

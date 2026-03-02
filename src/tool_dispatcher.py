@@ -77,7 +77,8 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "extract_book_metadata": "code-orchestrator",
     "batch_extract_metadata": "code-orchestrator",
     "generate_taxonomy": "code-orchestrator",
-    "enrich_book_metadata": "ai-agents",
+    "enrich_book_metadata": "code-orchestrator",
+    "batch_enrich_metadata": "code-orchestrator",
     "enhance_guideline": "ai-agents",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": "code-orchestrator",
@@ -169,9 +170,14 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             timeout=300.0,
         ),
         "enrich_book_metadata": DispatchRoute(
-            base_url=settings.AI_AGENTS_URL,
-            path="/v1/workflows/enrich-book",
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/enrich-book",
             timeout=300.0,
+        ),
+        "batch_enrich_metadata": DispatchRoute(
+            base_url=settings.CODE_ORCHESTRATOR_URL,
+            path="/api/v1/workflows/batch-enrich",
+            timeout=None,  # No timeout — batch can take 90+ min for 554 books
         ),
         "enhance_guideline": DispatchRoute(
             base_url=settings.AI_AGENTS_URL,
