@@ -41,8 +41,12 @@ from src.models.schemas import (
     ExtractBookMetadataInput,
     GenerateTaxonomyInput,
     GraphQueryInput,
+    GraphTraverseInput,
     HybridSearchInput,
+    KnowledgeRefineInput,
+    KnowledgeSearchInput,
     LLMCompleteInput,
+    PatternSearchInput,
     SemanticSearchInput,
 )
 
@@ -51,6 +55,11 @@ from src.models.schemas import (
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "semantic_search": SemanticSearchInput,
     "hybrid_search": HybridSearchInput,
+    "graph_traverse": GraphTraverseInput,
+    # Issue #6: consolidated KB tools
+    "knowledge_search": KnowledgeSearchInput,
+    "knowledge_refine": KnowledgeRefineInput,
+    "pattern_search": PatternSearchInput,
     "code_analyze": CodeAnalyzeInput,
     "code_pattern_audit": CodePatternAuditInput,
     "graph_query": GraphQueryInput,

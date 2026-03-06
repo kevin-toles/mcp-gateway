@@ -65,6 +65,11 @@ class DispatchResult:
 _TOOL_SERVICE_NAMES: dict[str, str] = {
     "semantic_search": "semantic-search",
     "hybrid_search": "semantic-search",
+    "graph_traverse": "semantic-search",
+    # Issue #6: consolidated KB tools
+    "knowledge_search": "semantic-search",
+    "knowledge_refine": "semantic-search",
+    "pattern_search": "semantic-search",
     "code_analyze": "code-orchestrator",
     "code_pattern_audit": "code-orchestrator",
     "graph_query": "semantic-search",
@@ -120,6 +125,19 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
+        # Issue #6: consolidated KB tools — all route to USS /v1/search/hybrid
+        "knowledge_search": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path="/v1/search/hybrid",
+        ),
+        "knowledge_refine": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path="/v1/search/hybrid",
+        ),
+        "pattern_search": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path="/v1/search/hybrid",
+        ),
         "code_analyze": DispatchRoute(
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/patterns/detect",
@@ -131,6 +149,10 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "graph_query": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/query",
+        ),
+        "graph_traverse": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path="/v1/graph/traverse",
         ),
         "llm_complete": DispatchRoute(
             base_url=settings.LLM_GATEWAY_URL,

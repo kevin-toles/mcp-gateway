@@ -19,8 +19,26 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         bloom_tier_filter: list[int] | None = None,
         quality_tier_filter: list[int] | None = None,
         bloom_tier_boost: bool = True,
+        # Graph control
+        include_graph: bool = True,
+        # MMR reranking (score/MMR traversal)
+        mmr_rerank: bool = False,
+        mmr_lambda: float = 0.5,
+        # Taxonomy query expansion
+        expand_taxonomy: bool = False,
+        # Custom traversal / domain focus
+        focus_areas: list[str] | None = None,
+        focus_keywords: list[str] | None = None,
     ) -> dict:
-        """Combines semantic search with keyword matching for better precision."""
+        """Combines semantic search with keyword matching for better precision.
+
+        Search modes via parameters:
+        - Basic/eager: default settings, pure vector+graph fusion
+        - MMR traversal: mmr_rerank=True — diversity-aware reranking via MMR
+        - Score traversal: mmr_rerank=False, semantic_weight controls score mix
+        - Custom traversal: focus_areas + focus_keywords + include_graph for domain-specific scoring
+        - Taxonomy-expanded: expand_taxonomy=True — expands query via Neo4j SIMILAR_TO edges
+        """
         validated = HybridSearchInput(
             query=query,
             collection=collection,
@@ -30,6 +48,12 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             bloom_tier_filter=bloom_tier_filter,
             quality_tier_filter=quality_tier_filter,
             bloom_tier_boost=bloom_tier_boost,
+            include_graph=include_graph,
+            mmr_rerank=mmr_rerank,
+            mmr_lambda=mmr_lambda,
+            expand_taxonomy=expand_taxonomy,
+            focus_areas=focus_areas,
+            focus_keywords=focus_keywords,
         )
         # Map MCP param names → semantic-search API param names
         payload: dict = {
@@ -39,12 +63,24 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             "alpha": validated.semantic_weight,
             # TXS5: always include tier_boost (bool) so downstream honours it
             "tier_boost": validated.bloom_tier_boost,
+            # Graph scoring
+            "include_graph": validated.include_graph,
+            # MMR reranking
+            "mmr_rerank": validated.mmr_rerank,
+            "mmr_lambda": validated.mmr_lambda,
+            # Taxonomy expansion
+            "expand_taxonomy": validated.expand_taxonomy,
         }
         # Conditionally include tier filters (omit when None for backward compat)
         if validated.bloom_tier_filter is not None:
             payload["bloom_tier_filter"] = validated.bloom_tier_filter
         if validated.quality_tier_filter is not None:
             payload["quality_tier_filter"] = validated.quality_tier_filter
+        # Conditionally include custom focus fields (omit when None)
+        if validated.focus_areas is not None:
+            payload["focus_areas"] = validated.focus_areas
+        if validated.focus_keywords is not None:
+            payload["focus_keywords"] = validated.focus_keywords
         result = await dispatcher.dispatch(TOOL_NAME, payload)
         return sanitizer.sanitize(result.body)
 

@@ -47,8 +47,12 @@ from src.tools import (
     extract_book_metadata,
     generate_taxonomy,
     graph_query,
+    graph_traverse,
     hybrid_search,
+    knowledge_refine,
+    knowledge_search,
     llm_complete,
+    pattern_search,
     semantic_search,
 )
 
@@ -57,6 +61,11 @@ from src.tools import (
 _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "semantic_search": semantic_search.create_handler,
     "hybrid_search": hybrid_search.create_handler,
+    "graph_traverse": graph_traverse.create_handler,
+    # Issue #6: consolidated KB tools
+    "knowledge_search": knowledge_search.create_handler,
+    "knowledge_refine": knowledge_refine.create_handler,
+    "pattern_search": pattern_search.create_handler,
     "code_analyze": code_analyze.create_handler,
     "code_pattern_audit": code_pattern_audit.create_handler,
     "graph_query": graph_query.create_handler,

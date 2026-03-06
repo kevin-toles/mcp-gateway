@@ -13,6 +13,27 @@ tools:
     tier: bronze
     tags: [search, rag]
 
+  - name: graph_traverse
+    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes"
+    tier: silver
+    tags: [graph, traversal, rag]
+
+  # Issue #6: consolidated KB tools (knowledge_search / knowledge_refine / pattern_search)
+  - name: knowledge_search
+    description: "Batteries-included KB search across all collections (chapters, code, patterns) with taxonomy expansion ON by default. Use for broad knowledge retrieval."
+    tier: bronze
+    tags: [search, rag, knowledge]
+
+  - name: knowledge_refine
+    description: "Targeted single-collection KB search with optional Bloom or CRE tier filters. Use when you know which collection has the relevant content."
+    tier: bronze
+    tags: [search, rag, knowledge]
+
+  - name: pattern_search
+    description: "Code pattern and anti-pattern retrieval. Searches code_good_patterns, pattern_instances, or all collections. Use to find design patterns, code smells, or best-practice examples."
+    tier: bronze
+    tags: [search, rag, patterns, code]
+
   - name: code_analyze
     description: "Analyze code for patterns, complexity, dependencies, and quality metrics"
     tier: silver

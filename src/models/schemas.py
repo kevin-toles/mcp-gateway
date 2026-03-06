@@ -69,6 +69,36 @@ class HybridSearchInput(BaseModel):
         default=True,
         description="Apply Bloom/CRE tier-based score boosting to results",
     )
+    # ── Graph control ──────────────────────────────────────────────────────
+    include_graph: bool = Field(
+        default=True,
+        description="Include Neo4j graph-based scoring in result fusion (set False for pure vector search)",
+    )
+    # ── MMR reranking (score/MMR traversal style) ──────────────────────────
+    mmr_rerank: bool = Field(
+        default=False,
+        description="Apply Maximal Marginal Relevance (MMR) reranking for diversity (score/MMR traversal)",
+    )
+    mmr_lambda: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="MMR lambda: 0.0=maximum diversity, 1.0=maximum relevance (only used when mmr_rerank=True)",
+    )
+    # ── Taxonomy query expansion (TXS6) ───────────────────────────────────
+    expand_taxonomy: bool = Field(
+        default=False,
+        description="Expand query using Neo4j SIMILAR_TO relationships between TaxonomyConcept nodes",
+    )
+    # ── Custom traversal / domain focus ───────────────────────────────────
+    focus_areas: list[str] | None = Field(
+        default=None,
+        description="Domain focus areas for relevance scoring (e.g. ['llm_rag', 'microservices_architecture'])",
+    )
+    focus_keywords: list[str] | None = Field(
+        default=None,
+        description="Custom keywords to boost relevance scoring in result fusion",
+    )
 
     @field_validator("query", mode="before")
     @classmethod
@@ -96,6 +126,47 @@ class HybridSearchInput(BaseModel):
                     msg = f"quality_tier_filter value {tier} out of range 1-3"
                     raise ValueError(msg)
         return v
+
+
+class GraphTraverseInput(BaseModel):
+    """Input for graph_traverse tool — BFS + optional MMR graph traversal."""
+
+    start_nodes: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Starting Neo4j node IDs for BFS graph traversal",
+    )
+    relationship_types: list[str] | None = Field(
+        default=None,
+        description="Relationship types to follow (e.g. ['SIMILAR_TO', 'REQUIRES']); None = all types",
+    )
+    max_depth: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum BFS traversal depth",
+    )
+    limit: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        description="Maximum number of nodes to return",
+    )
+    mmr_enabled: bool = Field(
+        default=False,
+        description="Enable MMR diversity-aware traversal (true = MMR traversal, false = basic BFS)",
+    )
+    mmr_lambda: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="MMR lambda: 0.0=maximum diversity, 1.0=maximum relevance (only used when mmr_enabled=True)",
+    )
+
+    @field_validator("start_nodes", mode="before")
+    @classmethod
+    def sanitize_start_nodes(cls, v: list[str]) -> list[str]:
+        return [sanitize_string(n) if isinstance(n, str) else n for n in v]
 
 
 class CodeAnalyzeInput(BaseModel):
@@ -688,3 +759,117 @@ class AuditQualityScanInput(BaseModel):
         default=True,
         description="Run structural anti-pattern detector (Blob, Lava Flow, etc.)",
     )
+
+
+# ── Three consolidated KB tools ────────────────────────────────────────────
+
+
+class KnowledgeSearchInput(BaseModel):
+    """Input for knowledge_search — batteries-included KB search with taxonomy expansion."""
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    limit: int = Field(default=10, ge=1, le=50)
+    expand_taxonomy: bool = Field(
+        default=True,
+        description="Expand query via Neo4j SIMILAR_TO edges (default ON for broad KB retrieval)",
+    )
+    mmr_rerank: bool = Field(
+        default=False,
+        description="Apply MMR diversity reranking across the fan-out results",
+    )
+    mmr_lambda: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="MMR lambda: 0.0=max diversity, 1.0=max relevance",
+    )
+    bloom_tier_filter: list[int] | None = Field(
+        default=None,
+        description="Filter chapters by Bloom cognitive tier (0=Foundational … 6=Innovation)",
+    )
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+    @field_validator("bloom_tier_filter", mode="before")
+    @classmethod
+    def validate_bloom_tier(cls, v: list[int] | None) -> list[int] | None:
+        if v is not None:
+            for tier in v:
+                if tier < 0 or tier > 6:
+                    raise ValueError(f"bloom_tier_filter value {tier} out of range 0-6")
+        return v
+
+
+class KnowledgeRefineInput(BaseModel):
+    """Input for knowledge_refine — targeted single-collection KB search."""
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    collection: str = Field(
+        default="chapters",
+        pattern=r"^(chapters|textbooks|code_chunks|code|pattern_instances|patterns|code_good_patterns|repo_concepts|concepts)$",
+        description=(
+            "Collection to search: chapters/textbooks, code_chunks/code, "
+            "pattern_instances/patterns, code_good_patterns, repo_concepts/concepts"
+        ),
+    )
+    limit: int = Field(default=5, ge=1, le=20)
+    bloom_tier_filter: list[int] | None = Field(
+        default=None,
+        description="Filter chapters by Bloom cognitive tier (0-6)",
+    )
+    quality_tier_filter: list[int] | None = Field(
+        default=None,
+        description="Filter code_chunks by CRE quality tier (1=flagship, 2=standard, 3=supplemental)",
+    )
+    mmr_rerank: bool = Field(
+        default=True,
+        description="Apply MMR reranking for diversity within the single collection",
+    )
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+    @field_validator("bloom_tier_filter", mode="before")
+    @classmethod
+    def validate_bloom_tier(cls, v: list[int] | None) -> list[int] | None:
+        if v is not None:
+            for tier in v:
+                if tier < 0 or tier > 6:
+                    raise ValueError(f"bloom_tier_filter value {tier} out of range 0-6")
+        return v
+
+    @field_validator("quality_tier_filter", mode="before")
+    @classmethod
+    def validate_quality_tier(cls, v: list[int] | None) -> list[int] | None:
+        if v is not None:
+            for tier in v:
+                if tier < 1 or tier > 3:
+                    raise ValueError(f"quality_tier_filter value {tier} out of range 1-3")
+        return v
+
+
+class PatternSearchInput(BaseModel):
+    """Input for pattern_search — code pattern and anti-pattern retrieval."""
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    pattern_type: str = Field(
+        default="all",
+        pattern=r"^(good|bad|all)$",
+        description=(
+            "Which pattern set to search: "
+            "'good' = code_good_patterns only, "
+            "'bad' = pattern_instances only, "
+            "'all' = both (fan-out across all primary collections)"
+        ),
+    )
+    limit: int = Field(default=10, ge=1, le=30)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        return _sanitize_str_field(v)
