@@ -873,3 +873,30 @@ class PatternSearchInput(BaseModel):
     @classmethod
     def sanitize_query(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+
+class DiagramSearchInput(BaseModel):
+    """Input for diagram_search — semantic search over ASCII / sequence diagrams.
+
+    Searches the ``ascii_diagrams`` Qdrant collection using CLIP text encoding
+    so query semantics align with the 512-dim CLIP image vectors stored there.
+    """
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    diagram_type: str | None = Field(
+        default=None,
+        pattern=r"^(ascii|sequence|box_flow)$",
+        description=(
+            "Optional filter on diagram_type payload field: "
+            "'ascii' = plain ASCII art, "
+            "'sequence' = UML-style sequence diagrams, "
+            "'box_flow' = box-and-arrow flow diagrams. "
+            "Omit (null) to search all diagram types."
+        ),
+    )
+    limit: int = Field(default=10, ge=1, le=30)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        return _sanitize_str_field(v)

@@ -42,6 +42,7 @@ from src.tools import (
     code_analyze,
     code_pattern_audit,
     convert_pdf,
+    diagram_search,
     enhance_guideline,
     enrich_book_metadata,
     extract_book_metadata,
@@ -66,6 +67,8 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "knowledge_search": knowledge_search.create_handler,
     "knowledge_refine": knowledge_refine.create_handler,
     "pattern_search": pattern_search.create_handler,
+    # diagram_search: semantic search over ascii_diagrams via CLIP cross-modal encoding
+    "diagram_search": diagram_search.create_handler,
     "code_analyze": code_analyze.create_handler,
     "code_pattern_audit": code_pattern_audit.create_handler,
     "graph_query": graph_query.create_handler,

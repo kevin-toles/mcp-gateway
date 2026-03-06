@@ -34,6 +34,11 @@ tools:
     tier: bronze
     tags: [search, rag, patterns, code]
 
+  - name: diagram_search
+    description: "Semantic search over KB architecture diagrams (ASCII art, sequence diagrams, flow charts) using CLIP cross-modal encoding. Use to find visual representations of architectural concepts, design patterns, or system interactions."
+    tier: bronze
+    tags: [search, rag, diagrams, architecture]
+
   - name: code_analyze
     description: "Analyze code for patterns, complexity, dependencies, and quality metrics"
     tier: silver

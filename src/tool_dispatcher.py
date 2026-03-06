@@ -138,6 +138,12 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
+        # diagram_search: routes to USS /v1/search/hybrid with collection=ascii_diagrams.
+        # USS detects the CLIP collection and uses CLIPEncoder.encode_text() instead of MiniLM.
+        "diagram_search": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path="/v1/search/hybrid",
+        ),
         "code_analyze": DispatchRoute(
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/patterns/detect",

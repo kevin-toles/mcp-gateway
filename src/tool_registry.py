@@ -36,6 +36,7 @@ from src.models.schemas import (
     CodeAnalyzeInput,
     CodePatternAuditInput,
     ConvertPDFInput,
+    DiagramSearchInput,
     EnhanceGuidelineInput,
     EnrichBookMetadataInput,
     ExtractBookMetadataInput,
@@ -60,6 +61,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_search": KnowledgeSearchInput,
     "knowledge_refine": KnowledgeRefineInput,
     "pattern_search": PatternSearchInput,
+    # diagram_search: searches ascii_diagrams via CLIP text→image cross-modal retrieval
+    "diagram_search": DiagramSearchInput,
     "code_analyze": CodeAnalyzeInput,
     "code_pattern_audit": CodePatternAuditInput,
     "graph_query": GraphQueryInput,
