@@ -49,18 +49,53 @@ class SemanticSearchInput(BaseModel):
 
 
 class HybridSearchInput(BaseModel):
-    """Input for hybrid_search tool."""
+    """Input for hybrid_search tool — WBS-TXS5 (tier params added)."""
 
     query: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
     top_k: int = Field(default=10, ge=1, le=100)
     semantic_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     keyword_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    # TXS5: Taxonomy-enhanced search parameters
+    bloom_tier_filter: list[int] | None = Field(
+        default=None,
+        description="Bloom cognitive tier filter for chapters (int 0-6: T0=0 … T6=6)",
+    )
+    quality_tier_filter: list[int] | None = Field(
+        default=None,
+        description="CRE repo quality tier filter for code_chunks (1=flagship, 2=standard, 3=supplemental)",
+    )
+    bloom_tier_boost: bool = Field(
+        default=True,
+        description="Apply Bloom/CRE tier-based score boosting to results",
+    )
 
     @field_validator("query", mode="before")
     @classmethod
     def sanitize_query(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+    @field_validator("bloom_tier_filter", mode="before")
+    @classmethod
+    def validate_bloom_tier_filter(cls, v: list[int] | None) -> list[int] | None:
+        """Enforce bloom tier range 0-6."""
+        if v is not None:
+            for tier in v:
+                if tier < 0 or tier > 6:
+                    msg = f"bloom_tier_filter value {tier} out of range 0-6"
+                    raise ValueError(msg)
+        return v
+
+    @field_validator("quality_tier_filter", mode="before")
+    @classmethod
+    def validate_quality_tier_filter(cls, v: list[int] | None) -> list[int] | None:
+        """Enforce CRE quality tier range 1-3."""
+        if v is not None:
+            for tier in v:
+                if tier < 1 or tier > 3:
+                    msg = f"quality_tier_filter value {tier} out of range 1-3"
+                    raise ValueError(msg)
+        return v
 
 
 class CodeAnalyzeInput(BaseModel):
