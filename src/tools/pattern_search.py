@@ -1,9 +1,10 @@
-"""pattern_search tool handler — Issue #6: code pattern and anti-pattern retrieval.
+"""pattern_search tool handler — code pattern and anti-pattern retrieval.
 
 Specialized search within code pattern collections. Routes to:
   - 'good'  → code_good_patterns (canonical positive examples)
-  - 'bad'   → pattern_instances (architectural/code pattern instances,
-               includes both anti-patterns and pattern violations)
+  - 'bad'   → code_bad_patterns (372K raw bad-code instances with rule_id,
+               repo, file, line_start/end, code, fix_commit; subset also has
+               function and code_type fields)
   - 'all'   → fan-out across all primary collections (includes both
                pattern collections + chapters, code_chunks, etc.)
 
@@ -18,9 +19,12 @@ from src.tool_dispatcher import ToolDispatcher
 TOOL_NAME = "pattern_search"
 
 # Maps pattern_type → USS collection value
+# 'bad' routes to code_bad_patterns (raw bad-code instances);
+# 'good' routes to code_good_patterns (canonical positive examples);
+# pattern_instances (before/after pairs) is included in 'all' fan-out.
 _PATTERN_COLLECTION_MAP: dict[str, str] = {
     "good": "code_good_patterns",
-    "bad": "pattern_instances",
+    "bad": "code_bad_patterns",
     "all": "all",
 }
 
@@ -45,7 +49,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
                 E.g., 'singleton pattern', 'god class', 'dependency injection'.
             pattern_type: Which pattern collection(s) to search:
                 - 'good' — code_good_patterns: canonical positive code examples
-                - 'bad'  — pattern_instances: anti-pattern and violation instances
+                - 'bad'  — code_bad_patterns: 372K raw bad-code instances (rule_id, repo, file, code)
                 - 'all'  — all primary collections (broadest coverage)
             limit: Maximum results (1-30, default 10).
         """
