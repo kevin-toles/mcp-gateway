@@ -15,8 +15,8 @@ TOOL_NAME = "llm_complete"
 
 # TWR5: Map model_preference hint → default model name for llm-gateway
 _MODEL_PREFERENCE_MAP: dict[str, str] = {
-    "auto": "qwen3-8b",
-    "local": "qwen3-8b",
+    "auto": "qwen3.5-9b",
+    "local": "qwen3.5-9b",
     "cloud": "claude-sonnet-4-20250514",
 }
 
@@ -36,7 +36,7 @@ def _build_openai_payload(validated: LLMCompleteInput) -> dict:
         messages.append({"role": "system", "content": validated.system_prompt})
     messages.append({"role": "user", "content": validated.prompt})
 
-    model = _MODEL_PREFERENCE_MAP.get(validated.model_preference, "qwen3-8b")
+    model = _MODEL_PREFERENCE_MAP.get(validated.model_preference, "qwen3.5-9b")
 
     return {
         "model": model,
