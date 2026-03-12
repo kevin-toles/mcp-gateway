@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     OIDC_AUDIENCE: str = "ai-platform-tools"
     AUTH_ENABLED: bool = False  # Disabled for dev, enabled for prod
 
+    # ── Phase feature flags ──────────────────────────────────────────
+    # All default False — flip via env var; existing behaviour is
+    # byte-for-bit identical when every flag is False.
+    # G1.2 (GREEN) — WBS Phase 1: Session Correlation
+    CORRELATION_ENABLED: bool = False  # X-Session-ID generation + forwarding in dispatcher
+
     # ── Rate limiting ───────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_RPM: int = 100  # Default requests per minute

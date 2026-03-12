@@ -442,3 +442,126 @@ class TestConnectionPooling:
     async def test_close_with_no_clients_does_not_error(self, dispatcher):
         """close() on a fresh dispatcher should not raise."""
         await dispatcher.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# G1.3 (RED) — AC-1.2, 1.3, 1.4: Session Correlation header forwarding
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def dispatcher_with_flag(flag_value: bool):
+    """Create a ToolDispatcher with CORRELATION_ENABLED set to flag_value."""
+    from src.core.config import Settings
+    from src.tool_dispatcher import ToolDispatcher
+
+    settings = Settings(CORRELATION_ENABLED=flag_value)
+    return ToolDispatcher(settings)
+
+
+class TestSessionCorrelation:
+    """AC-1.2/1.3/1.4: X-Session-ID header is attached (or not) to outgoing calls."""
+
+    def _make_capturing_dispatcher(self, correlation_enabled: bool):
+        """Return (dispatcher, captured_headers_list) tuple wired to a mock transport."""
+        import httpx
+
+        from src.core.config import Settings
+        from src.tool_dispatcher import ToolDispatcher
+
+        captured: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(dict(request.headers))
+            return httpx.Response(200, json={"ok": True})
+
+        transport = httpx.MockTransport(handler)
+        settings = Settings(CORRELATION_ENABLED=correlation_enabled)
+        d = ToolDispatcher(settings)
+        d._client = httpx.AsyncClient(transport=transport)
+        return d, captured
+
+    @pytest.mark.asyncio
+    async def test_flag_true_propagates_incoming_session_id(self):
+        """AC-1.2/1.3: When flag=true, existing X-Session-ID header is forwarded."""
+        d, captured = self._make_capturing_dispatcher(True)
+        session_id = "sess-test-abc-123"
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"x-session-id": session_id},
+        )
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        assert outgoing.get("x-session-id") == session_id
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_flag_true_generates_uuid_when_absent(self):
+        """AC-1.3: When flag=true and no X-Session-ID provided, a UUID4 is generated."""
+        import re
+
+        d, captured = self._make_capturing_dispatcher(True)
+        await d.dispatch("semantic_search", {"query": "x"}, request_headers={})
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        session_id = outgoing.get("x-session-id")
+        assert session_id is not None, "Expected X-Session-ID to be generated"
+        uuid4_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        assert uuid4_pattern.match(session_id), f"Generated value is not a UUID4: {session_id}"
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_flag_true_generates_uuid_when_no_headers_passed(self):
+        """AC-1.3: When flag=true and request_headers=None, a UUID4 is still generated."""
+        import re
+
+        d, captured = self._make_capturing_dispatcher(True)
+        await d.dispatch("semantic_search", {"query": "x"})
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        session_id = outgoing.get("x-session-id")
+        assert session_id is not None, "Expected X-Session-ID to be generated"
+        uuid4_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        assert uuid4_pattern.match(session_id), f"Generated value is not a UUID4: {session_id}"
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_flag_false_no_session_id_attached(self):
+        """AC-1.4: When flag=false, X-Session-ID is NOT added to outgoing requests."""
+        d, captured = self._make_capturing_dispatcher(False)
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"x-session-id": "should-not-forward"},
+        )
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        assert "x-session-id" not in outgoing, "X-Session-ID should not be present when CORRELATION_ENABLED=false"
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_flag_false_no_session_id_when_no_headers(self):
+        """AC-1.4: When flag=false and no headers provided, X-Session-ID is absent."""
+        d, captured = self._make_capturing_dispatcher(False)
+        await d.dispatch("semantic_search", {"query": "x"})
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        assert "x-session-id" not in outgoing
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_session_id_case_insensitive_propagation(self):
+        """AC-1.3: X-Session-ID (title case) in request_headers is correctly propagated."""
+        d, captured = self._make_capturing_dispatcher(True)
+        session_id = "sess-upper-case-key"
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"X-Session-ID": session_id},
+        )
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        # httpx normalises header keys to lower-case
+        assert outgoing.get("x-session-id") == session_id
+        await d.close()

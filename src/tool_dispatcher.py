@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -194,7 +195,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         "generate_taxonomy": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
-            path="/api/v1/workflows/generate-taxonomy",
+            path="/api/v1/workflows/generate-taxonomy-from-enriched",
             timeout=300.0,
         ),
         "enrich_book_metadata": DispatchRoute(
@@ -288,6 +289,37 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     }
 
 
+# ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _get_or_create_session_id(
+    request_headers: dict | None,
+    *,
+    enabled: bool,
+) -> str | None:
+    """Return an X-Session-ID value to forward to backend services.
+
+    When ``enabled`` is ``False`` returns ``None`` — no header is added and
+    behaviour is byte-for-bit identical to the pre-Phase-1 state (AC-1.4).
+
+    When ``enabled`` is ``True``:
+    - propagates the existing ``x-session-id`` / ``X-Session-ID`` value from
+      *request_headers* when present (AC-1.3, propagation path), or
+    - generates a fresh UUID4 string when absent (AC-1.3, generation path).
+
+    G1.7 (REFACTOR) — extracted from ``ToolDispatcher.dispatch()`` so the
+    logic can be tested and reused independently.
+    """
+    if not enabled:
+        return None
+    if request_headers:
+        # Accept both lower-case and title-case header names
+        session_id = request_headers.get("x-session-id") or request_headers.get("X-Session-ID")
+        if session_id:
+            return session_id
+    return str(uuid.uuid4())
+
+
 # ── Dispatcher ──────────────────────────────────────────────────────────
 
 
@@ -308,6 +340,7 @@ class ToolDispatcher:
     _RETRYABLE_STATUS_CODES = frozenset({502, 503, 504, 429})
 
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self.routes: dict[str, DispatchRoute] = _build_routes(settings)
         # Connection pool: one AsyncClient per unique backend base_url
         self._clients: dict[str, httpx.AsyncClient] = {}
@@ -358,11 +391,13 @@ class ToolDispatcher:
         url: str,
         payload: dict,
         timeout: float | None,
+        extra_headers: dict | None = None,
     ) -> httpx.Response:
         """Send a single HTTP request (GET or POST)."""
+        headers = extra_headers or None
         if method.upper() == "GET":
-            return await client.get(url, params=payload or None, timeout=timeout)
-        return await client.post(url, json=payload, timeout=timeout)
+            return await client.get(url, params=payload or None, timeout=timeout, headers=headers)
+        return await client.post(url, json=payload, timeout=timeout, headers=headers)
 
     async def _retry_delay(
         self,
@@ -397,6 +432,7 @@ class ToolDispatcher:
         *,
         method: str = "POST",
         path_override: str | None = None,
+        request_headers: dict | None = None,
     ) -> DispatchResult:
         """Send *payload* to the backend for *tool_name*.
 
@@ -428,6 +464,12 @@ class ToolDispatcher:
         client = self._get_client(route.base_url)
         cb = self._cb_registry.get(service_name)
 
+        # G1.4 (GREEN) — Phase 1: Session Correlation
+        # Build extra_headers with X-Session-ID when CORRELATION_ENABLED.
+        # When flag is False the helper returns None and nothing is added.
+        session_id = _get_or_create_session_id(request_headers, enabled=self._settings.CORRELATION_ENABLED)
+        extra_headers: dict | None = {"x-session-id": session_id} if session_id else None
+
         last_exc: Exception | None = None
         attempts = 1 + self._max_retries
 
@@ -444,6 +486,7 @@ class ToolDispatcher:
                 service_name,
                 attempt,
                 attempts,
+                extra_headers=extra_headers,
             )
             if result is not None:
                 return result
@@ -464,11 +507,14 @@ class ToolDispatcher:
         service_name: str,
         attempt: int,
         attempts: int,
+        extra_headers: dict | None = None,
     ) -> DispatchResult | None:
         """Execute a single dispatch attempt; return result or None to retry."""
         start = time.monotonic()
         try:
-            response = await self._send_request(client, method, url, payload, route.timeout)
+            response = await self._send_request(
+                client, method, url, payload, route.timeout, extra_headers=extra_headers
+            )
             elapsed_ms = (time.monotonic() - start) * 1000
 
             if response.status_code in self._RETRYABLE_STATUS_CODES:

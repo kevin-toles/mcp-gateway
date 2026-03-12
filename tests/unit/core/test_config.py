@@ -8,8 +8,6 @@ Verifies that Settings:
 - Handles OIDC configuration fields
 """
 
-import os
-
 import pytest
 
 
@@ -305,3 +303,49 @@ class TestTLSValidation:
         settings = Settings()
         with pytest.raises(ValueError, match="TLS_CERT_PATH.*required"):
             get_ssl_config(settings)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# G1.1 (RED) — AC-1.1: CORRELATION_ENABLED phase flag
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestCorrelationEnabledSetting:
+    """AC-1.1: CORRELATION_ENABLED flag exists in Settings with correct type and default."""
+
+    def test_correlation_enabled_field_exists(self):
+        """Settings has a CORRELATION_ENABLED attribute."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert hasattr(settings, "CORRELATION_ENABLED")
+
+    def test_correlation_enabled_default_is_false(self):
+        """CORRELATION_ENABLED defaults to False."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.CORRELATION_ENABLED is False
+
+    def test_correlation_enabled_is_bool(self):
+        """CORRELATION_ENABLED type is bool, not int or str."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert type(settings.CORRELATION_ENABLED) is bool
+
+    def test_correlation_enabled_env_override_true(self, monkeypatch):
+        """MCP_GATEWAY_CORRELATION_ENABLED=true overrides the default."""
+        monkeypatch.setenv("MCP_GATEWAY_CORRELATION_ENABLED", "true")
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.CORRELATION_ENABLED is True
+
+    def test_correlation_enabled_env_override_false(self, monkeypatch):
+        """MCP_GATEWAY_CORRELATION_ENABLED=false keeps the flag False."""
+        monkeypatch.setenv("MCP_GATEWAY_CORRELATION_ENABLED", "false")
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.CORRELATION_ENABLED is False
