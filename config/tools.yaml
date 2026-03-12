@@ -93,9 +93,9 @@ tools:
     tags: [workflow, extraction, metadata, batch]
 
   - name: generate_taxonomy
-    description: "Generate a concept taxonomy from tier-organized book JSON files. Requires code-orchestrator (:8083)."
+    description: "Build full taxonomy from enriched corpus (*_enriched.json files). Aggregates keywords/concepts per book, applies quality gates, infers Bloom tiers, and writes uber_taxonomy format (metadata + concept_categories + tiers). Pass enriched_dir and optional output_path. Requires code-orchestrator (:8083)."
     tier: gold
-    tags: [workflow, taxonomy, concepts]
+    tags: [workflow, taxonomy, concepts, enriched]
 
   - name: enrich_book_metadata
     description: "Enrich a single book's extracted metadata to DMA-§2.3 format via CO pipeline (keywords/concepts/classify/similarity/topics). No ai-agents dependency. Requires code-orchestrator (:8083)."
@@ -154,6 +154,17 @@ tools:
     description: "Detect dead code (unused functions + unused imports) in a source tree via AMVE. Requires AMVE service (:8088)."
     tier: gold
     tags: [amve, architecture, dead-code, unused-imports]
+
+  # Phase 2: Content-Addressed Snapshot Store (flag: SNAPSHOT_STORE_ENABLED)
+  - name: amve_extract_architecture
+    description: "Extract architecture snapshot from source code and compute a content-addressed SHA-256 fingerprint. Returns snapshot_sha, record_count, source_path, extraction_time_ms. Requires AMVE service (:8088) and SNAPSHOT_STORE_ENABLED=true."
+    tier: gold
+    tags: [amve, architecture, snapshot, sha, content-addressed]
+
+  - name: amve_detect_drift
+    description: "Detect architectural drift between two snapshots. Accepts SHA-pair mode (snapshot_a_sha + snapshot_b_sha retrieved from Redis stream) or raw-dict passthrough mode (snapshot_a + snapshot_b dicts). Requires AMVE service (:8088)."
+    tier: gold
+    tags: [amve, architecture, drift, snapshot, comparison]
 
   # ── Audit Service Tools (WBS-AEI13) ─────────────────────────────────────
   - name: audit_security_scan

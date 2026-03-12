@@ -349,3 +349,49 @@ class TestCorrelationEnabledSetting:
 
         settings = Settings()
         assert settings.CORRELATION_ENABLED is False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# G2.1 (RED) — AC-2.1: SNAPSHOT_STORE_ENABLED phase flag
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSnapshotStoreEnabledSetting:
+    """AC-2.1: SNAPSHOT_STORE_ENABLED flag exists in Settings with correct type and default."""
+
+    def test_snapshot_store_enabled_field_exists(self):
+        """Settings has a SNAPSHOT_STORE_ENABLED attribute."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert hasattr(settings, "SNAPSHOT_STORE_ENABLED")
+
+    def test_snapshot_store_enabled_default_is_false(self):
+        """SNAPSHOT_STORE_ENABLED defaults to False."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.SNAPSHOT_STORE_ENABLED is False
+
+    def test_snapshot_store_enabled_is_bool(self):
+        """SNAPSHOT_STORE_ENABLED type is bool, not int or str."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert type(settings.SNAPSHOT_STORE_ENABLED) is bool
+
+    def test_snapshot_store_enabled_env_override_true(self, monkeypatch):
+        """MCP_GATEWAY_SNAPSHOT_STORE_ENABLED=true overrides the default."""
+        monkeypatch.setenv("MCP_GATEWAY_SNAPSHOT_STORE_ENABLED", "true")
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.SNAPSHOT_STORE_ENABLED is True
+
+    def test_snapshot_store_enabled_env_override_false(self, monkeypatch):
+        """MCP_GATEWAY_SNAPSHOT_STORE_ENABLED=false keeps the flag False."""
+        monkeypatch.setenv("MCP_GATEWAY_SNAPSHOT_STORE_ENABLED", "false")
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.SNAPSHOT_STORE_ENABLED is False

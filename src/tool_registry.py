@@ -20,7 +20,9 @@ from src.models.schemas import (
     AMVEAnalysisInput,
     AMVECommunicationInput,
     AMVEDetectDeadCodeInput,
+    AMVEDetectDriftInput,
     AMVEEvaluateFitnessInput,
+    AMVEExtractArchitectureInput,
     AMVEGenerateArchitectureLogInput,
     AnalyzeTaxonomyCoverageInput,
     AuditCodeMetricsInput,
@@ -89,6 +91,9 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "amve_generate_architecture_log": AMVEGenerateArchitectureLogInput,
     # AEI-17: Dead code detection
     "amve_detect_dead_code": AMVEDetectDeadCodeInput,
+    # Phase 2: Content-Addressed Snapshot Store (G2.12 GREEN)
+    "amve_extract_architecture": AMVEExtractArchitectureInput,
+    "amve_detect_drift": AMVEDetectDriftInput,
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan": AuditSecurityScanInput,
     "audit_code_metrics": AuditCodeMetricsInput,

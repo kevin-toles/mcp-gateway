@@ -315,22 +315,26 @@ class BatchExtractMetadataInput(BaseModel):
 
 
 class GenerateTaxonomyInput(BaseModel):
-    """Input for generate_taxonomy tool — generate concept taxonomy."""
+    """Input for generate_taxonomy tool — build full taxonomy from enriched corpus.
 
-    tier_books: dict[str, list[str]] = Field(
-        ...,
+    Reads all *_enriched.json files in enriched_dir, aggregates keywords/concepts,
+    applies quality gates, and writes the full uber_taxonomy format.
+    """
+
+    enriched_dir: str = Field(
+        default="/Users/kevintoles/POC/ai-platform-data/books/enriched",
         min_length=1,
-        description="Mapping of tier name to list of book JSON file paths",
+        max_length=1000,
+        description="Directory containing *_enriched.json files",
     )
     output_path: str | None = Field(
-        default=None, max_length=1000, description="Output path (auto-generated if omitted)"
+        default=None, max_length=1000, description="Output taxonomy JSON path (auto-generated if omitted)"
     )
-    concepts: list[str] | None = Field(default=None, description="Custom concept list (overrides defaults)")
-    domain: str = Field(
-        default="auto",
-        pattern=r"^(python|architecture|data_science|auto)$",
-        description="Domain for concept list selection",
-    )
+
+    @field_validator("enriched_dir", mode="before")
+    @classmethod
+    def sanitize_enriched_dir(cls, v: str) -> str:
+        return _sanitize_str_field(v)
 
 
 class EnrichBookMetadataInput(BaseModel):
@@ -573,6 +577,51 @@ class AMVEDetectDeadCodeInput(BaseModel):
     include_unused_imports: bool = Field(
         default=True,
         description="Whether to include unused-import analysis (tree-sitter)",
+    )
+
+
+# -- Phase 2: Content-Addressed Snapshot Store (G2.2 GREEN) ---------------
+
+
+class AMVEExtractArchitectureInput(BaseModel):
+    """Input for amve_extract_architecture — extract architecture snapshot and compute SHA."""
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="Absolute path to the source directory to extract the architecture from.",
+    )
+
+    @field_validator("source_path", mode="before")
+    @classmethod
+    def sanitize_source_path(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class AMVEDetectDriftInput(BaseModel):
+    """Input for amve_detect_drift — detect drift between two architecture snapshots.
+
+    Accepts either:
+    - SHA-pair mode: ``snapshot_a_sha`` + ``snapshot_b_sha`` (retrieves from Redis stream)
+    - Passthrough mode: ``snapshot_a`` + ``snapshot_b`` dicts (calls AMVE drift directly)
+    """
+
+    snapshot_a_sha: str | None = Field(
+        default=None,
+        description="SHA-256 hex of the first (baseline) snapshot stored in the stream.",
+    )
+    snapshot_b_sha: str | None = Field(
+        default=None,
+        description="SHA-256 hex of the second (current) snapshot stored in the stream.",
+    )
+    snapshot_a: dict | None = Field(
+        default=None,
+        description="Raw baseline snapshot dict for passthrough mode (no Redis lookup).",
+    )
+    snapshot_b: dict | None = Field(
+        default=None,
+        description="Raw current snapshot dict for passthrough mode (no Redis lookup).",
     )
 
 

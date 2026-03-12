@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     # byte-for-bit identical when every flag is False.
     # G1.2 (GREEN) — WBS Phase 1: Session Correlation
     CORRELATION_ENABLED: bool = False  # X-Session-ID generation + forwarding in dispatcher
+    # G2.2 (GREEN) — WBS Phase 2: Content-Addressed Snapshot Store
+    SNAPSHOT_STORE_ENABLED: bool = False  # SHA-256 snapshot hashing + amve:findings:anonymous stream key
 
     # ── Rate limiting ───────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"

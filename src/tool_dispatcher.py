@@ -95,8 +95,11 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "amve_build_call_graph": "amve",
     "amve_evaluate_fitness": "amve",
     "amve_generate_architecture_log": "amve",
-    # AEI-17
+    # AEI-17: Dead code detection
     "amve_detect_dead_code": "amve",
+    # Phase 2: Content-Addressed Snapshot Store tools
+    "amve_extract_architecture": "amve",
+    "amve_detect_drift": "amve",
     # Audit Service (WBS-AEI13)
     "audit_security_scan": "audit-service",
     "audit_code_metrics": "audit-service",
@@ -248,6 +251,15 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "amve_detect_dead_code": DispatchRoute(
             base_url=settings.AMVE_SERVICE_URL,
             path="/v1/analysis/dead-code",
+        ),
+        # Phase 2: Content-Addressed Snapshot Store tools (G2.12 GREEN)
+        "amve_extract_architecture": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/architecture/extract",
+        ),
+        "amve_detect_drift": DispatchRoute(
+            base_url=settings.AMVE_SERVICE_URL,
+            path="/v1/architecture/drift",
         ),
         # Audit Service (WBS-AEI13)
         "audit_security_scan": DispatchRoute(
