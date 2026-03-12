@@ -176,6 +176,31 @@ class TestAmveExtractArchitectureHandler:
         assert "/target/path" in json.dumps(captured.get("body", {}))
 
     @pytest.mark.asyncio
+    async def test_handler_response_includes_source_path(self, dispatcher):
+        """AC-2.4: Returned dict includes source_path field."""
+        from src.security.output_sanitizer import OutputSanitizer
+        from src.tools import amve_extract_architecture
+
+        async def mock_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "snapshot_sha": "d" * 64,
+                    "record_count": 5,
+                    "extraction_time_ms": 8.0,
+                },
+            )
+
+        dispatcher._client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+        sanitizer = OutputSanitizer()
+        handler = amve_extract_architecture.create_handler(dispatcher, sanitizer)
+
+        result = await handler(source_path="/my/project")
+        assert result.get("source_path") == "/my/project", (
+            "AC-2.4: response dict must contain source_path"
+        )
+
+    @pytest.mark.asyncio
     async def test_dispatch_sends_post_to_extract_endpoint(self, dispatcher):
         """Dispatcher sends POST to /v1/architecture/extract."""
         captured: dict = {}
