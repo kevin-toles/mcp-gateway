@@ -395,3 +395,51 @@ class TestSnapshotStoreEnabledSetting:
 
         settings = Settings()
         assert settings.SNAPSHOT_STORE_ENABLED is False
+
+
+# =============================================================================
+# G3.1 (RED) — AC-3.1: IDENTITY_PROPAGATION setting
+# =============================================================================
+
+
+class TestIdentityPropagationSetting:
+    """AC-3.1: IDENTITY_PROPAGATION setting present in Settings, bool, default False."""
+
+    def test_identity_propagation_setting_exists(self):
+        """IDENTITY_PROPAGATION attribute is present on Settings."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert hasattr(settings, "IDENTITY_PROPAGATION"), (
+            "Settings must have IDENTITY_PROPAGATION attribute"
+        )
+
+    def test_identity_propagation_default_is_false(self):
+        """IDENTITY_PROPAGATION defaults to False."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.IDENTITY_PROPAGATION is False
+
+    def test_identity_propagation_is_bool(self):
+        """IDENTITY_PROPAGATION type is bool, not int or str."""
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert type(settings.IDENTITY_PROPAGATION) is bool
+
+    def test_identity_propagation_env_override_true(self, monkeypatch):
+        """MCP_GATEWAY_IDENTITY_PROPAGATION=true overrides default."""
+        monkeypatch.setenv("MCP_GATEWAY_IDENTITY_PROPAGATION", "true")
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.IDENTITY_PROPAGATION is True
+
+    def test_identity_propagation_env_override_false(self, monkeypatch):
+        """MCP_GATEWAY_IDENTITY_PROPAGATION=false keeps the flag False."""
+        monkeypatch.setenv("MCP_GATEWAY_IDENTITY_PROPAGATION", "false")
+        from src.core.config import Settings
+
+        settings = Settings()
+        assert settings.IDENTITY_PROPAGATION is False

@@ -25,6 +25,20 @@ _STREAM_KEY = "amve:findings:anonymous"
 
 
 # ---------------------------------------------------------------------------
+# G3.13 (REFACTOR) — no hardcoded stream key strings
+# ---------------------------------------------------------------------------
+
+
+def _stream_key(tenant_id: str) -> str:
+    """Return the Redis stream key scoped to *tenant_id*.
+
+    G3.13 (REFACTOR): centralises construction of ``amve:findings:{tenant_id}``
+    so callers never embed the pattern inline.
+    """
+    return f"amve:findings:{tenant_id}"
+
+
+# ---------------------------------------------------------------------------
 # G2.11 REFACTOR — extracted helper
 # ---------------------------------------------------------------------------
 
@@ -58,6 +72,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         snapshot_b_sha: str | None = None,
         snapshot_a: dict | None = None,
         snapshot_b: dict | None = None,
+        tenant_id: str | None = None,
     ) -> dict:
         # ------------------------------------------------------------------
         # Passthrough mode — AC-2.6
@@ -74,23 +89,31 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         # ------------------------------------------------------------------
         AMVEDetectDriftInput(snapshot_a_sha=snapshot_a_sha, snapshot_b_sha=snapshot_b_sha)
 
+        # G3.10 (GREEN) — Phase 3: use tenant-scoped stream key when flag enabled
+        effective_tenant = tenant_id or "anonymous"
+        stream_key = (
+            _stream_key("anonymous")
+            if not dispatcher._settings.IDENTITY_PROPAGATION
+            else _stream_key(effective_tenant)
+        )
+
         redis_url = dispatcher._settings.REDIS_URL
         redis_client = redis_async.from_url(redis_url, decode_responses=True)
         try:
-            snap_a = await _resolve_snapshot_from_stream(snapshot_a_sha, _STREAM_KEY, redis_client)
+            snap_a = await _resolve_snapshot_from_stream(snapshot_a_sha, stream_key, redis_client)
             if snap_a is None:
                 return {
                     "error": "snapshot_not_found",
                     "sha": snapshot_a_sha,
-                    "stream": _STREAM_KEY,
+                    "stream": stream_key,
                 }
 
-            snap_b = await _resolve_snapshot_from_stream(snapshot_b_sha, _STREAM_KEY, redis_client)
+            snap_b = await _resolve_snapshot_from_stream(snapshot_b_sha, stream_key, redis_client)
             if snap_b is None:
                 return {
                     "error": "snapshot_not_found",
                     "sha": snapshot_b_sha,
-                    "stream": _STREAM_KEY,
+                    "stream": stream_key,
                 }
         finally:
             await redis_client.aclose()

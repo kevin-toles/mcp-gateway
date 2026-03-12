@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     CORRELATION_ENABLED: bool = False  # X-Session-ID generation + forwarding in dispatcher
     # G2.2 (GREEN) — WBS Phase 2: Content-Addressed Snapshot Store
     SNAPSHOT_STORE_ENABLED: bool = False  # SHA-256 snapshot hashing + amve:findings:anonymous stream key
+    # G3.2 (GREEN) — WBS Phase 3: Multi-Tenant Identity Propagation
+    IDENTITY_PROPAGATION: bool = False  # X-Tenant-ID + X-Agent-ID forwarding
 
     # ── Rate limiting ───────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"

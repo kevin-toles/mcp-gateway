@@ -304,6 +304,51 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
+def _get_identity_headers(
+    request_headers: dict | None,
+    *,
+    enabled: bool,
+    auth_enabled: bool,
+) -> dict | None:
+    """Return X-Tenant-ID and X-Agent-ID headers for identity propagation.
+
+    When ``enabled`` is ``False`` returns ``None`` — no headers added,
+    behaviour is byte-for-bit identical to pre-Phase-3 state (AC-3.4).
+
+    When ``enabled`` is ``True`` and ``auth_enabled`` is ``False``, logs a
+    WARNING and falls back to ``tenant_id='anonymous'`` (AC-3.2).
+
+    When ``enabled`` is ``True`` and ``auth_enabled`` is ``True``, extracts
+    ``X-Tenant-ID`` (or ``'anonymous'``) and ``X-Agent-ID`` (or ``'unknown'``)
+    from *request_headers* (AC-3.3).
+
+    G3.4 (GREEN) — extracted helper mirror to ``_get_or_create_session_id``.
+    """
+    if not enabled:
+        return None
+    if not auth_enabled:
+        logger.warning(
+            "IDENTITY_PROPAGATION=true but AUTH_ENABLED=false "
+            "— treating all requests as tenant_id='anonymous'"
+        )
+        tenant_id = "anonymous"
+    else:
+        headers = request_headers or {}
+        tenant_id = (
+            headers.get("x-tenant-id")
+            or headers.get("X-Tenant-ID")
+            or "anonymous"
+        )
+    agent_id = "unknown"
+    if request_headers:
+        agent_id = (
+            request_headers.get("x-agent-id")
+            or request_headers.get("X-Agent-ID")
+            or "unknown"
+        )
+    return {"x-tenant-id": tenant_id, "x-agent-id": agent_id}
+
+
 def _get_or_create_session_id(
     request_headers: dict | None,
     *,
@@ -481,6 +526,16 @@ class ToolDispatcher:
         # When flag is False the helper returns None and nothing is added.
         session_id = _get_or_create_session_id(request_headers, enabled=self._settings.CORRELATION_ENABLED)
         extra_headers: dict | None = {"x-session-id": session_id} if session_id else None
+
+        # G3.6 (GREEN) — Phase 3: Multi-Tenant Identity Propagation
+        # Merge X-Tenant-ID + X-Agent-ID into extra_headers when flag enabled.
+        identity_headers = _get_identity_headers(
+            request_headers,
+            enabled=self._settings.IDENTITY_PROPAGATION,
+            auth_enabled=self._settings.AUTH_ENABLED,
+        )
+        if identity_headers:
+            extra_headers = {**(extra_headers or {}), **identity_headers}
 
         last_exc: Exception | None = None
         attempts = 1 + self._max_retries

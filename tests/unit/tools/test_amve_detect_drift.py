@@ -365,3 +365,126 @@ class TestDetectDriftPassthroughMode:
         assert isinstance(result, dict)
         # Should contain drift detection fields (or success wrapper)
         assert "has_drift" in result or "added_count" in result or result.get("success")
+
+
+# =============================================================================
+# TestDetectDriftTenantStreamKey — G3.9/G3.11 RED
+# =============================================================================
+
+
+class TestDetectDriftTenantStreamKey:
+    """AC-3.6/3.7/3.8: amve_detect_drift uses tenant-scoped stream key."""
+
+    @pytest.fixture
+    def identity_dispatcher(self):
+        """ToolDispatcher with IDENTITY_PROPAGATION=true."""
+        from src.core.config import Settings
+        from src.tool_dispatcher import ToolDispatcher
+
+        settings = Settings(IDENTITY_PROPAGATION=True)
+        return ToolDispatcher(settings)
+
+    @pytest.mark.asyncio
+    async def test_sha_pair_queries_tenant_scoped_stream_when_flag_on(
+        self, identity_dispatcher
+    ):
+        """AC-3.6: handler queries amve:findings:{tenant_id} when IDENTITY_PROPAGATION=true."""
+        from src.security.output_sanitizer import OutputSanitizer
+        from src.tools import amve_detect_drift
+
+        queried_streams: list[str] = []
+
+        async def fake_xrange(stream, start, end):
+            queried_streams.append(stream)
+            if stream == "amve:findings:tenant-foo":
+                return [("1-0", {"snapshot_sha": "sha_a", "snapshot": "{}"})]
+            return []
+
+        mock_redis = AsyncMock()
+        mock_redis.xrange.side_effect = fake_xrange
+        mock_redis.aclose = AsyncMock()
+
+        with patch(
+            "src.tools.amve_detect_drift.redis_async"
+        ) as mock_redis_mod:
+            mock_redis_mod.from_url.return_value = mock_redis
+            sanitizer = OutputSanitizer()
+            handler = amve_detect_drift.create_handler(identity_dispatcher, sanitizer)
+            await handler(
+                snapshot_a_sha="sha_a",
+                snapshot_b_sha="sha_b",
+                tenant_id="tenant-foo",
+            )
+
+        assert any("tenant-foo" in s for s in queried_streams), (
+            f"Expected tenant-scoped stream query; got: {queried_streams}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sha_pair_uses_anonymous_stream_when_flag_off(
+        self, dispatcher
+    ):
+        """AC-3.6: handler queries amve:findings:anonymous when IDENTITY_PROPAGATION=false."""
+        from src.security.output_sanitizer import OutputSanitizer
+        from src.tools import amve_detect_drift
+
+        queried_streams: list[str] = []
+
+        async def fake_xrange(stream, start, end):
+            queried_streams.append(stream)
+            return []
+
+        mock_redis = AsyncMock()
+        mock_redis.xrange.side_effect = fake_xrange
+        mock_redis.aclose = AsyncMock()
+
+        with patch(
+            "src.tools.amve_detect_drift.redis_async"
+        ) as mock_redis_mod:
+            mock_redis_mod.from_url.return_value = mock_redis
+            sanitizer = OutputSanitizer()
+            handler = amve_detect_drift.create_handler(dispatcher, sanitizer)
+            await handler(
+                snapshot_a_sha="sha_a",
+                snapshot_b_sha="sha_b",
+            )
+
+        assert all("anonymous" in s for s in queried_streams), (
+            f"Expected amve:findings:anonymous; got: {queried_streams}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_isolation(self, identity_dispatcher):
+        """AC-3.7: SHA written under tenant-A stream is NOT visible under tenant-B."""
+        from src.security.output_sanitizer import OutputSanitizer
+        from src.tools import amve_detect_drift
+
+        # tenant-A stream has sha_a; tenant-B stream is empty
+        streams: dict[str, list] = {
+            "amve:findings:tenant-A": [("1-0", {"snapshot_sha": "sha_a", "snapshot": "{}"})],
+            "amve:findings:tenant-B": [],
+        }
+
+        async def fake_xrange(stream, start, end):
+            return streams.get(stream, [])
+
+        mock_redis = AsyncMock()
+        mock_redis.xrange.side_effect = fake_xrange
+        mock_redis.aclose = AsyncMock()
+
+        with patch(
+            "src.tools.amve_detect_drift.redis_async"
+        ) as mock_redis_mod:
+            mock_redis_mod.from_url.return_value = mock_redis
+            sanitizer = OutputSanitizer()
+            handler = amve_detect_drift.create_handler(identity_dispatcher, sanitizer)
+            # Query as tenant-B — sha_a lives only in tenant-A's stream
+            result = await handler(
+                snapshot_a_sha="sha_a",
+                snapshot_b_sha="sha_b",
+                tenant_id="tenant-B",
+            )
+
+        # sha_a was not found in tenant-B's stream → snapshot_not_found
+        assert result.get("error") == "snapshot_not_found"
+        assert result.get("sha") == "sha_a"

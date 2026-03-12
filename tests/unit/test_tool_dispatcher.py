@@ -565,3 +565,155 @@ class TestSessionCorrelation:
         # httpx normalises header keys to lower-case
         assert outgoing.get("x-session-id") == session_id
         await d.close()
+
+
+# =============================================================================
+# G3.3 (RED) — AC-3.3, AC-3.4: Identity Propagation header forwarding
+# G3.5 (RED) — AC-3.2: Degradation guard when AUTH_ENABLED=false
+# =============================================================================
+
+
+class TestIdentityPropagationHeaders:
+    """AC-3.3/3.4: X-Tenant-ID and X-Agent-ID attached (or not) by dispatcher."""
+
+    def _make_identity_dispatcher(self, identity_propagation: bool, auth_enabled: bool):
+        """Return (dispatcher, captured_headers_list) wired to mock transport."""
+        import httpx
+        from src.core.config import Settings
+        from src.tool_dispatcher import ToolDispatcher
+
+        captured: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(dict(request.headers))
+            return httpx.Response(200, json={"ok": True})
+
+        transport = httpx.MockTransport(handler)
+        settings = Settings(
+            IDENTITY_PROPAGATION=identity_propagation,
+            AUTH_ENABLED=auth_enabled,
+        )
+        d = ToolDispatcher(settings)
+        d._client = httpx.AsyncClient(transport=transport)
+        return d, captured
+
+    @pytest.mark.asyncio
+    async def test_flag_true_auth_true_attaches_tenant_id(self):
+        """AC-3.3: IDENTITY_PROPAGATION=true + AUTH_ENABLED=true → X-Tenant-ID forwarded."""
+        d, captured = self._make_identity_dispatcher(True, True)
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"x-tenant-id": "tenant-acme", "x-agent-id": "copilot"},
+        )
+        assert captured, "No request captured"
+        outgoing = captured[0]
+        assert outgoing.get("x-tenant-id") == "tenant-acme", (
+            "X-Tenant-ID must be forwarded when IDENTITY_PROPAGATION=true"
+        )
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_flag_true_auth_true_attaches_agent_id(self):
+        """AC-3.3: IDENTITY_PROPAGATION=true + AUTH_ENABLED=true → X-Agent-ID forwarded."""
+        d, captured = self._make_identity_dispatcher(True, True)
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"x-tenant-id": "tenant-acme", "x-agent-id": "copilot"},
+        )
+        assert captured
+        outgoing = captured[0]
+        assert outgoing.get("x-agent-id") == "copilot", (
+            "X-Agent-ID must be forwarded when IDENTITY_PROPAGATION=true"
+        )
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_agent_id_defaults_to_unknown_when_absent(self):
+        """AC-3.3: X-Agent-ID defaults to 'unknown' when not in request_headers."""
+        d, captured = self._make_identity_dispatcher(True, True)
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"x-tenant-id": "tenant-acme"},  # no X-Agent-ID
+        )
+        assert captured
+        outgoing = captured[0]
+        assert outgoing.get("x-agent-id") == "unknown", (
+            "X-Agent-ID must default to 'unknown' when absent"
+        )
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_flag_false_no_identity_headers(self):
+        """AC-3.4: IDENTITY_PROPAGATION=false → no X-Tenant-ID or X-Agent-ID added."""
+        d, captured = self._make_identity_dispatcher(False, True)
+        await d.dispatch(
+            "semantic_search",
+            {"query": "x"},
+            request_headers={"x-tenant-id": "tenant-acme", "x-agent-id": "copilot"},
+        )
+        assert captured
+        outgoing = captured[0]
+        assert "x-tenant-id" not in outgoing, (
+            "X-Tenant-ID must NOT be forwarded when IDENTITY_PROPAGATION=false"
+        )
+        assert "x-agent-id" not in outgoing, (
+            "X-Agent-ID must NOT be forwarded when IDENTITY_PROPAGATION=false"
+        )
+        await d.close()
+
+
+class TestIdentityDegradationGuard:
+    """AC-3.2: IDENTITY_PROPAGATION=true + AUTH_ENABLED=false → WARNING + anonymous."""
+
+    def _make_degraded_dispatcher(self):
+        """Return (dispatcher, captured_headers_list) with identity on but auth off."""
+        import httpx
+        from src.core.config import Settings
+        from src.tool_dispatcher import ToolDispatcher
+
+        captured: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(dict(request.headers))
+            return httpx.Response(200, json={"ok": True})
+
+        transport = httpx.MockTransport(handler)
+        settings = Settings(IDENTITY_PROPAGATION=True, AUTH_ENABLED=False)
+        d = ToolDispatcher(settings)
+        d._client = httpx.AsyncClient(transport=transport)
+        return d, captured
+
+    @pytest.mark.asyncio
+    async def test_no_exception_when_auth_disabled(self):
+        """AC-3.2: No exception raised when IDENTITY_PROPAGATION=true + AUTH_ENABLED=false."""
+        d, _ = self._make_degraded_dispatcher()
+        await d.dispatch("semantic_search", {"query": "x"})  # must not raise
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_warning_logged_when_auth_disabled(self, caplog):
+        """AC-3.2: WARNING logged containing 'anonymous' when AUTH_ENABLED=false."""
+        import logging
+        d, _ = self._make_degraded_dispatcher()
+        with caplog.at_level(logging.WARNING, logger="src.tool_dispatcher"):
+            await d.dispatch("semantic_search", {"query": "x"})
+        warned = any(
+            "anonymous" in record.message.lower() and record.levelno >= logging.WARNING
+            for record in caplog.records
+        )
+        assert warned, "WARNING containing 'anonymous' must be logged when AUTH_ENABLED=false"
+        await d.close()
+
+    @pytest.mark.asyncio
+    async def test_tenant_id_is_anonymous_when_auth_disabled(self):
+        """AC-3.2: X-Tenant-ID is set to 'anonymous' when AUTH_ENABLED=false."""
+        d, captured = self._make_degraded_dispatcher()
+        await d.dispatch("semantic_search", {"query": "x"})
+        assert captured
+        outgoing = captured[0]
+        assert outgoing.get("x-tenant-id") == "anonymous", (
+            "X-Tenant-ID must be 'anonymous' when AUTH_ENABLED=false"
+        )
