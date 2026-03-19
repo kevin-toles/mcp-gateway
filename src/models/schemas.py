@@ -35,11 +35,16 @@ def _sanitize_str_field(v: str) -> str:
 
 
 class SemanticSearchInput(BaseModel):
-    """Input for semantic_search tool."""
+    """Input for semantic_search tool.
+
+    **Parameter compatibility:** Accepts BOTH `top_k` and `limit` interchangeably
+    to prevent LLM validation errors. Canonical form is `top_k`.
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
-    top_k: int = Field(default=10, ge=1, le=100)
+    top_k: int | None = Field(default=None, ge=1, le=100, description="Max results (canonical)")
+    limit: int | None = Field(default=None, ge=1, le=100, description="Max results (alias for top_k)")
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("query", mode="before")
@@ -47,13 +52,30 @@ class SemanticSearchInput(BaseModel):
     def sanitize_query(cls, v: str) -> str:
         return _sanitize_str_field(v)
 
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "SemanticSearchInput":
+        """Accept top_k OR limit, normalize to top_k (canonical form)."""
+        if self.top_k is None and self.limit is None:
+            self.top_k = 10  # default
+        elif self.top_k is None:
+            self.top_k = self.limit  # normalize limit → top_k
+        elif self.limit is not None and self.limit != self.top_k:
+            raise ValueError("Cannot specify both top_k and limit with different values")
+        self.limit = None  # clear alias
+        return self
+
 
 class HybridSearchInput(BaseModel):
-    """Input for hybrid_search tool — WBS-TXS5 (tier params added)."""
+    """Input for hybrid_search tool — WBS-TXS5 (tier params added).
+
+    **Parameter compatibility:** Accepts BOTH `top_k` and `limit` interchangeably
+    to prevent LLM validation errors. Canonical form is `top_k`.
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
-    top_k: int = Field(default=10, ge=1, le=100)
+    top_k: int | None = Field(default=None, ge=1, le=100, description="Max results (canonical)")
+    limit: int | None = Field(default=None, ge=1, le=100, description="Max results (alias for top_k)")
     semantic_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     keyword_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     # TXS5: Taxonomy-enhanced search parameters
@@ -126,6 +148,18 @@ class HybridSearchInput(BaseModel):
                     msg = f"quality_tier_filter value {tier} out of range 1-3"
                     raise ValueError(msg)
         return v
+
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "HybridSearchInput":
+        """Accept top_k OR limit, normalize to top_k (canonical form)."""
+        if self.top_k is None and self.limit is None:
+            self.top_k = 10  # default
+        elif self.top_k is None:
+            self.top_k = self.limit  # normalize limit → top_k
+        elif self.limit is not None and self.limit != self.top_k:
+            raise ValueError("Cannot specify both top_k and limit with different values")
+        self.limit = None  # clear alias
+        return self
 
 
 class GraphTraverseInput(BaseModel):
@@ -551,15 +585,32 @@ class AuditCodeMetricsInput(BaseModel):
 
 
 class AuditCorpusSearchInput(BaseModel):
-    """Input for audit_corpus_search — search code corpus via Qdrant."""
+    """Input for audit_corpus_search — search code corpus via Qdrant.
+
+    **Parameter compatibility:** Accepts BOTH `top_k` and `limit` interchangeably
+    to prevent LLM validation errors. Canonical form is `top_k`.
+    """
 
     query: str = Field(..., description="Search query text")
     collections: list[str] = Field(
         default_factory=lambda: ["code_chunks", "chapters"],
         description="Qdrant collections to search",
     )
-    top_k: int = Field(default=10, ge=1, le=100, description="Max results per collection")
+    top_k: int | None = Field(default=None, ge=1, le=100, description="Max results per collection (canonical)")
+    limit: int | None = Field(default=None, ge=1, le=100, description="Max results per collection (alias for top_k)")
     threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")
+
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "AuditCorpusSearchInput":
+        """Accept top_k OR limit, normalize to top_k (canonical form)."""
+        if self.top_k is None and self.limit is None:
+            self.top_k = 10  # default
+        elif self.top_k is None:
+            self.top_k = self.limit  # normalize limit → top_k
+        elif self.limit is not None and self.limit != self.top_k:
+            raise ValueError("Cannot specify both top_k and limit with different values")
+        self.limit = None  # clear alias
+        return self
 
 
 # ── AMVE Dead Code Detection (AEI-17) ───────────────────────────────────────
@@ -696,13 +747,22 @@ class AuditToolBase(BaseModel):
 
     PDW3.9 REFACTOR: Extracts common ``top_k`` and ``min_similarity``
     pagination/ranking fields so VRE search schemas don't redeclare them.
+
+    **Parameter compatibility:** Accepts BOTH `top_k` and `limit` interchangeably
+    to prevent LLM validation errors. Canonical form is `top_k`.
     """
 
-    top_k: int = Field(
-        default=10,
+    top_k: int | None = Field(
+        default=None,
         ge=1,
         le=100,
-        description="Maximum number of results to return.",
+        description="Maximum number of results to return (canonical).",
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description="Maximum number of results to return (alias for top_k).",
     )
     min_similarity: float = Field(
         default=0.7,
@@ -711,6 +771,18 @@ class AuditToolBase(BaseModel):
         description="Minimum similarity score threshold for returned results.",
     )
 
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "AuditToolBase":
+        """Accept top_k OR limit, normalize to top_k (canonical form)."""
+        if self.top_k is None and self.limit is None:
+            self.top_k = 10  # default
+        elif self.top_k is None:
+            self.top_k = self.limit  # normalize limit → top_k
+        elif self.limit is not None and self.limit != self.top_k:
+            raise ValueError("Cannot specify both top_k and limit with different values")
+        self.limit = None  # clear alias
+        return self
+
 
 class AuditSearchExploitsInput(AuditToolBase):
     """Input for audit_search_exploits — search quarantine Qdrant for exploit vectors.
@@ -718,6 +790,8 @@ class AuditSearchExploitsInput(AuditToolBase):
     Searches the vuln_exploits collection on qdrant-quarantine (:6336) using
     CodeBERT vector embeddings. Returns ranked exploit matches with CVE
     cross-references.
+
+    **Parameter compatibility:** Inherits dual `top_k`/`limit` support from AuditToolBase.
     """
 
     query: str = Field(
@@ -814,10 +888,15 @@ class AuditQualityScanInput(BaseModel):
 
 
 class KnowledgeSearchInput(BaseModel):
-    """Input for knowledge_search — batteries-included KB search with taxonomy expansion."""
+    """Input for knowledge_search — batteries-included KB search with taxonomy expansion.
+
+    **Parameter compatibility:** Accepts BOTH `limit` and `top_k` interchangeably
+    to prevent LLM validation errors. Canonical form is `limit`.
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
-    limit: int = Field(default=10, ge=1, le=50)
+    limit: int | None = Field(default=None, ge=1, le=50, description="Max results (canonical)")
+    top_k: int | None = Field(default=None, ge=1, le=50, description="Max results (alias for limit)")
     expand_taxonomy: bool = Field(
         default=True,
         description="Expand query via Neo4j SIMILAR_TO edges (default ON for broad KB retrieval)",
@@ -851,9 +930,25 @@ class KnowledgeSearchInput(BaseModel):
                     raise ValueError(f"bloom_tier_filter value {tier} out of range 0-6")
         return v
 
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "KnowledgeSearchInput":
+        """Accept limit OR top_k, normalize to limit (canonical form)."""
+        if self.limit is None and self.top_k is None:
+            self.limit = 10  # default
+        elif self.limit is None:
+            self.limit = self.top_k  # normalize top_k → limit
+        elif self.top_k is not None and self.top_k != self.limit:
+            raise ValueError("Cannot specify both limit and top_k with different values")
+        self.top_k = None  # clear alias
+        return self
+
 
 class KnowledgeRefineInput(BaseModel):
-    """Input for knowledge_refine — targeted single-collection KB search."""
+    """Input for knowledge_refine — targeted single-collection KB search.
+
+    **Parameter compatibility:** Accepts BOTH `limit` and `top_k` interchangeably
+    to prevent LLM validation errors. Canonical form is `limit`.
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(
@@ -864,7 +959,8 @@ class KnowledgeRefineInput(BaseModel):
             "pattern_instances/patterns, code_good_patterns, repo_concepts/concepts"
         ),
     )
-    limit: int = Field(default=5, ge=1, le=20)
+    limit: int | None = Field(default=None, ge=1, le=20, description="Max results (canonical)")
+    top_k: int | None = Field(default=None, ge=1, le=20, description="Max results (alias for limit)")
     bloom_tier_filter: list[int] | None = Field(
         default=None,
         description="Filter chapters by Bloom cognitive tier (0-6)",
@@ -901,9 +997,25 @@ class KnowledgeRefineInput(BaseModel):
                     raise ValueError(f"quality_tier_filter value {tier} out of range 1-3")
         return v
 
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "KnowledgeRefineInput":
+        """Accept limit OR top_k, normalize to limit (canonical form)."""
+        if self.limit is None and self.top_k is None:
+            self.limit = 5  # default
+        elif self.limit is None:
+            self.limit = self.top_k  # normalize top_k → limit
+        elif self.top_k is not None and self.top_k != self.limit:
+            raise ValueError("Cannot specify both limit and top_k with different values")
+        self.top_k = None  # clear alias
+        return self
+
 
 class PatternSearchInput(BaseModel):
-    """Input for pattern_search — code pattern and anti-pattern retrieval."""
+    """Input for pattern_search — code pattern and anti-pattern retrieval.
+
+    **Parameter compatibility:** Accepts BOTH `limit` and `top_k` interchangeably
+    to prevent LLM validation errors. Canonical form is `limit`.
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
     pattern_type: str = Field(
@@ -916,12 +1028,25 @@ class PatternSearchInput(BaseModel):
             "'all' = both (fan-out across all primary collections)"
         ),
     )
-    limit: int = Field(default=10, ge=1, le=30)
+    limit: int | None = Field(default=None, ge=1, le=30, description="Max results (canonical)")
+    top_k: int | None = Field(default=None, ge=1, le=30, description="Max results (alias for limit)")
 
     @field_validator("query", mode="before")
     @classmethod
     def sanitize_query(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "PatternSearchInput":
+        """Accept limit OR top_k, normalize to limit (canonical form)."""
+        if self.limit is None and self.top_k is None:
+            self.limit = 10  # default
+        elif self.limit is None:
+            self.limit = self.top_k  # normalize top_k → limit
+        elif self.top_k is not None and self.top_k != self.limit:
+            raise ValueError("Cannot specify both limit and top_k with different values")
+        self.top_k = None  # clear alias
+        return self
 
 
 class DiagramSearchInput(BaseModel):
@@ -929,6 +1054,9 @@ class DiagramSearchInput(BaseModel):
 
     Searches the ``ascii_diagrams`` Qdrant collection using CLIP text encoding
     so query semantics align with the 512-dim CLIP image vectors stored there.
+
+    **Parameter compatibility:** Accepts BOTH `limit` and `top_k` interchangeably
+    to prevent LLM validation errors. Canonical form is `limit`.
     """
 
     query: str = Field(..., min_length=1, max_length=2000)
@@ -943,9 +1071,24 @@ class DiagramSearchInput(BaseModel):
             "Omit (null) to search all diagram types."
         ),
     )
-    limit: int = Field(default=10, ge=1, le=30)
+    limit: int | None = Field(default=None, ge=1, le=30, description="Max results (canonical)")
+    top_k: int | None = Field(default=None, ge=1, le=30, description="Max results (alias for limit)")
 
     @field_validator("query", mode="before")
     @classmethod
     def sanitize_query(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "DiagramSearchInput":
+        """Accept limit OR top_k, normalize to limit (canonical form)."""
+        if self.limit is None and self.top_k is None:
+            self.limit = 10  # default
+        elif self.limit is None:
+            self.limit = self.top_k  # normalize top_k → limit
+        elif self.top_k is not None and self.top_k != self.limit:
+            raise ValueError("Cannot specify both limit and top_k with different values")
+        # Clear the alias after normalization (optional - keeps payload clean)
+        self.top_k = None
+        return self
         return _sanitize_str_field(v)
