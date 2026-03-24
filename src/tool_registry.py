@@ -25,6 +25,7 @@ from src.models.schemas import (
     AMVEExtractArchitectureInput,
     AMVEGenerateArchitectureLogInput,
     AnalyzeTaxonomyCoverageInput,
+    AskInput,
     AuditCodeMetricsInput,
     AuditCorpusSearchInput,
     AuditDependencyAssessInput,
@@ -42,6 +43,7 @@ from src.models.schemas import (
     EnhanceGuidelineInput,
     EnrichBookMetadataInput,
     ExtractBookMetadataInput,
+    FindCodePatternInput,
     GenerateTaxonomyInput,
     GraphQueryInput,
     GraphTraverseInput,
@@ -50,6 +52,7 @@ from src.models.schemas import (
     KnowledgeSearchInput,
     LLMCompleteInput,
     PatternSearchInput,
+    SearchInInput,
     SemanticSearchInput,
 )
 
@@ -107,6 +110,10 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "audit_search_cves": AuditSearchCVEsInput,
     # Phase 7: Quality audit (pattern compliance + anti-patterns)
     "audit_quality_scan": AuditQualityScanInput,
+    # MCP Facade tools (MCP-F)
+    "ask": AskInput,
+    "search_in": SearchInInput,
+    "find_code_pattern": FindCodePatternInput,
 }
 
 

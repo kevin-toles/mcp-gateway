@@ -1091,4 +1091,41 @@ class DiagramSearchInput(BaseModel):
         # Clear the alias after normalization (optional - keeps payload clean)
         self.top_k = None
         return self
-        return _sanitize_str_field(v)
+
+
+# ── MCP Facade Input Models (MCP-F) ────────────────────────────────────
+
+
+class AskInput(BaseModel):
+    """Input for the `ask` facade tool — intent-level KB question.
+
+    Wraps ``hybrid_search`` with a friendly difficulty hint instead of
+    raw ``bloom_tier_filter`` integers.
+    """
+
+    query: str
+    max_results: int = Field(default=10, ge=1, le=50)
+    difficulty: str | None = None
+
+
+class SearchInInput(BaseModel):
+    """Input for the `search_in` facade tool — shelf-targeted KB search.
+
+    Wraps ``knowledge_refine`` with human-readable shelf names instead of
+    raw collection identifiers.
+    """
+
+    query: str
+    source: str = "textbooks"
+    max_results: int = Field(default=5, ge=1, le=30)
+
+
+class FindCodePatternInput(BaseModel):
+    """Input for the `find_code_pattern` facade tool — code example search.
+
+    Wraps ``pattern_search`` with the friendly ``examples`` parameter instead
+    of the internal ``pattern_type`` field.
+    """
+
+    query: str
+    examples: str = "both"

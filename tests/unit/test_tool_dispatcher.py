@@ -68,7 +68,7 @@ class TestRouteTable:
         assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 31
+        assert len(dispatcher.routes) == 39
 
 
 class TestDispatchRouting:
@@ -579,6 +579,7 @@ class TestIdentityPropagationHeaders:
     def _make_identity_dispatcher(self, identity_propagation: bool, auth_enabled: bool):
         """Return (dispatcher, captured_headers_list) wired to mock transport."""
         import httpx
+
         from src.core.config import Settings
         from src.tool_dispatcher import ToolDispatcher
 
@@ -624,9 +625,7 @@ class TestIdentityPropagationHeaders:
         )
         assert captured
         outgoing = captured[0]
-        assert outgoing.get("x-agent-id") == "copilot", (
-            "X-Agent-ID must be forwarded when IDENTITY_PROPAGATION=true"
-        )
+        assert outgoing.get("x-agent-id") == "copilot", "X-Agent-ID must be forwarded when IDENTITY_PROPAGATION=true"
         await d.close()
 
     @pytest.mark.asyncio
@@ -640,9 +639,7 @@ class TestIdentityPropagationHeaders:
         )
         assert captured
         outgoing = captured[0]
-        assert outgoing.get("x-agent-id") == "unknown", (
-            "X-Agent-ID must default to 'unknown' when absent"
-        )
+        assert outgoing.get("x-agent-id") == "unknown", "X-Agent-ID must default to 'unknown' when absent"
         await d.close()
 
     @pytest.mark.asyncio
@@ -656,12 +653,8 @@ class TestIdentityPropagationHeaders:
         )
         assert captured
         outgoing = captured[0]
-        assert "x-tenant-id" not in outgoing, (
-            "X-Tenant-ID must NOT be forwarded when IDENTITY_PROPAGATION=false"
-        )
-        assert "x-agent-id" not in outgoing, (
-            "X-Agent-ID must NOT be forwarded when IDENTITY_PROPAGATION=false"
-        )
+        assert "x-tenant-id" not in outgoing, "X-Tenant-ID must NOT be forwarded when IDENTITY_PROPAGATION=false"
+        assert "x-agent-id" not in outgoing, "X-Agent-ID must NOT be forwarded when IDENTITY_PROPAGATION=false"
         await d.close()
 
 
@@ -671,6 +664,7 @@ class TestIdentityDegradationGuard:
     def _make_degraded_dispatcher(self):
         """Return (dispatcher, captured_headers_list) with identity on but auth off."""
         import httpx
+
         from src.core.config import Settings
         from src.tool_dispatcher import ToolDispatcher
 
@@ -697,12 +691,12 @@ class TestIdentityDegradationGuard:
     async def test_warning_logged_when_auth_disabled(self, caplog):
         """AC-3.2: WARNING logged containing 'anonymous' when AUTH_ENABLED=false."""
         import logging
+
         d, _ = self._make_degraded_dispatcher()
         with caplog.at_level(logging.WARNING, logger="src.tool_dispatcher"):
             await d.dispatch("semantic_search", {"query": "x"})
         warned = any(
-            "anonymous" in record.message.lower() and record.levelno >= logging.WARNING
-            for record in caplog.records
+            "anonymous" in record.message.lower() and record.levelno >= logging.WARNING for record in caplog.records
         )
         assert warned, "WARNING containing 'anonymous' must be logged when AUTH_ENABLED=false"
         await d.close()
@@ -714,6 +708,4 @@ class TestIdentityDegradationGuard:
         await d.dispatch("semantic_search", {"query": "x"})
         assert captured
         outgoing = captured[0]
-        assert outgoing.get("x-tenant-id") == "anonymous", (
-            "X-Tenant-ID must be 'anonymous' when AUTH_ENABLED=false"
-        )
+        assert outgoing.get("x-tenant-id") == "anonymous", "X-Tenant-ID must be 'anonymous' when AUTH_ENABLED=false"

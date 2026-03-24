@@ -119,7 +119,7 @@ class TestToolRegistryWorkflow:
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 31
+        assert len(registry.list_all()) == 42
 
 
 EXPECTED_WORKFLOW_ROUTES = {
@@ -189,7 +189,7 @@ class TestWorkflowRouteTable:
         )
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 31
+        assert len(dispatcher.routes) == 39
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -1400,12 +1400,19 @@ EXPECTED_ALL_TOOL_NAMES = {
     "a2a_send_message",
     "a2a_get_task",
     "a2a_cancel_task",
+    # KB search tools
+    "graph_traverse",
+    "knowledge_search",
+    "knowledge_refine",
+    "pattern_search",
+    "diagram_search",
     # 6 workflow tools
     "convert_pdf",
     "extract_book_metadata",
     "batch_extract_metadata",
     "generate_taxonomy",
     "enrich_book_metadata",
+    "batch_enrich_metadata",
     "enhance_guideline",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage",
@@ -1418,6 +1425,9 @@ EXPECTED_ALL_TOOL_NAMES = {
     "amve_generate_architecture_log",
     # Dead Code Detection (AEI-17)
     "amve_detect_dead_code",
+    # Phase 2: Content-Addressed Snapshot Store
+    "amve_extract_architecture",
+    "amve_detect_drift",
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan",
     "audit_code_metrics",
@@ -1431,6 +1441,10 @@ EXPECTED_ALL_TOOL_NAMES = {
     "audit_search_cves",
     # Phase 7: Quality audit
     "audit_quality_scan",
+    # MCP Facade tools (MCP-F)
+    "ask",
+    "search_in",
+    "find_code_pattern",
 }
 
 
@@ -1458,7 +1472,7 @@ class TestToolsListWorkflow:
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 31
+        assert len(tools) == 42
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client

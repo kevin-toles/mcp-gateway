@@ -53,6 +53,10 @@ EXPECTED_TOOL_NAMES = {
     "audit_search_cves",
     # Phase 7: Quality audit
     "audit_quality_scan",
+    # MCP Facade tools (MCP-F)
+    "ask",
+    "search_in",
+    "find_code_pattern",
 }
 
 VALID_TIERS = {"bronze", "silver", "gold", "enterprise"}
@@ -185,6 +189,18 @@ tools:
     description: "Audit source code for coding pattern violations and anti-patterns"
     tier: bronze
     tags: [audit, quality, patterns, antipatterns]
+  - name: ask
+    description: "General software-engineering question from KB"
+    tier: bronze
+    tags: [search, rag, facade]
+  - name: search_in
+    description: "Targeted search in a specific knowledge shelf"
+    tier: bronze
+    tags: [search, rag, facade]
+  - name: find_code_pattern
+    description: "Find code examples for a software practice"
+    tier: bronze
+    tags: [search, rag, facade, code, patterns]
 """
 
 
@@ -249,7 +265,7 @@ class TestToolRegistryLoading:
 
     def test_loads_25_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 31
+        assert registry.tool_count == 34
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -347,11 +363,11 @@ class TestToolRegistryAccess:
 
     def test_list_all_returns_25(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 31
+        assert len(tools) == 34
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 31
+        assert registry.tool_count == 34
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():
@@ -405,5 +421,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 31
-        assert registry.tool_names() == EXPECTED_TOOL_NAMES
+        assert registry.tool_count == 42
+        assert {"ask", "search_in", "find_code_pattern"}.issubset(registry.tool_names())

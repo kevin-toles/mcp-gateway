@@ -26,11 +26,12 @@ from src.tools import (
     amve_detect_communication,
     amve_detect_dead_code,
     amve_detect_drift,
-    amve_extract_architecture,
     amve_detect_patterns,
     amve_evaluate_fitness,
+    amve_extract_architecture,
     amve_generate_architecture_log,
     analyze_taxonomy_coverage,
+    ask,
     audit_code_metrics,
     audit_corpus_search,
     audit_dependency_assess,
@@ -48,6 +49,7 @@ from src.tools import (
     enhance_guideline,
     enrich_book_metadata,
     extract_book_metadata,
+    find_code_pattern,
     generate_taxonomy,
     graph_query,
     graph_traverse,
@@ -56,6 +58,7 @@ from src.tools import (
     knowledge_search,
     llm_complete,
     pattern_search,
+    search_in,
     semantic_search,
 )
 
@@ -111,6 +114,10 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "audit_search_exploits": audit_search_exploits.create_handler,
     "audit_search_cves": audit_search_cves.create_handler,
     "audit_quality_scan": audit_quality_scan.create_handler,
+    # MCP Facade tools (MCP-F)
+    "ask": ask.create_handler,
+    "search_in": search_in.create_handler,
+    "find_code_pattern": find_code_pattern.create_handler,
 }
 
 

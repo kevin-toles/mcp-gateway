@@ -14,6 +14,10 @@ from pydantic import BaseModel
 
 from src.models import schemas
 
+# Facade models use max_results as their external parameter name by design.
+# They do not participate in the limit/top_k dual-parameter pattern.
+_FACADE_MODEL_EXCLUSIONS = {"AskInput", "SearchInInput", "FindCodePatternInput"}
+
 
 def _get_all_search_input_models() -> list[tuple[str, type[BaseModel]]]:
     """Discover all *SearchInput and *Input models that have query + result limit fields."""
@@ -31,6 +35,11 @@ def _get_all_search_input_models() -> list[tuple[str, type[BaseModel]]]:
         # Check if it has a 'query' field (indicates it's a search-like tool)
         fields = obj.model_fields
         if "query" not in fields:
+            continue
+
+        # Facade models use max_results as their external parameter name by design;
+        # they are excluded from the dual-parameter enforcement rule.
+        if name in _FACADE_MODEL_EXCLUSIONS:
             continue
 
         # Check if it has ANY of: limit, top_k, max_results, max_depth

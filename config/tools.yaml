@@ -5,11 +5,13 @@
 tools:
   - name: semantic_search
     description: "Search across code, documentation, and textbooks using semantic similarity"
+    when_to_use: "Low-level vector search. Use when you need exact collection targeting and threshold control with no fusion."
     tier: bronze
     tags: [search, rag]
 
   - name: hybrid_search
     description: "Combines semantic search with keyword matching for better precision"
+    when_to_use: "Expert use only — use ask/search_in/find_code_pattern instead. Call directly only when you need to tune semantic_weight, bloom_tier_boost, or other routing internals."
     tier: bronze
     tags: [search, rag]
 
@@ -21,21 +23,25 @@ tools:
   # Issue #6: consolidated KB tools (knowledge_search / knowledge_refine / pattern_search)
   - name: knowledge_search
     description: "Batteries-included KB search across all collections (chapters, code, patterns) with taxonomy expansion ON by default. Use for broad knowledge retrieval."
+    when_to_use: "Expert use only — exposes expand_taxonomy, mmr_rerank, bloom_tier_filter. Use ask facade instead for general questions."
     tier: bronze
     tags: [search, rag, knowledge]
 
   - name: knowledge_refine
     description: "Targeted single-collection KB search with optional Bloom or CRE tier filters. Use when you know which collection has the relevant content."
+    when_to_use: "Expert use only — collection-scoped with mmr controls. Use search_in facade for standard shelf queries."
     tier: bronze
     tags: [search, rag, knowledge]
 
   - name: pattern_search
     description: "Code pattern and anti-pattern retrieval. Searches code_good_patterns, pattern_instances, or all collections. Use to find design patterns, code smells, or best-practice examples."
+    when_to_use: "Use find_code_pattern facade for standard code example queries. Use pattern_search directly only when you need pattern_type control beyond good/bad/both."
     tier: bronze
     tags: [search, rag, patterns, code]
 
   - name: diagram_search
     description: "Semantic search over KB architecture diagrams (ASCII art, sequence diagrams, flow charts) using CLIP cross-modal encoding. Use to find visual representations of architectural concepts, design patterns, or system interactions."
+    when_to_use: "Architecture diagram search. Use directly — no facade equivalent needed."
     tier: bronze
     tags: [search, rag, diagrams, architecture]
 
@@ -242,3 +248,34 @@ tools:
       dependencies required. Requires audit-service (:8084).
     tier: bronze
     tags: [audit, quality, patterns, antipatterns, static-analysis]
+
+  # ── MCP Facade Tools (MCP-F) ─────────────────────────────────────────
+
+  - name: ask
+    description: >
+      General software-engineering question answered from the KB.
+      Use this as the default starting point — it automatically selects the
+      right collections and query strategy. Supports optional difficulty hint
+      ("beginner", "intermediate", "advanced") to constrain Bloom taxonomy tier.
+    when_to_use: "Default. Start here for any general or cross-cutting question."
+    tier: bronze
+    tags: [search, rag, facade]
+
+  - name: search_in
+    description: >
+      Targeted search within a specific knowledge shelf.
+      Use when you know the content type: "textbooks" (concept explanations),
+      "code" (implementation examples), "patterns" (design patterns / anti-patterns),
+      or "diagrams" (architecture diagrams). More precise than ask for shelf-specific lookups.
+    when_to_use: "Use when you know the type of content you need: textbooks, code, patterns, or diagrams."
+    tier: bronze
+    tags: [search, rag, facade]
+
+  - name: find_code_pattern
+    description: >
+      Find code examples for a software practice.
+      Use when you need concrete code, not conceptual explanation.
+      examples="good" returns correct implementations; "bad" returns anti-patterns; "both" returns both.
+    when_to_use: "Use when you need concrete code examples, not conceptual explanation."
+    tier: bronze
+    tags: [search, rag, facade, code, patterns]

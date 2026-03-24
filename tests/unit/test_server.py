@@ -43,6 +43,10 @@ EXPECTED_TOOL_NAMES = {
     "amve_build_call_graph",
     "amve_evaluate_fitness",
     "amve_generate_architecture_log",
+    # MCP Facade tools (MCP-F)
+    "ask",
+    "search_in",
+    "find_code_pattern",
 }
 
 VALID_TOOLS_YAML = """\
@@ -131,6 +135,18 @@ tools:
     description: "Generate architecture log"
     tier: gold
     tags: [amve, architecture, batch-scan, baseline]
+  - name: ask
+    description: "General software-engineering question from KB"
+    tier: bronze
+    tags: [search, rag, facade]
+  - name: search_in
+    description: "Targeted search in a specific knowledge shelf"
+    tier: bronze
+    tags: [search, rag, facade]
+  - name: find_code_pattern
+    description: "Find code examples for a software practice"
+    tier: bronze
+    tags: [search, rag, facade, code, patterns]
 """
 
 
@@ -185,7 +201,7 @@ class TestToolsList:
     async def test_returns_21_tools(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 21
+        assert len(tools) == 24
 
     async def test_tool_names(self, mcp_server):
         async with Client(mcp_server) as client:

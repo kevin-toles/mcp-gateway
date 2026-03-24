@@ -33,6 +33,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         query: str,
         diagram_type: str | None = None,
         limit: int = 10,
+        top_k: int | None = None,
     ) -> dict:
         """Search KB architecture diagrams using natural-language descriptions.
 
@@ -52,7 +53,13 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
                 - 'box_flow' — box-and-arrow flow / decision diagrams
                 Omit (or pass null) to search all diagram types.
             limit: Maximum results to return (1-30, default 10).
+            top_k: Alias for ``limit`` (LLM-friendly name). When both are
+                provided, ``top_k`` takes precedence.
         """
+        # Accept top_k as an alias so LLMs that prefer that name are not rejected
+        # at the MCP protocol layer before Pydantic validation even runs.
+        if top_k is not None:
+            limit = top_k
         validated = DiagramSearchInput(
             query=query,
             diagram_type=diagram_type,
