@@ -1129,3 +1129,38 @@ class FindCodePatternInput(BaseModel):
 
     query: str
     examples: str = "both"
+
+
+class FoundationSearchInput(BaseModel):
+    """Input for the ``foundation_search`` tool — WBS-F7.
+
+    Routes to USS ``/v1/search/foundation`` for mathematical, statistical,
+    or theoretical underpinnings of software concepts.
+
+    **Parameter compatibility:** Accepts BOTH ``limit`` and ``top_k``
+    interchangeably to prevent LLM validation errors. Canonical form is
+    ``limit``.
+    """
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    domains: list[str] | None = Field(default=None)
+    include_graph_neighbors: bool = Field(default=False)
+    limit: int | None = Field(default=None, ge=1, le=50, description="Max results (canonical)")
+    top_k: int | None = Field(default=None, ge=1, le=50, description="Max results (alias for limit)")
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "FoundationSearchInput":
+        """Accept limit OR top_k, normalize to limit (canonical form)."""
+        if self.limit is None and self.top_k is None:
+            self.limit = 5  # default
+        elif self.limit is None:
+            self.limit = self.top_k  # normalize top_k → limit
+        elif self.top_k is not None and self.top_k != self.limit:
+            raise ValueError("Cannot specify both limit and top_k with different values")
+        self.top_k = None
+        return self

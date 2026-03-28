@@ -111,6 +111,8 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     # AEI-23: VRE quarantine tools
     "audit_search_exploits": "audit-service",
     "audit_search_cves": "audit-service",
+    # WBS-F7: Foundation search (scientific / theoretical layer)
+    "foundation_search": "unified-search-service",
 }
 
 
@@ -180,11 +182,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.AI_AGENTS_URL,
             path="/a2a/v1/tasks",  # /{task_id}:cancel appended at dispatch time
         ),
-        # Workflow tools (WBS-WF6) — 900s timeout for large PDFs (compiler books ~800pg)
+        # Workflow tools (WBS-WF6) — no timeout (large scanned PDFs can exceed 900s with OCR)
         "convert_pdf": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
             path="/api/v1/workflows/convert-pdf",
-            timeout=900.0,
+            timeout=None,
         ),
         "extract_book_metadata": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
@@ -298,6 +300,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/audit/quality",
         ),
+        # WBS-F7: Foundation search (scientific / theoretical layer)
+        "foundation_search": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path="/v1/search/foundation",
+        ),
     }
 
 
@@ -328,24 +335,15 @@ def _get_identity_headers(
         return None
     if not auth_enabled:
         logger.warning(
-            "IDENTITY_PROPAGATION=true but AUTH_ENABLED=false "
-            "— treating all requests as tenant_id='anonymous'"
+            "IDENTITY_PROPAGATION=true but AUTH_ENABLED=false — treating all requests as tenant_id='anonymous'"
         )
         tenant_id = "anonymous"
     else:
         headers = request_headers or {}
-        tenant_id = (
-            headers.get("x-tenant-id")
-            or headers.get("X-Tenant-ID")
-            or "anonymous"
-        )
+        tenant_id = headers.get("x-tenant-id") or headers.get("X-Tenant-ID") or "anonymous"
     agent_id = "unknown"
     if request_headers:
-        agent_id = (
-            request_headers.get("x-agent-id")
-            or request_headers.get("X-Agent-ID")
-            or "unknown"
-        )
+        agent_id = request_headers.get("x-agent-id") or request_headers.get("X-Agent-ID") or "unknown"
     return {"x-tenant-id": tenant_id, "x-agent-id": agent_id}
 
 

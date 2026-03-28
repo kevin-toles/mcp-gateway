@@ -343,3 +343,25 @@ kill $(lsof -ti:8087) 2>/dev/null
 ```bash
 lsof -ti:8087 | xargs kill -9
 ```
+
+---
+
+## WBS-F7: `foundation_search` Tool — Deployment Gate
+
+**Phase 1 live requires USS output sanitizer deployed** (OQ-2 prerequisite per ADR-011).
+
+Before enabling `foundation_search` for live traffic:
+
+1. Confirm USS output sanitizer is deployed and active.
+2. Smoke test — `foundation_search` must appear in the tool registry:
+   ```bash
+   curl -s http://localhost:8087/tools | python3 -m json.tool | grep foundation_search
+   ```
+3. Verify dispatch to USS:
+   ```bash
+   # Expected: POST http://localhost:8081/v1/search/foundation
+   curl -s -X POST http://localhost:8087/tools/call \
+     -H "Content-Type: application/json" \
+     -d '{"name": "foundation_search", "arguments": {"query": "entropy convergence"}}'
+   ```
+4. If USS is not yet running, `foundation_search` invocations will return a 503 from the dispatcher — this is safe and expected until WBS-F6 is live.

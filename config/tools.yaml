@@ -279,3 +279,15 @@ tools:
     when_to_use: "Use when you need concrete code examples, not conceptual explanation."
     tier: bronze
     tags: [search, rag, facade, code, patterns]
+
+  - name: foundation_search
+    description: >
+      Search the scientific foundation layer for mathematical, statistical, or theoretical
+      underpinnings of software concepts. Use when a user asks WHY something works, asks
+      about formal proofs or convergence, or when software KB results are
+      insufficient for understanding first-principles reasoning.
+    when_to_use: >
+      Use when the question requires first-principles reasoning, formal proofs, or
+      convergence analysis beyond what the software KB provides.
+    tier: bronze
+    tags: [search, foundation, scientific]

@@ -86,12 +86,16 @@ def _extract_book(
     book_path: str,
     out_path: str,
     enable_summary: bool,
+    vtf_path: str | None = None,
 ) -> dict:
+    options: dict = {"enable_summary": enable_summary}
+    if vtf_path:
+        options["vtf_path"] = vtf_path
     payload = {
         "input_path": book_path,
         "output_path": out_path,
         "chapters": None,
-        "options": {"enable_summary": enable_summary},
+        "options": options,
     }
     resp = client.post(
         f"{co_url}/api/v1/workflows/extract-book",
@@ -109,6 +113,7 @@ def main() -> None:
     parser.add_argument("--file-pattern", default="*.json")
     parser.add_argument("--skip-existing", action="store_true", default=False)
     parser.add_argument("--enable-summary", action="store_true", default=False)
+    parser.add_argument("--vtf-path", default=None, help="Path to a custom validated_term_filter.json")
     parser.add_argument("--co-url", default=os.environ.get("CODE_ORCHESTRATOR_URL", "http://localhost:8083"))
     args = parser.parse_args()
 
@@ -123,6 +128,8 @@ def main() -> None:
     _log(f"   Output:  {out_dir}")
     _log(f"   Pattern: {args.file_pattern}")
     _log(f"   Skip existing: {args.skip_existing}")
+    if args.vtf_path:
+        _log(f"   VTF:    {args.vtf_path}")
     _log("=" * 60)
 
     # Health check — fail fast before touching any files
@@ -168,7 +175,7 @@ def main() -> None:
             _log(f"[{idx:3d}/{total}] 📖 {book_name}")
 
             try:
-                body = _extract_book(client, args.co_url, book_path, out_path, args.enable_summary)
+                body = _extract_book(client, args.co_url, book_path, out_path, args.enable_summary, args.vtf_path)
                 elapsed = time.time() - book_start
 
                 ch = body.get("total_chapters", 0)

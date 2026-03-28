@@ -421,5 +421,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 42
+        assert registry.tool_count == 43
         assert {"ask", "search_in", "find_code_pattern"}.issubset(registry.tool_names())

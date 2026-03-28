@@ -50,6 +50,7 @@ from src.tools import (
     enrich_book_metadata,
     extract_book_metadata,
     find_code_pattern,
+    foundation_search,
     generate_taxonomy,
     graph_query,
     graph_traverse,
@@ -118,6 +119,8 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "ask": ask.create_handler,
     "search_in": search_in.create_handler,
     "find_code_pattern": find_code_pattern.create_handler,
+    # WBS-F7: Foundation search (scientific / theoretical layer)
+    "foundation_search": foundation_search.create_handler,
 }
 
 

@@ -76,6 +76,7 @@ def _launch_terminal(
     skip_existing: bool,
     enable_summary: bool,
     co_url: str,
+    vtf_path: str | None = None,
 ) -> dict:
     """Open a new Terminal.app window running the extraction script.
 
@@ -93,6 +94,7 @@ def _launch_terminal(
 
     skip_flag = "--skip-existing" if skip_existing else ""
     summary_flag = "--enable-summary" if enable_summary else ""
+    vtf_flag = f"--vtf-path '{vtf_path}'" if vtf_path else ""
 
     from datetime import datetime as _dt
 
@@ -110,7 +112,7 @@ printf '\\n\\033[1;36m══ Batch Metadata Extraction ══  Log: {log_file}\\
     --output-dir '{out_dir}' \\
     --file-pattern '{file_pattern}' \\
     --co-url '{co_url}' \\
-    {skip_flag} {summary_flag} 2>&1 | tee '{log_file}'
+    {skip_flag} {summary_flag} {vtf_flag} 2>&1 | tee '{log_file}'
 EXIT_CODE=${{PIPESTATUS[0]}}
 ln -sf '{log_file}' '{PROGRESS_LOG}'
 echo ''
@@ -153,6 +155,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         file_pattern: str = "*.json",
         skip_existing: bool = True,
         enable_summary: bool = False,
+        vtf_path: str | None = None,
         ctx: Context | None = None,
     ) -> dict:
         """Extract metadata from all books in a directory.
@@ -166,6 +169,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             file_pattern: Glob pattern for book files (default: *.json).
             skip_existing: Skip books that already have metadata output files.
             enable_summary: Whether to generate LLM summaries (default: False for speed).
+            vtf_path: Optional path to a custom validated_term_filter.json for this batch.
         """
         validated = BatchExtractMetadataInput(
             input_dir=input_dir,
@@ -196,6 +200,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             skip_existing=validated.skip_existing,
             enable_summary=enable_summary,
             co_url=co_url,
+            vtf_path=vtf_path,
         )
 
         # ── Discover books (mirrors original discover_books()) ──────────

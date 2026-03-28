@@ -44,6 +44,7 @@ from src.models.schemas import (
     EnrichBookMetadataInput,
     ExtractBookMetadataInput,
     FindCodePatternInput,
+    FoundationSearchInput,
     GenerateTaxonomyInput,
     GraphQueryInput,
     GraphTraverseInput,
@@ -110,6 +111,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "audit_search_cves": AuditSearchCVEsInput,
     # Phase 7: Quality audit (pattern compliance + anti-patterns)
     "audit_quality_scan": AuditQualityScanInput,
+    # WBS-F7: Foundation search (scientific / theoretical layer)
+    "foundation_search": FoundationSearchInput,
     # MCP Facade tools (MCP-F)
     "ask": AskInput,
     "search_in": SearchInInput,
