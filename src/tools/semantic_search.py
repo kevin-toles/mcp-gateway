@@ -1,5 +1,9 @@
 """semantic_search tool handler — WBS-MCP8.
 
+Accepts a human-readable ``source`` parameter and resolves it to the
+internal backend collection name via ``resolve_search_collection()``.
+Callers never see or need to know internal collection routing values.
+
 Factory creates a closure that validates input via Pydantic,
 dispatches to the semantic-search backend, and sanitizes output.
 """
@@ -7,6 +11,7 @@ dispatches to the semantic-search backend, and sanitizes output.
 from src.models.schemas import SemanticSearchInput
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
+from src.tools._resolvers import resolve_search_collection
 
 TOOL_NAME = "semantic_search"
 
@@ -16,11 +21,20 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
     async def semantic_search(
         query: str,
-        collection: str = "all",
+        source: str = "all",
         top_k: int = 10,
         threshold: float = 0.5,
     ) -> dict:
-        """Search across code, documentation, and textbooks using semantic similarity."""
+        """Search across code, documentation, and textbooks using semantic similarity.
+
+        Args:
+            source: Knowledge collection to search. One of:
+                - "all"       — search across all collections (default)
+                - "code"      — CRE code implementation examples
+                - "docs"      — documentation
+                - "textbooks" — textbook chapter prose
+        """
+        collection = resolve_search_collection(source)
         validated = SemanticSearchInput(
             query=query,
             collection=collection,

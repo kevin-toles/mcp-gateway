@@ -356,7 +356,7 @@ class GenerateTaxonomyInput(BaseModel):
     """
 
     enriched_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/books/enriched",
+        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
         min_length=1,
         max_length=1000,
         description="Directory containing *_enriched.json files",
@@ -391,18 +391,59 @@ class BatchEnrichMetadataInput(BaseModel):
     """Input for batch_enrich_metadata tool — batch enrich all metadata files in a directory."""
 
     metadata_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/books/metadata",
+        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/metadata",
         min_length=1,
         max_length=1000,
         description="Directory containing *_metadata.json files",
     )
     output_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/books/enriched",
+        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
         min_length=1,
         max_length=1000,
         description="Output directory for enriched JSON files",
     )
     taxonomy_path: str | None = Field(default=None, max_length=1000, description="Path to taxonomy JSON file")
+    mode: str = Field(
+        default="auto",
+        pattern=r"^(auto|software|foundation)$",
+        description=(
+            "Enrichment mode: 'auto' (detect from metadata_dir path — "
+            "ext_metadata → foundation, else software), 'software' (default KB), "
+            "'foundation' (scientific collections, auto-sets vtf/seed/classifier/"
+            "graphcodebert unless overridden)."
+        ),
+    )
+    vtf_path: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Path to validated term filter JSON (overrides CO default; "
+            "pass ESC_validated_term_filter.json for scientific collections)"
+        ),
+    )
+    seed_concepts: list[str] | None = Field(
+        default=None,
+        description=(
+            "SBERT anchor concepts for ConceptValidator "
+            "(overrides SEED_PROGRAMMING_CONCEPTS; pass SEED_SCIENTIFIC_CONCEPTS "
+            "for scientific collections)"
+        ),
+    )
+    classifier_enabled: bool = Field(
+        default=True, description="Enable HTC LightGBM classifier (set False for scientific collections)"
+    )
+    graphcodebert_enabled: bool = Field(
+        default=True, description="Enable GraphCodeBERT validation (set False for scientific collections)"
+    )
+    raw_content_dir: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Directory containing raw book JSONs (with 'content' per chapter). "
+            "Required for foundation collections (e.g. ext_raw/<domain>/). "
+            "Omit for software KB."
+        ),
+    )
     resume: bool = Field(default=True, description="Skip books that already have an enriched output file")
     limit: int = Field(default=0, ge=0, description="Cap at N books (0 = no limit)")
     book: str = Field(default="", max_length=500, description="Process only books whose filename contains this string")

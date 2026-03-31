@@ -21,15 +21,21 @@ from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 
 CO_ENRICH_URL = "http://localhost:8083/api/v1/workflows/enrich-book"
-LATEST_LINK = "/tmp/batch_enrich_latest.log"
+LATEST_LINK = "/tmp/batch_enrich_latest.log"  # noqa: S108
 
 
 def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
     async def batch_enrich_metadata(
-        metadata_dir: str = "/Users/kevintoles/POC/ai-platform-data/books/metadata",
-        output_dir: str = "/Users/kevintoles/POC/ai-platform-data/books/enriched",
+        metadata_dir: str = "/Users/kevintoles/POC/ai-platform-data/software engineering collections/metadata",
+        output_dir: str = "/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
         taxonomy_path: str | None = None,
+        mode: str = "auto",
+        vtf_path: str | None = None,
+        seed_concepts: list[str] | None = None,
+        classifier_enabled: bool = True,
+        graphcodebert_enabled: bool = True,
+        raw_content_dir: str | None = None,
         resume: bool = True,
         limit: int = 0,
         book: str = "",
@@ -45,6 +51,14 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             metadata_dir: Directory containing *_metadata.json files.
             output_dir: Where to write *_enriched.json output files.
             taxonomy_path: Taxonomy JSON path (auto-discovers latest uber_taxonomy_v*.json if omitted).
+            mode: Enrichment mode — "software" (default KB), "foundation" (scientific collections),
+                  or "auto" (detect from metadata_dir path: ext_metadata → foundation, else software).
+                  "foundation" automatically sets vtf_path, seed_concepts, classifier_enabled=False,
+                  graphcodebert_enabled=False unless the caller explicitly overrides them.
+            vtf_path: Validated term filter JSON path. Explicit override; mode default applies if omitted.
+            seed_concepts: SBERT anchor concepts list. Explicit override; mode default applies if omitted.
+            classifier_enabled: Enable HTC LightGBM classifier. Explicit override; mode default applies if omitted.
+            graphcodebert_enabled: Enable GraphCodeBERT validation. Explicit override; mode default applies if omitted.
             resume: Skip books that already have an enriched output file (default: True).
             limit: Cap at N books — 0 means all (default: 0).
             book: Only process books whose filename contains this string (default: all).
@@ -58,19 +72,62 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         if not Path(metadata_dir).exists():
             return {"status": "error", "message": f"metadata_dir not found: {metadata_dir}"}
 
+        # Resolve mode: "auto" detects from path, otherwise use explicit value.
+        _esc_root = "/Users/kevintoles/POC/ai-platform-data"
+        _esc_vtf = f"{_esc_root}/data/ESC_validated_term_filter.json"
+        _foundation_seed: list[str] = []
+        try:
+            import importlib.util as _ilu
+
+            _spec = _ilu.spec_from_file_location("_fsc", f"{_esc_root}/data/foundation_seed_concepts.py")
+            if _spec and _spec.loader:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+                _foundation_seed = list(getattr(_mod, "SEED_SCIENTIFIC_CONCEPTS", []))
+        except Exception:  # noqa: S110
+            pass
+
+        _resolved_mode = mode
+        if _resolved_mode == "auto":
+            _resolved_mode = "foundation" if "ext_metadata" in metadata_dir else "software"
+
+        if _resolved_mode == "foundation":
+            # Apply foundation defaults for any param not explicitly overridden by caller.
+            # Caller-supplied non-None values take precedence.
+            if vtf_path is None:
+                vtf_path = _esc_vtf
+            if seed_concepts is None:
+                seed_concepts = _foundation_seed or None
+            # classifier_enabled and graphcodebert_enabled default True in the signature;
+            # only override them to False if the caller left them at their defaults (True).
+            # There is no way to distinguish "caller passed True" from "default True" in Python,
+            # so foundation mode always forces these off — callers who need them on must use
+            # mode="software" or mode="auto" with a non-ext_metadata path.
+            classifier_enabled = False
+            graphcodebert_enabled = False
+            # ADR-011 §5: derive raw_content_dir from metadata_dir if caller didn't supply it.
+            # Callers own layout knowledge — CO no longer guesses this.
+            if raw_content_dir is None:
+                raw_content_dir = metadata_dir.replace("ext_metadata", "ext_raw")
+
         # Resolve taxonomy path
         if not taxonomy_path:
             candidates = sorted(Path(metadata_dir).parent.glob("taxonomies/uber_taxonomy_v*.json"))
             taxonomy_path = str(candidates[-1]) if candidates else ""
 
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        log_file = f"/tmp/batch_enrich_{timestamp}.log"
+        log_file = f"/tmp/batch_enrich_{timestamp}.log"  # noqa: S108
 
         # Build resume/limit/book filter flags as shell variables
         resume_flag = "true" if resume else "false"
         limit_val = str(limit)
         book_filter = book.lower()
         taxonomy_arg = taxonomy_path or ""
+        vtf_arg = vtf_path or ""
+        seed_concepts_json = __import__("json").dumps(seed_concepts) if seed_concepts else ""
+        classifier_flag = "true" if classifier_enabled else "false"
+        graphcodebert_flag = "true" if graphcodebert_enabled else "false"
+        raw_content_dir_arg = raw_content_dir or ""
 
         # Write the temp runner script (same pattern as seed.sh inner script)
         tmpscript_fd, tmpscript_path = tempfile.mkstemp(suffix=".sh", prefix="batch_enrich_run_")
@@ -81,6 +138,11 @@ set -euo pipefail
 METADATA_DIR='{metadata_dir}'
 OUTPUT_DIR='{output_dir}'
 TAXONOMY_PATH='{taxonomy_arg}'
+VTF_PATH='{vtf_arg}'
+SEED_CONCEPTS_JSON='{seed_concepts_json}'
+CLASSIFIER_ENABLED={classifier_flag}
+GRAPHCODEBERT_ENABLED={graphcodebert_flag}
+RAW_CONTENT_DIR='{raw_content_dir_arg}'
 RESUME={resume_flag}
 LIMIT={limit_val}
 BOOK_FILTER='{book_filter}'
@@ -165,10 +227,15 @@ for i in "${{!TO_PROCESS[@]}}"; do
   PAYLOAD=$(python3 -c "
 import json, sys
 p = {{'input_path': sys.argv[1], 'output_path': sys.argv[2]}}
-tp = sys.argv[3]
-if tp: p['taxonomy_path'] = tp
+if sys.argv[3]: p['taxonomy_path'] = sys.argv[3]
+if sys.argv[4]: p['vtf_path'] = sys.argv[4]
+if sys.argv[5]: p['seed_concepts'] = json.loads(sys.argv[5])
+p['classifier_enabled'] = sys.argv[6] == 'true'
+p['graphcodebert_enabled'] = sys.argv[7] == 'true'
+if sys.argv[8]: p['raw_content_dir'] = sys.argv[8]
 print(json.dumps(p))
-" "$FPATH" "$OUT_PATH" "$TAXONOMY_PATH")
+" "$FPATH" "$OUT_PATH" "$TAXONOMY_PATH" "$VTF_PATH" \\
+  "$SEED_CONCEPTS_JSON" "$CLASSIFIER_ENABLED" "$GRAPHCODEBERT_ENABLED" "$RAW_CONTENT_DIR")
 
   HTTP_STATUS=$(curl -sf -o /tmp/_enrich_resp.json -w "%{{http_code}}" \\
     -X POST "$CO_URL" \\
@@ -177,7 +244,7 @@ print(json.dumps(p))
 
   ELAPSED=$(( SECONDS - T_BOOK ))
   ELAPSED_TOTAL=$(( SECONDS - T_START ))
-  RATE=$(python3 -c "r=$IDX/${{ELAPSED_TOTAL:-1}}; print(f'{{r:.2f}}')")
+  RATE=$(python3 -c "r=$IDX/max(${{ELAPSED_TOTAL:-0}},1); print(f'{{r:.2f}}')")
   ETA=$(python3 -c "
 r=$IDX/max($ELAPSED_TOTAL,1)
 rem=$TOTAL-$IDX
@@ -190,7 +257,8 @@ print(f'{{eta//60}}m{{eta%60:02d}}s')
     printf "\\033[0;32m✓\\033[0m  (%ds) ETA ~%s\\n" "$ELAPSED" "$ETA"
   else
     (( FAILED++ )) || true
-    ERR=$(python3 -c "import json; d=json.load(open('/tmp/_enrich_resp.json')); print(d.get('detail','?'))" 2>/dev/null || echo "HTTP $HTTP_STATUS")
+    ERR=$(python3 -c "import json; d=json.load(open('/tmp/_enrich_resp.json')); \\
+  print(d.get('detail','?'))" 2>/dev/null || echo "HTTP $HTTP_STATUS")
     printf "\\033[0;31m✗\\033[0m  (%ds) ERROR: %s\\n" "$ELAPSED" "$ERR"
   fi
 done
@@ -212,7 +280,7 @@ read -rp 'Press Enter to close...'
 
         with open(tmpscript_path, "w") as f:
             f.write(script_body)
-        os.chmod(tmpscript_path, 0o755)
+        os.chmod(tmpscript_path, 0o755)  # noqa: S103
 
         # Count books to process for the summary (quick estimate)
         all_files = sorted(glob.glob(os.path.join(metadata_dir, "*_metadata.json")))
@@ -234,8 +302,8 @@ read -rp 'Press Enter to close...'
         applescript = f'tell application "Terminal" to do script "bash {tmpscript_path}"'
 
         try:
-            result = subprocess.run(
-                ["osascript", "-e", applescript],
+            result = subprocess.run(  # noqa: S603
+                ["osascript", "-e", applescript],  # noqa: S607
                 capture_output=True,
                 text=True,
                 timeout=10,

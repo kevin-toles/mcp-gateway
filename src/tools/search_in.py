@@ -12,37 +12,13 @@ enforcement (KB-6); enum-bounded routing signals (CRE-2).
 from __future__ import annotations
 
 from src.tool_dispatcher import ToolDispatcher
+from src.tools._resolvers import resolve_shelf_collection
 
 TOOL_NAME = "search_in"
 
-# ── Source → collection mapping ───────────────────────────────────────────────
-
-_COLLECTION_MAP: dict[str, str] = {
-    "textbooks": "chapters",
-    "code": "code_chunks",
-    "patterns": "code_good_patterns",
-    "diagrams": "ascii_diagrams",
-}
-
 
 def _resolve_source(source: str) -> str:
-    """Map a human-readable shelf name to an internal collection identifier.
-
-    Args:
-        source: One of "textbooks", "code", "patterns", "diagrams".
-
-    Returns:
-        The internal collection name string.
-
-    Raises:
-        ValueError: If the source value is not recognised.
-    """
-    resolved = _COLLECTION_MAP.get(source)
-    if resolved is None:
-        valid = ", ".join(f'"{k}"' for k in _COLLECTION_MAP)
-        msg = f"Unknown source {source!r}. Valid values: {valid}"
-        raise ValueError(msg)
-    return resolved
+    return resolve_shelf_collection(source)
 
 
 def create_handler(dispatcher: ToolDispatcher, sanitizer=None):  # noqa: ANN001
