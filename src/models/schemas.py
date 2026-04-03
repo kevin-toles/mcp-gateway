@@ -356,7 +356,7 @@ class GenerateTaxonomyInput(BaseModel):
     """
 
     enriched_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
+        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/enriched",
         min_length=1,
         max_length=1000,
         description="Directory containing *_enriched.json files",
@@ -391,13 +391,13 @@ class BatchEnrichMetadataInput(BaseModel):
     """Input for batch_enrich_metadata tool — batch enrich all metadata files in a directory."""
 
     metadata_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/metadata",
+        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/metadata",
         min_length=1,
         max_length=1000,
         description="Directory containing *_metadata.json files",
     )
     output_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
+        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/enriched",
         min_length=1,
         max_length=1000,
         description="Output directory for enriched JSON files",

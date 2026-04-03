@@ -27,8 +27,8 @@ LATEST_LINK = "/tmp/batch_enrich_latest.log"  # noqa: S108
 def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
     async def batch_enrich_metadata(
-        metadata_dir: str = "/Users/kevintoles/POC/ai-platform-data/software engineering collections/metadata",
-        output_dir: str = "/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
+        metadata_dir: str = "/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/metadata",
+        output_dir: str = "/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/enriched",
         taxonomy_path: str | None = None,
         mode: str = "auto",
         vtf_path: str | None = None,
@@ -74,7 +74,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
         # Resolve mode: "auto" detects from path, otherwise use explicit value.
         _esc_root = "/Users/kevintoles/POC/ai-platform-data"
-        _esc_vtf = f"{_esc_root}/data/ESC_validated_term_filter.json"
+        _esc_vtf = f"{_esc_root}/vtfs/foundations/ESC_validated_term_filter.json"
         _foundation_seed: list[str] = []
         try:
             import importlib.util as _ilu
@@ -112,7 +112,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
         # Resolve taxonomy path
         if not taxonomy_path:
-            candidates = sorted(Path(metadata_dir).parent.glob("taxonomies/uber_taxonomy_v*.json"))
+            candidates = sorted(Path(metadata_dir).parent.glob("taxonomies/se/uber_taxonomy_v*.json"))
             taxonomy_path = str(candidates[-1]) if candidates else ""
 
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
