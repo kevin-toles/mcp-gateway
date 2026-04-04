@@ -59,6 +59,7 @@ from src.tools import (
     knowledge_search,
     llm_complete,
     pattern_search,
+    push_to_github,
     search_in,
     semantic_search,
 )
@@ -121,6 +122,8 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "find_code_pattern": find_code_pattern.create_handler,
     # WBS-F7: Foundation search (scientific / theoretical layer)
     "foundation_search": foundation_search.create_handler,
+    # GitHub push tool
+    "push_to_github": push_to_github.create_handler,
 }
 
 

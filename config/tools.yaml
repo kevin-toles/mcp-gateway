@@ -118,6 +118,11 @@ tools:
     tier: gold
     tags: [workflow, enhancement, llm]
 
+  - name: push_to_github
+    description: "Upload one or more local files to a GitHub repository. Routing is automatic by file size: <30MB uses the GitHub Git Data API (pure HTTPS, no git), 30-100MB also uses the Git Data API, >100MB uses git-lfs push. Accepts a list of absolute file paths, a target repo (owner/name), and a destination directory inside the repo. Launches a Terminal.app window for live progress. Monitor: tail -f /tmp/push_github_latest.log"
+    tier: gold
+    tags: [workflow, github, upload, pdf, git]
+
   # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────
   - name: analyze_taxonomy_coverage
     description: "Analyze taxonomy coverage against the knowledge base. Runs full INGEST→GENERATE→SEARCH→SCORE→REPORT pipeline. Requires code-orchestrator (:8083)."

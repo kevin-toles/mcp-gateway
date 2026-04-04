@@ -454,6 +454,39 @@ class BatchEnrichMetadataInput(BaseModel):
         return _sanitize_str_field(v)
 
 
+class PushToGithubInput(BaseModel):
+    """Input for push_to_github tool — push one or more files to a GitHub repo via git push."""
+
+    files: list[str] = Field(
+        ...,
+        min_length=1,
+        description="List of absolute local file paths to push (e.g. ['/path/to/file.pdf'])",
+    )
+    repo: str = Field(
+        default="kevin-toles/pdf-text-repo",
+        min_length=1,
+        max_length=200,
+        description="GitHub repo as owner/name",
+    )
+    dest: str = Field(
+        default="Textbooks",
+        min_length=1,
+        max_length=500,
+        description="Destination directory path inside the repo (e.g. 'Textbooks')",
+    )
+    skip_existing: bool = Field(default=True, description="Skip files already present in the repo")
+
+    @field_validator("files", mode="before")
+    @classmethod
+    def sanitize_files(cls, v: list) -> list:
+        return [_sanitize_str_field(f) for f in v]
+
+    @field_validator("repo", "dest", mode="before")
+    @classmethod
+    def sanitize_str(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
 class EnhanceGuidelineInput(BaseModel):
     """Input for enhance_guideline tool — LLM-powered guideline enhancement."""
 

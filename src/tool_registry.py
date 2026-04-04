@@ -53,6 +53,7 @@ from src.models.schemas import (
     KnowledgeSearchInput,
     LLMCompleteInput,
     PatternSearchInput,
+    PushToGithubInput,
     SearchInInput,
     SemanticSearchInput,
 )
@@ -117,6 +118,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "ask": AskInput,
     "search_in": SearchInInput,
     "find_code_pattern": FindCodePatternInput,
+    # GitHub push tool
+    "push_to_github": PushToGithubInput,
 }
 
 
