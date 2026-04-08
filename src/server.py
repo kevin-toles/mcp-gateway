@@ -58,8 +58,10 @@ from src.tools import (
     knowledge_refine,
     knowledge_search,
     llm_complete,
+    mirror_cre_repos,
     pattern_search,
     push_to_github,
+    rename_normalization,
     search_in,
     semantic_search,
 )
@@ -124,6 +126,10 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "foundation_search": foundation_search.create_handler,
     # GitHub push tool
     "push_to_github": push_to_github.create_handler,
+    # Rename normalization protocol
+    "rename_normalization": rename_normalization.create_handler,
+    # CRE repo mirroring
+    "mirror_cre_repos": mirror_cre_repos.create_handler,
 }
 
 

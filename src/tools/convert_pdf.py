@@ -70,7 +70,6 @@ printf '\\n\\033[1;36m══ Batch PDF Conversion ══  Log: {log_file}\\033[0
 '{python}' -u '{standalone}' \\
     --input-dir '{input_dir}' \\
     --output-dir '{out_dir}' \\
-    --file-pattern '{file_pattern}' \\
     --co-url '{co_url}' \\
     {skip_flag} {ocr_flag} 2>&1 | tee '{log_file}'
 EXIT_CODE=${{PIPESTATUS[0]}}

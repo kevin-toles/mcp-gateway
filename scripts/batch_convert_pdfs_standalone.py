@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Standalone batch PDF conversion script.
+"""Standalone batch document conversion script.
 
-Launched by the convert_pdf MCP tool. Discovers all PDF files in input_dir
-and calls code-orchestrator /api/v1/workflows/convert-pdf for each one.
+Launched by the convert_pdf MCP tool. Discovers PDF and Markdown files in
+input_dir and calls code-orchestrator /api/v1/workflows/convert-pdf for each.
+
+  .pdf files  — converted via PyMuPDF + optional OCR.
+               If extracted author/subject are blank, metadata_overrides are
+               auto-populated from known_papers_registry.json.
+  .md files   — converted via the markdown bridge in the convert-pdf endpoint
+               (no PDF processing, builds raw JSON directly from header fields).
 
 Usage:
     python scripts/batch_convert_pdfs_standalone.py \\
-        --input-dir /path/to/pdfs \\
+        --input-dir /path/to/docs \\
         --output-dir /path/to/json \\
-        [--file-pattern *.pdf] \\
         [--skip-existing] \\
         [--enable-ocr] \\
+        [--registry /path/known_papers_registry.json] \\
         [--co-url http://localhost:8083]
 
 Monitor live from any terminal:
@@ -18,13 +24,14 @@ Monitor live from any terminal:
 """
 
 import argparse
-import glob
 import json as _json
 import os
+import re
 import sys
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
@@ -32,6 +39,13 @@ PROGRESS_LOG = "/tmp/conversion_progress.log"  # noqa: S108
 PROGRESS_FILE = "/tmp/pdf_progress.json"  # noqa: S108
 CO_HEALTH_TIMEOUT = 5.0
 CO_REQUEST_TIMEOUT = None  # no timeout — large PDFs can take minutes
+
+# Default registry path — built by scripts/_build_papers_registry.py
+_DEFAULT_REGISTRY = os.path.join(
+    os.path.dirname(__file__), "..", "..", "ai-platform-data", "data", "known_papers_registry.json"
+)
+
+SUPPORTED_EXTENSIONS = {".pdf", ".md"}
 
 
 # ── ANSI colours (disabled when not a TTY) ──────────────────────────────────
@@ -89,12 +103,15 @@ def _convert_pdf(
     input_path: str,
     output_path: str,
     enable_ocr: bool,
+    metadata_overrides: dict | None = None,
 ) -> dict:
-    payload = {
+    payload: dict = {
         "input_path": input_path,
         "output_path": output_path,
         "enable_ocr": enable_ocr,
     }
+    if metadata_overrides:
+        payload["metadata_overrides"] = metadata_overrides
     resp = client.post(
         f"{co_url}/api/v1/workflows/convert-pdf",
         json=payload,
@@ -102,6 +119,50 @@ def _convert_pdf(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+# ── Known-papers registry ————————————————————————————————————————————————————
+_registry_cache: dict | None = None
+
+
+def _load_registry(registry_path: str) -> dict:
+    """Load (and cache) known_papers_registry.json."""
+    global _registry_cache
+    if _registry_cache is None:
+        resolved = os.path.realpath(registry_path)
+        if os.path.exists(resolved):
+            try:
+                with open(resolved) as f:
+                    _registry_cache = _json.load(f)
+            except Exception:
+                _registry_cache = {}
+        else:
+            _registry_cache = {}
+    return _registry_cache
+
+
+def _normalize_title(title: str) -> str:
+    t = title.lower()
+    t = re.sub(r"[\u2019\u2018'`]", "", t)
+    t = re.sub(r"[:\\.?!]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _get_overrides(stem: str, registry: dict) -> dict | None:
+    """Return metadata_overrides for a PDF stem if registry has an entry.
+
+    The stem is the filename without extension; PDF files from the academic
+    collection are named after the paper title (e.g.,
+    'time-clocks-and-the-ordering-of-events.pdf').
+    Only returns overrides when at least one useful field is present.
+    """
+    norm = _normalize_title(stem.replace("-", " ").replace("_", " "))
+    entry = registry.get(norm)
+    if not entry:
+        return None
+    overrides = {k: v for k, v in entry.items() if v}
+    return overrides or None
 
 
 def _watch_progress(stop_event: threading.Event, pdf_name: str) -> None:
@@ -130,12 +191,16 @@ def _watch_progress(stop_event: threading.Event, pdf_name: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Batch PDF conversion via code-orchestrator")
+    parser = argparse.ArgumentParser(description="Batch document conversion (PDF + Markdown) via code-orchestrator")
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--file-pattern", default="*.pdf")
     parser.add_argument("--skip-existing", action="store_true", default=False)
     parser.add_argument("--enable-ocr", action="store_true", default=False)
+    parser.add_argument(
+        "--registry",
+        default=_DEFAULT_REGISTRY,
+        help="Path to known_papers_registry.json for metadata overrides",
+    )
     parser.add_argument("--co-url", default=os.environ.get("CODE_ORCHESTRATOR_URL", "http://localhost:8083"))
     args = parser.parse_args()
 
@@ -143,42 +208,56 @@ def main() -> None:
     out_dir = args.output_dir or os.path.join(os.path.dirname(args.input_dir.rstrip("/")), "converted")
     os.makedirs(out_dir, exist_ok=True)
 
+    # Load metadata override registry (silent if missing)
+    registry = _load_registry(args.registry)
+    registry_note = f"{len(registry)} entries" if registry else "not found — no overrides"
+
     # Header
     _log("=" * 60)
-    _log(cyan("📄 Batch PDF Conversion"))
-    _log(f"   Input:   {args.input_dir}")
-    _log(f"   Output:  {out_dir}")
-    _log(f"   Pattern: {args.file_pattern}")
+    _log(cyan("📄 Batch Document Conversion (PDF + Markdown)"))
+    _log(f"   Input:         {args.input_dir}")
+    _log(f"   Output:        {out_dir}")
     _log(f"   Skip existing: {args.skip_existing}")
-    _log(f"   OCR: {args.enable_ocr}")
+    _log(f"   OCR:           {args.enable_ocr}")
+    _log(f"   Registry:      {registry_note}")
     _log("=" * 60)
 
     # Health check — fail fast before touching any files
     _health_check(args.co_url)
 
-    # Discover PDFs
-    pattern = os.path.join(args.input_dir, args.file_pattern)
-    all_files = sorted(glob.glob(pattern))
+    # Discover supported files — PDFs and Markdowns (recursive)
+    input_root = Path(args.input_dir)
+    all_files: list[Path] = sorted(
+        p for p in input_root.rglob("*") if p.suffix.lower() in SUPPORTED_EXTENSIONS and p.is_file()
+    )
     if not all_files:
-        _log(yellow(f"⚠️  No files matching: {pattern}"))
+        _log(yellow(f"⚠️  No .pdf or .md files found (recursively) in: {args.input_dir}"))
         sys.exit(0)
 
-    to_process = []
-    skipped = []
+    to_process: list[tuple[str, str]] = []
+    skipped: list[str] = []
     for fpath in all_files:
-        stem = os.path.splitext(os.path.basename(fpath))[0]
-        out_path = os.path.join(out_dir, f"{stem}.json")
+        # Mirror the relative sub-path under output dir so nested structure is preserved
+        rel = fpath.relative_to(input_root)
+        out_path = str(Path(out_dir) / rel.parent / (fpath.stem + ".json"))
         if args.skip_existing and os.path.exists(out_path):
-            skipped.append(os.path.basename(fpath))
+            skipped.append(str(rel))
         else:
-            to_process.append((fpath, out_path))
+            to_process.append((str(fpath), out_path))
 
+    pdf_count = sum(1 for f, _ in to_process if f.endswith(".pdf"))
+    md_count = sum(1 for f, _ in to_process if f.endswith(".md"))
     total = len(to_process)
-    _log(f"   PDFs to convert: {bold(str(total))}  |  Skipped (existing): {len(skipped)}")
+
+    _log(
+        f"   To convert: {bold(str(total))}  "
+        f"(PDF: {pdf_count}, Markdown: {md_count})  |  "
+        f"Skipped (existing): {len(skipped)}"
+    )
     _log("=" * 60)
 
     if total == 0:
-        _log(green("✅  All PDFs already converted. Nothing to do."))
+        _log(green("✅  All documents already converted. Nothing to do."))
         sys.exit(0)
 
     # Conversion loop
@@ -188,38 +267,54 @@ def main() -> None:
     batch_start = time.time()
 
     with httpx.Client() as client:
-        for idx, (pdf_path, out_path) in enumerate(to_process, 1):
-            pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        for idx, (doc_path, out_path) in enumerate(to_process, 1):
+            doc_name = os.path.splitext(os.path.basename(doc_path))[0]
+            ext = Path(doc_path).suffix.lower()
             book_start = time.time()
 
+            icon = "📄" if ext == ".pdf" else "📝"
             _log("")
-            _log(f"[{idx:3d}/{total}] 📄 {pdf_name}")
+            _log(f"[{idx:3d}/{total}] {icon} {doc_name}  [{ext}]")
             _log(f"         → {out_path}")
 
-            stop_evt = threading.Event()
-            watcher = threading.Thread(target=_watch_progress, args=(stop_evt, pdf_name), daemon=True)
-            watcher.start()
             try:
-                body = _convert_pdf(client, args.co_url, pdf_path, out_path, args.enable_ocr)
-                elapsed = time.time() - book_start
-                stop_evt.set()
-                watcher.join(timeout=1.0)
+                if ext == ".pdf":
+                    # Auto-look up overrides for PDFs with potentially blank metadata
+                    overrides = _get_overrides(doc_name, registry)
+                    if overrides:
+                        _log(f"   🔍  registry match — overrides: {list(overrides.keys())}")
 
-                pages = body.get("pages_converted", body.get("total_pages", "?"))
-                ocr_pages = body.get("ocr_pages", 0)
-                out = body.get("output_path", out_path)
-                ocr_note = f"  ({ocr_pages} OCR)" if ocr_pages else ""
-                _log(green(f"   ✅  {pages} pages{ocr_note} — {elapsed:.1f}s"))
-                _log(f"   📄  {out}")
+                    stop_evt = threading.Event()
+                    watcher = threading.Thread(target=_watch_progress, args=(stop_evt, doc_name), daemon=True)
+                    watcher.start()
+                    body = _convert_pdf(client, args.co_url, doc_path, out_path, args.enable_ocr, overrides)
+                    stop_evt.set()
+                    watcher.join(timeout=1.0)
+
+                    pages = body.get("total_pages", "?")
+                    ocr_pages = body.get("ocr_pages", 0)
+                    ocr_note = f"  ({ocr_pages} OCR)" if ocr_pages else ""
+                    _log(green(f"   ✅  {pages} pages{ocr_note} — {time.time() - book_start:.1f}s"))
+
+                else:
+                    # Markdown: send to the same endpoint — it routes internally
+                    body = _convert_pdf(client, args.co_url, doc_path, out_path, False, None)
+                    _log(green(f"   ✅  markdown converted — {time.time() - book_start:.1f}s"))
+
+                _log(f"   📄  {body.get('output_path', out_path)}")
                 succeeded += 1
 
             except Exception as e:
                 elapsed = time.time() - book_start
-                stop_evt.set()
-                watcher.join(timeout=1.0)
+                if ext == ".pdf":
+                    try:
+                        stop_evt.set()
+                        watcher.join(timeout=1.0)
+                    except Exception:
+                        pass
                 _log(red(f"   ❌  Failed ({elapsed:.1f}s): {str(e)[:200]}"))
                 failed += 1
-                failed_names.append(pdf_name)
+                failed_names.append(doc_name)
 
     # Summary
     batch_elapsed = time.time() - batch_start
@@ -233,7 +328,7 @@ def main() -> None:
                 f"🏁  COMPLETE — {succeeded} succeeded, {failed} failed, {len(skipped)} skipped — {batch_elapsed:.0f}s"
             )
         )
-        _log(yellow("   Failed PDFs:"))
+        _log(yellow("   Failed files:"))
         for name in failed_names:
             _log(yellow(f"     • {name}"))
     _log("=" * 60)

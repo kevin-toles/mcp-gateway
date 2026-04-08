@@ -17,6 +17,7 @@ Monitor live progress with:
 """
 
 import os
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -31,7 +32,7 @@ from src.tool_dispatcher import ToolDispatcher
 TOOL_NAME = "push_to_github"
 PROGRESS_LOG = "/tmp/push_github_latest.log"  # noqa: S108
 _PUSH_SCRIPT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "ai-platform-data", "scripts", "github_upload.py")
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "ai-platform-data", "scripts", "github_upload.py")
 )
 
 
@@ -50,7 +51,7 @@ def _launch_terminal(files: list[str], repo: str, dest: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
     log_file = f"/tmp/push_github_{timestamp}.log"  # noqa: S108
 
-    file_args = " ".join(f"'{f}'" for f in files)
+    file_args = " ".join(shlex.quote(f) for f in files)
 
     fd, tmp_script = tempfile.mkstemp(suffix=".sh", prefix="push_github_run_")
     os.close(fd)

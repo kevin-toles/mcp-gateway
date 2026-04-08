@@ -123,6 +123,16 @@ tools:
     tier: gold
     tags: [workflow, github, upload, pdf, git]
 
+  - name: rename_normalization
+    description: "Run the 4-round PDF/EPUB filename normalization protocol on a directory. Scans all PDFs and EPUBs, extracts title candidates via PyMuPDF with pytesseract OCR fallback, classifies each filename by violation type (ARXIV_SLUG, PUBLISHER_PREFIX, SLUG_OPAQUE, AUTHOR_SLUG, NUMERIC_SLUG, UNDERSCORE_TITLE, URL_ENCODED, CLEAN), and returns the full protocol context document for Copilot to execute Rounds 3-4 (ANALYZER + SUPPSTER) in-chat. Copilot writes the final rename_suggestions.json via create_file. Runs synchronously — no Terminal.app window."
+    tier: gold
+    tags: [workflow, pdf, rename, protocol, normalization]
+
+  - name: mirror_cre_repos
+    description: "Mirror one or more repositories into the Code Reference Engine (CRE) at kevin-toles/code-reference-engine. Pass repo_ids=[...] with registry IDs (e.g. ['aws-lambda-power-tuning', 'openfaas']) to mirror specific repos, or omit to mirror all repos not yet in the CRE. Already-mirrored repos are skipped by default — pass force=True to re-mirror. Launches a Terminal.app window for live progress. Monitor: tail -f /tmp/mirror_latest.log"
+    tier: gold
+    tags: [workflow, cre, mirror, github, indexing]
+
   # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────
   - name: analyze_taxonomy_coverage
     description: "Analyze taxonomy coverage against the knowledge base. Runs full INGEST→GENERATE→SEARCH→SCORE→REPORT pipeline. Requires code-orchestrator (:8083)."

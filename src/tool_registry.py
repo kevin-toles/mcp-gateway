@@ -52,8 +52,10 @@ from src.models.schemas import (
     KnowledgeRefineInput,
     KnowledgeSearchInput,
     LLMCompleteInput,
+    MirrorCREReposInput,
     PatternSearchInput,
     PushToGithubInput,
+    RenameNormalizationInput,
     SearchInInput,
     SemanticSearchInput,
 )
@@ -120,6 +122,10 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "find_code_pattern": FindCodePatternInput,
     # GitHub push tool
     "push_to_github": PushToGithubInput,
+    # Rename normalization protocol
+    "rename_normalization": RenameNormalizationInput,
+    # CRE repo mirroring
+    "mirror_cre_repos": MirrorCREReposInput,
 }
 
 

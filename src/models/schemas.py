@@ -454,6 +454,33 @@ class BatchEnrichMetadataInput(BaseModel):
         return _sanitize_str_field(v)
 
 
+class RenameNormalizationInput(BaseModel):
+    """Input for rename_normalization tool — run the 4-round PDF rename protocol."""
+
+    source_dir: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Directory of PDF/EPUB files to analyze",
+    )
+    output: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Absolute path to write rename_suggestions.json",
+    )
+    limit: int = Field(
+        default=0,
+        ge=0,
+        description="Cap at N files for testing (0 = no limit)",
+    )
+
+    @field_validator("source_dir", "output", mode="before")
+    @classmethod
+    def sanitize_paths(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
 class PushToGithubInput(BaseModel):
     """Input for push_to_github tool — push one or more files to a GitHub repo via git push."""
 
@@ -485,6 +512,35 @@ class PushToGithubInput(BaseModel):
     @classmethod
     def sanitize_str(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+
+class MirrorCREReposInput(BaseModel):
+    """Input for mirror_cre_repos tool — mirror repos into the Code Reference Engine."""
+
+    repo_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Registry IDs of repos to mirror (e.g. ['aws-lambda-power-tuning', 'openfaas']). "
+            "Omit or pass [] to mirror all repos not yet present in the CRE."
+        ),
+    )
+    force: bool = Field(
+        default=False,
+        description="Re-mirror repos even if already present in the CRE. Default: skip existing.",
+    )
+    auto_continue: bool = Field(
+        default=False,
+        description="Skip failure prompts and continue automatically.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Preview what would be mirrored without actually triggering workflows.",
+    )
+
+    @field_validator("repo_ids", mode="before")
+    @classmethod
+    def sanitize_repo_ids(cls, v: list) -> list:
+        return [_sanitize_str_field(r) for r in v]
 
 
 class EnhanceGuidelineInput(BaseModel):
