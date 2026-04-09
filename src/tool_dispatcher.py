@@ -300,6 +300,12 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/audit/quality",
         ),
+        # VRE-SCAN: Full codebase scan with VRE enrichment (no timeout — large codebases can take 60-120s)
+        "audit_codebase_scan": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/scan",
+            timeout=None,
+        ),
         # WBS-F7: Foundation search (scientific / theoretical layer)
         "foundation_search": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,

@@ -515,13 +515,34 @@ class PushToGithubInput(BaseModel):
 
 
 class MirrorCREReposInput(BaseModel):
-    """Input for mirror_cre_repos tool — mirror repos into the Code Reference Engine."""
+    """Input for mirror_cre_repos tool — mirror repos into the Code Reference Engine.
+
+    Supports auto-registration: if repo_ids contains an ID not found in the registry
+    AND source_url is provided, the repo is registered automatically before mirroring.
+    """
 
     repo_ids: list[str] = Field(
         default_factory=list,
         description=(
             "Registry IDs of repos to mirror (e.g. ['aws-lambda-power-tuning', 'openfaas']). "
-            "Omit or pass [] to mirror all repos not yet present in the CRE."
+            "Omit or pass [] to mirror all repos not yet present in the CRE. "
+            "If an ID is not in the registry and source_url is provided, it is registered automatically."
+        ),
+    )
+    source_url: str | None = Field(
+        default=None,
+        description=(
+            "GitHub URL of the repo to register if the repo_id is not yet in the registry "
+            "(e.g. 'https://github.com/schedmd/slurm'). Only used when repo_ids has exactly "
+            "one entry that is not already registered. Ignored when all IDs are already registered."
+        ),
+    )
+    domain: str | None = Field(
+        default=None,
+        description=(
+            "Registry domain ID to register the new repo under (e.g. 'infrastructure', "
+            "'distributed-systems'). Required when source_url is provided and the repo_id "
+            "is not yet registered. If omitted, defaults to 'specialized'."
         ),
     )
     force: bool = Field(
@@ -834,6 +855,53 @@ class AuditDependencyAssessInput(BaseModel):
         description=(
             "Whether to include transitive dependency counting via pip show. "
             "Set False to skip transitive BFS for faster scans."
+        ),
+    )
+
+
+# -- Codebase Scanner (VRE-SCAN) ----------------------------------------
+
+
+class AuditCodebaseScanInput(BaseModel):
+    """Input for audit_codebase_scan — walk a local codebase and return findings.
+
+    Walks *source_path* recursively, runs the full 4-layer detection pipeline
+    on each scannable file (.py .js .ts .tsx .jsx .go .java), deduplicates by
+    (pattern_id, file), and enriches any SEC* findings with VRE exploit
+    evidence and advisory context from Qdrant :6336.
+    """
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="Absolute path to the local directory (or file) to scan.",
+    )
+    confidence_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum confidence score (0.0–1.0) to include a finding. "
+            "Lower values return more results; 0.3 is the recommended default."
+        ),
+    )
+    max_findings: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum findings to return. None (default) = unlimited full scan. "
+            "Use with priority_filter to scope large codebases."
+        ),
+    )
+    priority_filter: list[str] | None = Field(
+        default=None,
+        description=(
+            "Filter to specific priority levels: CRITICAL, HIGH, MEDIUM, LOW, NEGLIGIBLE. "
+            "CRITICAL = security ≥0.8 confidence. HIGH = security any confidence or anti-pattern ≥0.8. "
+            "MEDIUM = anti-pattern, static-analysis ≥0.7, coding-pattern ≥0.8. "
+            "LOW = coding-pattern, static-analysis. NEGLIGIBLE = refactoring signals. "
+            "None = all priorities (default)."
         ),
     )
 

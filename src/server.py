@@ -33,6 +33,7 @@ from src.tools import (
     analyze_taxonomy_coverage,
     ask,
     audit_code_metrics,
+    audit_codebase_scan,
     audit_corpus_search,
     audit_dependency_assess,
     audit_quality_scan,
@@ -118,6 +119,8 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "audit_search_exploits": audit_search_exploits.create_handler,
     "audit_search_cves": audit_search_cves.create_handler,
     "audit_quality_scan": audit_quality_scan.create_handler,
+    # VRE-SCAN: Full codebase scan with VRE enrichment
+    "audit_codebase_scan": audit_codebase_scan.create_handler,
     # MCP Facade tools (MCP-F)
     "ask": ask.create_handler,
     "search_in": search_in.create_handler,

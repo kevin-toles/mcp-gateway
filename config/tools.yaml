@@ -129,9 +129,9 @@ tools:
     tags: [workflow, pdf, rename, protocol, normalization]
 
   - name: mirror_cre_repos
-    description: "Mirror one or more repositories into the Code Reference Engine (CRE) at kevin-toles/code-reference-engine. Pass repo_ids=[...] with registry IDs (e.g. ['aws-lambda-power-tuning', 'openfaas']) to mirror specific repos, or omit to mirror all repos not yet in the CRE. Already-mirrored repos are skipped by default — pass force=True to re-mirror. Launches a Terminal.app window for live progress. Monitor: tail -f /tmp/mirror_latest.log"
+    description: "Mirror one or more repositories into the Code Reference Engine (CRE) at kevin-toles/code-reference-engine. Pass repo_ids=[...] with registry IDs (e.g. ['slurm', 'openfaas']) to mirror specific repos, or omit to mirror all repos not yet in the CRE. AUTO-REGISTER: if a repo_id is not yet in the registry, pass source_url (e.g. 'https://github.com/schedmd/slurm') and optionally domain (e.g. 'infrastructure') — the repo is registered in repo_registry.json automatically before mirroring. Already-mirrored repos are skipped by default — pass force=True to re-mirror. Launches a Terminal.app window for live progress. Monitor: tail -f /tmp/mirror_latest.log"
     tier: gold
-    tags: [workflow, cre, mirror, github, indexing]
+    tags: [workflow, cre, mirror, github, indexing, registry]
 
   # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────
   - name: analyze_taxonomy_coverage
@@ -263,6 +263,47 @@ tools:
       dependencies required. Requires audit-service (:8084).
     tier: bronze
     tags: [audit, quality, patterns, antipatterns, static-analysis]
+
+  - name: audit_codebase_scan
+    description: >
+      Scan an entire local codebase for security and quality findings with
+      VRE enrichment and priority classification. Walks source_path recursively,
+      runs the full 4-layer detection pipeline on every scannable file
+      (.py .js .ts .tsx .jsx .go .java), assigns each finding a priority level
+      (CRITICAL/HIGH/MEDIUM/LOW/NEGLIGIBLE), deduplicates by (pattern_id, file),
+      and enriches all SEC* findings with real-world exploit evidence and CVE
+      advisory context from the Vulnerability Reference Engine (459k records:
+      vuln_exploits + vuln_advisories).
+
+      Priority levels (base rule, then VRE-elevated):
+        CRITICAL   — SEC* confidence >= 0.8, or VRE advisory severity=CRITICAL
+        HIGH       — SEC* any confidence (or exploit evidence present), AP* >= 0.8,
+                     or VRE advisory severity=HIGH
+        MEDIUM     — AP* any confidence, SA* >= 0.7, CP* >= 0.8
+        LOW        — CP* or SA* generally
+        NEGLIGIBLE — RP* refactoring signals
+
+      VRE elevation: each SEC* finding checks matched vuln_advisories for their
+      NVD/GHSA severity (CRITICAL/HIGH/MODERATE/MEDIUM/LOW). If the advisory
+      severity outranks the rule-derived priority, the finding is elevated.
+      Presence of any Exploit-DB match promotes SEC* to at least HIGH.
+      vre_max_severity and has_exploit_evidence are exposed on every finding.
+
+      Key parameters:
+        priority_filter — list of levels to return, e.g. ["CRITICAL","HIGH"].
+                          Omit for all priorities.
+        max_findings    — cap on returned findings. Omit (default) for a full
+                          uncapped scan. stats.findings_by_priority in the
+                          response summarises counts at each level.
+
+      Use instead of audit_quality_scan when scanning a whole directory.
+      Requires audit-service (:8084).
+    when_to_use: >
+      Use to scan a local directory or service repo. Pass priority_filter=["CRITICAL","HIGH"]
+      for a fast security triage. Omit max_findings for a full uncapped scan.
+      For single code snippets use audit_quality_scan instead.
+    tier: bronze
+    tags: [audit, scan, security, vre, cve, codebase, priority]
 
   # ── MCP Facade Tools (MCP-F) ─────────────────────────────────────────
 
