@@ -95,6 +95,32 @@ class TestCircuitBreakerStates:
         await cb.on_failure()
         assert cb._state == CircuitState.OPEN
 
+    async def test_half_open_probe_failure_allows_next_probe(self):
+        """Regression: a failed probe must not permanently lock the breaker.
+
+        Before the fix, on_failure() never saw _state==HALF_OPEN (the state
+        property computed it but never materialized it), so _half_open_calls
+        was never reset.  The next probe attempt after recovery_timeout would
+        be permanently rejected.
+        """
+        cb = CircuitBreaker("test", failure_threshold=1, recovery_timeout=0.01)
+        # Trip the breaker
+        await cb.on_failure()
+        assert cb._state == CircuitState.OPEN
+
+        # First probe — allowed, then fails
+        await asyncio.sleep(0.02)
+        await cb.pre_check()
+        await cb.on_failure()
+        assert cb._state == CircuitState.OPEN
+        assert cb._half_open_calls == 0  # Must be reset
+
+        # Second probe — must also be allowed (not stuck)
+        await asyncio.sleep(0.02)
+        await cb.pre_check()  # Would raise CircuitOpenError if _half_open_calls stuck at 1
+        await cb.on_success()
+        assert cb.state == CircuitState.CLOSED
+
     async def test_half_open_limits_concurrent_probes(self):
         cb = CircuitBreaker("test", failure_threshold=1, recovery_timeout=0.01, half_open_max=1)
         await cb.on_failure()

@@ -75,6 +75,36 @@ async def health() -> HealthResponse:
     )
 
 
+# ── Admin / Diagnostics ────────────────────────────────────────────────
+
+
+@app.get("/admin/circuits")
+async def get_circuit_breakers():
+    """Return snapshot of all circuit breakers (state, counters)."""
+    if "_dispatcher" not in globals():
+        return {"error": "dispatcher not initialized"}
+    return {"breakers": _dispatcher.circuit_breakers.all_snapshots()}
+
+
+@app.post("/admin/circuits/reset")
+async def reset_circuit_breakers():
+    """Force-reset ALL circuit breakers to CLOSED."""
+    if "_dispatcher" not in globals():
+        return {"error": "dispatcher not initialized"}
+    await _dispatcher.circuit_breakers.reset_all()
+    return {"status": "all circuit breakers reset to CLOSED"}
+
+
+@app.post("/admin/circuits/{backend_name}/reset")
+async def reset_circuit_breaker(backend_name: str):
+    """Force-reset a single backend's circuit breaker to CLOSED."""
+    if "_dispatcher" not in globals():
+        return {"error": "dispatcher not initialized"}
+    cb = _dispatcher.circuit_breakers.get(backend_name)
+    await cb.reset()
+    return {"status": f"circuit breaker '{backend_name}' reset to CLOSED"}
+
+
 # ── MCP Protocol Server (AC-8.1, AC-8.5) ───────────────────────────────
 
 _config_path = Path(__file__).parent.parent / "config" / "tools.yaml"

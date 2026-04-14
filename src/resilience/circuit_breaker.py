@@ -108,6 +108,9 @@ class CircuitBreaker:
                 raise CircuitOpenError(self.name, retry_after)
 
             if current == CircuitState.HALF_OPEN:
+                # Materialize the computed HALF_OPEN state so that
+                # on_success / on_failure see the correct _state value.
+                self._state = CircuitState.HALF_OPEN
                 if self._half_open_calls >= self.half_open_max:
                     self.total_rejections += 1
                     raise CircuitOpenError(self.name, 1.0)
@@ -141,6 +144,7 @@ class CircuitBreaker:
                 self._half_open_calls = 0
             elif self._failure_count >= self.failure_threshold:
                 self._state = CircuitState.OPEN
+                self._half_open_calls = 0  # Defensive: ensure probe counter resets
 
     async def reset(self) -> None:
         """Force-reset the circuit breaker to CLOSED state."""

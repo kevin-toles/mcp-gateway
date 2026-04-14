@@ -39,6 +39,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         resume: bool = True,
         limit: int = 0,
         book: str = "",
+        workers: int = 24,
         ctx: Context | None = None,
     ) -> dict:
         """Batch-enrich *_metadata.json files to DMA-§2.3 format.
@@ -62,6 +63,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             resume: Skip books that already have an enriched output file (default: True).
             limit: Cap at N books — 0 means all (default: 0).
             book: Only process books whose filename contains this string (default: all).
+            workers: Number of parallel enrichment workers (default: 24, max: 64).
 
         Monitor from any terminal:
             tail -f /tmp/batch_enrich_latest.log
@@ -128,6 +130,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         classifier_flag = "true" if classifier_enabled else "false"
         graphcodebert_flag = "true" if graphcodebert_enabled else "false"
         raw_content_dir_arg = raw_content_dir or ""
+        workers_val = max(1, min(workers, 64))
 
         # Write the temp runner script (same pattern as seed.sh inner script)
         tmpscript_fd, tmpscript_path = tempfile.mkstemp(suffix=".sh", prefix="batch_enrich_run_")
@@ -149,17 +152,18 @@ BOOK_FILTER='{book_filter}'
 LOG_FILE='{log_file}'
 LATEST_LINK='{LATEST_LINK}'
 CO_URL='{CO_ENRICH_URL}'
+WORKERS={workers_val}
 
 mkdir -p "$OUTPUT_DIR"
 
-printf '\\n\\033[1;36m══ Batch Enrich ══  Log: '"$LOG_FILE"'\\033[0m\\n\\n'
+printf '\\n\\033[1;36m══ Batch Enrich ══  Workers: %d  Log: '"$LOG_FILE"'\\033[0m\\n\\n' "$WORKERS"
 
-# Collect files
+# Collect files (recursive search)
 ALL_FILES=()
-while IFS= read -r _f; do ALL_FILES+=("$_f"); done < <(ls "$METADATA_DIR"/*_metadata.json 2>/dev/null | sort)
+while IFS= read -r _f; do ALL_FILES+=("$_f"); done < <(find "$METADATA_DIR" -name "*_metadata.json" -type f | sort)
 TOTAL=${{#ALL_FILES[@]}}
 if [[ $TOTAL -eq 0 ]]; then
-  echo "ERROR: No *_metadata.json files in $METADATA_DIR"
+  echo "ERROR: No *_metadata.json files in $METADATA_DIR (searched recursively)"
   exit 1
 fi
 
@@ -182,7 +186,7 @@ if [[ "$RESUME" == "true" ]]; then
   SKIPPED=0
   for f in "${{ALL_FILES[@]}}"; do
     stem=$(basename "$f" _metadata.json)
-    if [[ -f "$OUTPUT_DIR/${{stem}}_enriched.json" ]]; then
+    if find "$OUTPUT_DIR" -name "${{stem}}_enriched.json" -type f 2>/dev/null | grep -q .; then
       (( SKIPPED++ )) || true
     else
       TO_PROCESS+=("$f")
@@ -205,26 +209,36 @@ if [[ $TOTAL -eq 0 ]]; then
   exit 0
 fi
 
-echo "Starting enrichment: $TOTAL books  ($SKIPPED skipped)"
+echo "Starting enrichment: $TOTAL books  ($SKIPPED skipped)  Workers: $WORKERS"
 echo "Output: $OUTPUT_DIR"
 [[ -n "$TAXONOMY_PATH" ]] && echo "Taxonomy: $TAXONOMY_PATH"
 echo ""
 
-SUCCEEDED=0
-FAILED=0
+# --- Parallel worker function ---
 T_START=$SECONDS
 
-for i in "${{!TO_PROCESS[@]}}"; do
-  IDX=$(( i + 1 ))
-  FPATH="${{TO_PROCESS[$i]}}"
-  STEM=$(basename "$FPATH" _metadata.json)
-  OUT_PATH="$OUTPUT_DIR/${{STEM}}_enriched.json"
+# Write worker script to a file (avoids export -f which breaks on macOS bash 3.2)
+WORKER_SCRIPT=$(mktemp /tmp/enrich_worker_XXXXXX)
+cat > "$WORKER_SCRIPT" << 'WORKER_EOF'
+#!/bin/bash
+FPATH="$1"
+OUTPUT_DIR="$2"
+TAXONOMY_PATH="$3"
+VTF_PATH="$4"
+SEED_CONCEPTS_JSON="$5"
+CLASSIFIER_ENABLED="$6"
+GRAPHCODEBERT_ENABLED="$7"
+RAW_CONTENT_DIR="$8"
+CO_URL="$9"
+TOTAL="${{10}}"
+T_START="${{11}}"
 
-  T_BOOK=$SECONDS
-  printf "\\033[0;33m[%d/%d]\\033[0m %s ... " "$IDX" "$TOTAL" "$STEM"
+STEM=$(basename "$FPATH" _metadata.json)
+OUT_PATH="$OUTPUT_DIR/${{STEM}}_enriched.json"
+RESP_FILE=$(mktemp /tmp/enrich_resp.XXXXXX)
+T_BOOK=$SECONDS
 
-  # Build JSON payload
-  PAYLOAD=$(python3 -c "
+PAYLOAD=$(python3 -c "
 import json, sys
 p = {{'input_path': sys.argv[1], 'output_path': sys.argv[2]}}
 if sys.argv[3]: p['taxonomy_path'] = sys.argv[3]
@@ -234,46 +248,72 @@ p['classifier_enabled'] = sys.argv[6] == 'true'
 p['graphcodebert_enabled'] = sys.argv[7] == 'true'
 if sys.argv[8]: p['raw_content_dir'] = sys.argv[8]
 print(json.dumps(p))
-" "$FPATH" "$OUT_PATH" "$TAXONOMY_PATH" "$VTF_PATH" \\
+" "$FPATH" "$OUT_PATH" "$TAXONOMY_PATH" "$VTF_PATH" \
   "$SEED_CONCEPTS_JSON" "$CLASSIFIER_ENABLED" "$GRAPHCODEBERT_ENABLED" "$RAW_CONTENT_DIR")
 
-  HTTP_STATUS=$(curl -sf -o /tmp/_enrich_resp.json -w "%{{http_code}}" \\
-    -X POST "$CO_URL" \\
-    -H 'Content-Type: application/json' \\
-    -d "$PAYLOAD" 2>/dev/null || echo "000")
+HTTP_STATUS=$(curl -sf -o "$RESP_FILE" -w "%{{http_code}}" \
+  -X POST "$CO_URL" \
+  -H 'Content-Type: application/json' \
+  -d "$PAYLOAD" 2>/dev/null || echo "000")
 
-  ELAPSED=$(( SECONDS - T_BOOK ))
-  ELAPSED_TOTAL=$(( SECONDS - T_START ))
-  RATE=$(python3 -c "r=$IDX/max(${{ELAPSED_TOTAL:-0}},1); print(f'{{r:.2f}}')")
-  ETA=$(python3 -c "
-r=$IDX/max($ELAPSED_TOTAL,1)
-rem=$TOTAL-$IDX
-eta=int(rem/r) if r>0 else 0
-print(f'{{eta//60}}m{{eta%60:02d}}s')
-")
+ELAPSED=$(( SECONDS - T_BOOK ))
 
-  if [[ "$HTTP_STATUS" == "200" ]]; then
-    (( SUCCEEDED++ )) || true
-    printf "\\033[0;32m✓\\033[0m  (%ds) ETA ~%s\\n" "$ELAPSED" "$ETA"
-  else
-    (( FAILED++ )) || true
-    ERR=$(python3 -c "import json; d=json.load(open('/tmp/_enrich_resp.json')); \\
-  print(d.get('detail','?'))" 2>/dev/null || echo "HTTP $HTTP_STATUS")
-    printf "\\033[0;31m✗\\033[0m  (%ds) ERROR: %s\\n" "$ELAPSED" "$ERR"
-  fi
+# Lock-free progress: count output files directly (atomic on POSIX)
+DONE=$(find "$OUTPUT_DIR" -name "*_enriched.json" -type f 2>/dev/null | wc -l | tr -d ' ')
+ELAPSED_TOTAL=$(( SECONDS - T_START ))
+if [[ "$HTTP_STATUS" == "200" ]]; then
+  RATE=$(python3 -c "import sys; d=int(sys.argv[1]); t=max(int(sys.argv[2]),1); print(f'{{{{d/t:.2f}}}}')" "$DONE" "$ELAPSED_TOTAL")
+  REM=$(( TOTAL - DONE ))
+  ETA=$(python3 -c "import sys; d=int(sys.argv[1]); t=max(int(sys.argv[2]),1); r=d/t; rem=int(sys.argv[3]); eta=int(rem/r) if r>0 else 0; print(f'{{{{eta//60}}}}m{{{{eta%60:02d}}}}s')" "$DONE" "$ELAPSED_TOTAL" "$REM")
+
+  printf "\033[0;32m✓\033[0m [%d/%d] %s (%ds) %s books/s ETA ~%s\n" "$DONE" "$TOTAL" "$STEM" "$ELAPSED" "$RATE" "$ETA"
+else
+  ERR=$(python3 -c "import json; d=json.load(open('$RESP_FILE')); \
+print(d.get('detail','?'))" 2>/dev/null || echo "HTTP $HTTP_STATUS")
+  printf "\033[0;31m✗\033[0m [%d/%d] %s (%ds) ERROR: %s\n" "$DONE" "$TOTAL" "$STEM" "$ELAPSED" "$ERR"
+fi
+rm -f "$RESP_FILE"
+WORKER_EOF
+chmod +x "$WORKER_SCRIPT"
+
+# --- Fire parallel workers using PID-based pool (immune to worker crashes) ---
+RUNNING_PIDS=()
+MAX_WORKERS=$WORKERS
+
+for FPATH in "${{TO_PROCESS[@]}}"; do
+  # Wait if at capacity (poll for dead workers to free slots)
+  while (( ${{#RUNNING_PIDS[@]}} >= MAX_WORKERS )); do
+    for i in "${{!RUNNING_PIDS[@]}}"; do
+      if ! kill -0 "${{RUNNING_PIDS[$i]}}" 2>/dev/null; then
+        unset 'RUNNING_PIDS[$i]'
+      fi
+    done
+    RUNNING_PIDS=("${{RUNNING_PIDS[@]}}")  # reindex array
+    sleep 0.1
+  done
+  
+  # Fire worker in background
+  bash "$WORKER_SCRIPT" "$FPATH" "$OUTPUT_DIR" "$TAXONOMY_PATH" "$VTF_PATH" \\
+    "$SEED_CONCEPTS_JSON" "$CLASSIFIER_ENABLED" "$GRAPHCODEBERT_ENABLED" \\
+    "$RAW_CONTENT_DIR" "$CO_URL" "$TOTAL" "$T_START" &
+  RUNNING_PIDS+=($!)
 done
 
+# Wait for all stragglers to finish
+for pid in "${{RUNNING_PIDS[@]}}"; do
+  wait "$pid" 2>/dev/null || true
+done
+
+# --- Summary ---
+DONE=$(ls "$OUTPUT_DIR"/*_enriched.json 2>/dev/null | wc -l | tr -d ' ')
 ELAPSED_TOTAL=$(( SECONDS - T_START ))
 MINS=$(( ELAPSED_TOTAL / 60 ))
 SECS=$(( ELAPSED_TOTAL % 60 ))
 
 echo ""
-if [[ $FAILED -eq 0 ]]; then
-  printf "\\033[1;32m✅  Done — %d/%d succeeded in %dm%02ds\\033[0m\\n" "$SUCCEEDED" "$TOTAL" "$MINS" "$SECS"
-else
-  printf "\\033[1;33m⚠️   Done — %d succeeded, %d failed in %dm%02ds\\033[0m\\n" "$SUCCEEDED" "$FAILED" "$MINS" "$SECS"
-fi
+printf "\\033[1;32m✅  Done — %d enriched in %dm%02ds\\033[0m\\n" "$DONE" "$MINS" "$SECS"
 echo ""
+rm -f "$WORKER_SCRIPT"
 ln -sf "$LOG_FILE" "$LATEST_LINK"
 read -rp 'Press Enter to close...'
 """
@@ -282,8 +322,8 @@ read -rp 'Press Enter to close...'
             f.write(script_body)
         os.chmod(tmpscript_path, 0o755)  # noqa: S103
 
-        # Count books to process for the summary (quick estimate)
-        all_files = sorted(glob.glob(os.path.join(metadata_dir, "*_metadata.json")))
+        # Count books to process for the summary (quick estimate - recursive)
+        all_files = sorted(glob.glob(os.path.join(metadata_dir, "**", "*_metadata.json"), recursive=True))
         if book:
             all_files = [f for f in all_files if book.lower() in os.path.basename(f).lower()]
         if resume:
@@ -318,10 +358,11 @@ read -rp 'Press Enter to close...'
 
         msg = (
             f"Batch enrichment launched in a new Terminal window\n"
-            f"  Books  : {total}\n"
-            f"  Input  : {metadata_dir}\n"
-            f"  Output : {output_dir}\n"
-            f"  Log    : {log_file}\n"
+            f"  Books   : {total}\n"
+            f"  Workers : {workers_val}\n"
+            f"  Input   : {metadata_dir}\n"
+            f"  Output  : {output_dir}\n"
+            f"  Log     : {log_file}\n"
             f"\nMonitor from any terminal:\n"
             f"  tail -f {LATEST_LINK}"
         )
@@ -334,6 +375,7 @@ read -rp 'Press Enter to close...'
         return {
             "status": "launched",
             "total": total,
+            "workers": workers_val,
             "input_dir": metadata_dir,
             "output_dir": output_dir,
             "log_file": log_file,

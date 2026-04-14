@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 import httpx
 
 PROGRESS_LOG = "/tmp/extraction_progress.log"  # noqa: S108
-CO_HEALTH_TIMEOUT = 5.0
+CO_HEALTH_TIMEOUT = 30.0
 CO_REQUEST_TIMEOUT = None  # no timeout — mirrors original behaviour
 
 
@@ -135,22 +135,27 @@ def main() -> None:
     # Health check — fail fast before touching any files
     _health_check(args.co_url)
 
-    # Discover books
+    # Discover books — support recursive glob when '**' is in pattern
     pattern = os.path.join(args.input_dir, args.file_pattern)
-    all_files = sorted(glob.glob(pattern))
+    is_recursive = "**" in args.file_pattern
+    all_files = sorted(glob.glob(pattern, recursive=is_recursive))
     if not all_files:
         _log(yellow(f"⚠️  No files matching: {pattern}"))
         sys.exit(0)
 
-    books_to_process = []
+    # Build (book_path, out_path) pairs — preserve subdir structure relative to input_dir
+    books_to_process = []  # list of (fpath, out_path)
     skipped = []
     for fpath in all_files:
+        rel = os.path.relpath(fpath, args.input_dir)
+        rel_dir = os.path.dirname(rel)
         stem = os.path.splitext(os.path.basename(fpath))[0]
-        out_path = os.path.join(out_dir, f"{stem}_metadata.json")
+        out_subdir = os.path.join(out_dir, rel_dir)
+        out_path = os.path.join(out_subdir, f"{stem}_metadata.json")
         if args.skip_existing and os.path.exists(out_path):
             skipped.append(os.path.basename(fpath))
         else:
-            books_to_process.append(fpath)
+            books_to_process.append((fpath, out_path))
 
     total = len(books_to_process)
     _log(f"   Books to process: {bold(str(total))}  |  Skipped (existing): {len(skipped)}")
@@ -166,9 +171,9 @@ def main() -> None:
     batch_start = time.time()
 
     with httpx.Client() as client:
-        for idx, book_path in enumerate(books_to_process, 1):
+        for idx, (book_path, out_path) in enumerate(books_to_process, 1):
             book_name = os.path.splitext(os.path.basename(book_path))[0]
-            out_path = os.path.join(out_dir, f"{book_name}_metadata.json")
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
             book_start = time.time()
 
             _log("")

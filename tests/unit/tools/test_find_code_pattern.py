@@ -1,11 +1,8 @@
-"""Unit tests for the `find_code_pattern` facade handler — MCP-F-3 (RED phase).
-
-TDD RED phase: all tests written before implementation.
-They will FAIL until MCP-F-3.3 (GREEN) creates src/tools/find_code_pattern.py.
+"""Unit tests for the `find_code_pattern` facade handler — MCP-F-3.
 
 Acceptance Criteria covered:
-- AC-MCP-F-3.1: find_code_pattern dispatches to "pattern_search" with pattern_type="all", limit=10
-- AC-MCP-F-3.2: all 3 examples→pattern_type mappings correct
+- AC-MCP-F-3.1: find_code_pattern dispatches to "pattern_search" with collection="all", limit=10
+- AC-MCP-F-3.2: all 3 examples→collection mappings correct (good→code_good_patterns, bad→code_bad_patterns, both→all)
 - AC-MCP-F-3.3: unknown examples raises ValueError before dispatch
 - AC-MCP-F-3.4: handler exposes exactly 2 parameters (via inspect.signature)
 """
@@ -36,10 +33,10 @@ def dispatcher() -> ToolDispatcher:
 
 
 class TestFindCodePatternDefaultDispatch:
-    """AC-MCP-F-3.1: default call dispatches with pattern_type="all" and limit=10."""
+    """AC-MCP-F-3.1: default call dispatches with collection="all" and limit=10."""
 
     @pytest.mark.asyncio
-    async def test_default_examples_dispatches_pattern_type_all(self, dispatcher: ToolDispatcher) -> None:
+    async def test_default_examples_dispatches_collection_all(self, dispatcher: ToolDispatcher) -> None:
         from src.tools.find_code_pattern import create_handler
 
         captured: dict = {}
@@ -54,7 +51,8 @@ class TestFindCodePatternDefaultDispatch:
         handler = create_handler(dispatcher)
         await handler(query="singleton")
 
-        assert captured.get("pattern_type") == "all"
+        assert captured.get("collection") == "all"
+        assert "pattern_type" not in captured, "pattern_type must not leak to USS"
 
     @pytest.mark.asyncio
     async def test_default_limit_is_10(self, dispatcher: ToolDispatcher) -> None:
@@ -81,10 +79,10 @@ class TestFindCodePatternDefaultDispatch:
 
 
 class TestFindCodePatternExamplesMapping:
-    """AC-MCP-F-3.2: all 3 examples values map to correct pattern_type."""
+    """AC-MCP-F-3.2: all 3 examples values map to correct USS collection."""
 
     @pytest.mark.asyncio
-    async def test_good_maps_to_pattern_type_good(self, dispatcher: ToolDispatcher) -> None:
+    async def test_good_maps_to_code_good_patterns(self, dispatcher: ToolDispatcher) -> None:
         from src.tools.find_code_pattern import create_handler
 
         captured: dict = {}
@@ -99,10 +97,10 @@ class TestFindCodePatternExamplesMapping:
         handler = create_handler(dispatcher)
         await handler(query="factory", examples="good")
 
-        assert captured.get("pattern_type") == "good"
+        assert captured.get("collection") == "code_good_patterns"
 
     @pytest.mark.asyncio
-    async def test_bad_maps_to_pattern_type_bad(self, dispatcher: ToolDispatcher) -> None:
+    async def test_bad_maps_to_code_bad_patterns(self, dispatcher: ToolDispatcher) -> None:
         from src.tools.find_code_pattern import create_handler
 
         captured: dict = {}
@@ -117,10 +115,10 @@ class TestFindCodePatternExamplesMapping:
         handler = create_handler(dispatcher)
         await handler(query="god class", examples="bad")
 
-        assert captured.get("pattern_type") == "bad"
+        assert captured.get("collection") == "code_bad_patterns"
 
     @pytest.mark.asyncio
-    async def test_both_maps_to_pattern_type_all(self, dispatcher: ToolDispatcher) -> None:
+    async def test_both_maps_to_collection_all(self, dispatcher: ToolDispatcher) -> None:
         from src.tools.find_code_pattern import create_handler
 
         captured: dict = {}
@@ -135,7 +133,7 @@ class TestFindCodePatternExamplesMapping:
         handler = create_handler(dispatcher)
         await handler(query="observer", examples="both")
 
-        assert captured.get("pattern_type") == "all"
+        assert captured.get("collection") == "all"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

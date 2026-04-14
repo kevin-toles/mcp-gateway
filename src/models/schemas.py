@@ -447,6 +447,12 @@ class BatchEnrichMetadataInput(BaseModel):
     resume: bool = Field(default=True, description="Skip books that already have an enriched output file")
     limit: int = Field(default=0, ge=0, description="Cap at N books (0 = no limit)")
     book: str = Field(default="", max_length=500, description="Process only books whose filename contains this string")
+    workers: int = Field(
+        default=24,
+        ge=1,
+        le=64,
+        description="Number of parallel enrichment workers (default 24, max 64)",
+    )
 
     @field_validator("metadata_dir", "output_dir", mode="before")
     @classmethod

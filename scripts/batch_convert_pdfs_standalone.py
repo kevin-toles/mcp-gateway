@@ -48,6 +48,20 @@ _DEFAULT_REGISTRY = os.path.join(
 SUPPORTED_EXTENSIONS = {".pdf", ".md"}
 
 
+def _exists_case_sensitive(path: str) -> bool:
+    """Case-sensitive file existence check.
+
+    On macOS (case-insensitive HFS+) ``os.path.exists`` treats
+    ``How to Share a Secret.json`` and ``How To Share A Secret.json``
+    as the same file, silently preserving wrong-cased files that were
+    created by older pipelines.  Comparing against ``os.listdir`` of
+    the parent directory enforces exact case matching.
+    """
+    p = os.path.abspath(path)
+    parent, name = os.path.split(p)
+    return os.path.isdir(parent) and name in os.listdir(parent)
+
+
 # ── ANSI colours (disabled when not a TTY) ──────────────────────────────────
 def _c(code: str, text: str) -> str:
     if sys.stdout.isatty():
@@ -240,7 +254,7 @@ def main() -> None:
         # Mirror the relative sub-path under output dir so nested structure is preserved
         rel = fpath.relative_to(input_root)
         out_path = str(Path(out_dir) / rel.parent / (fpath.stem + ".json"))
-        if args.skip_existing and os.path.exists(out_path):
+        if args.skip_existing and _exists_case_sensitive(out_path):
             skipped.append(str(rel))
         else:
             to_process.append((str(fpath), out_path))
