@@ -251,7 +251,7 @@ print(json.dumps(p))
 " "$FPATH" "$OUT_PATH" "$TAXONOMY_PATH" "$VTF_PATH" \
   "$SEED_CONCEPTS_JSON" "$CLASSIFIER_ENABLED" "$GRAPHCODEBERT_ENABLED" "$RAW_CONTENT_DIR")
 
-HTTP_STATUS=$(curl -sf -o "$RESP_FILE" -w "%{{http_code}}" \
+HTTP_STATUS=$(curl -sf -o "$RESP_FILE" -w "%{{http_code}}" --max-time 300 \
   -X POST "$CO_URL" \
   -H 'Content-Type: application/json' \
   -d "$PAYLOAD" 2>/dev/null || echo "000")
@@ -288,10 +288,10 @@ for FPATH in "${{TO_PROCESS[@]}}"; do
         unset 'RUNNING_PIDS[$i]'
       fi
     done
-    RUNNING_PIDS=("${{RUNNING_PIDS[@]}}")  # reindex array
+    RUNNING_PIDS=("${{RUNNING_PIDS[@]+"${{RUNNING_PIDS[@]}}"}}")  # reindex array (safe with set -u)
     sleep 0.1
   done
-  
+
   # Fire worker in background
   bash "$WORKER_SCRIPT" "$FPATH" "$OUTPUT_DIR" "$TAXONOMY_PATH" "$VTF_PATH" \\
     "$SEED_CONCEPTS_JSON" "$CLASSIFIER_ENABLED" "$GRAPHCODEBERT_ENABLED" \\
@@ -300,7 +300,7 @@ for FPATH in "${{TO_PROCESS[@]}}"; do
 done
 
 # Wait for all stragglers to finish
-for pid in "${{RUNNING_PIDS[@]}}"; do
+for pid in "${{RUNNING_PIDS[@]+"${{RUNNING_PIDS[@]}}"}}"; do
   wait "$pid" 2>/dev/null || true
 done
 
