@@ -17,7 +17,6 @@ Monitor live progress with:
 """
 
 import os
-import shlex
 import stat
 import subprocess
 import tempfile
@@ -37,12 +36,16 @@ _PUSH_SCRIPT = os.path.abspath(
 
 
 def _launch_terminal(files: list[str], repo: str, dest: str) -> dict:
-    """Open a new Terminal.app window running push_large_files.py.
+    """Open a new Terminal.app window running github_upload.py via --json interface.
 
-    Follows the same osascript pattern as convert_pdf and batch_extract_metadata:
-      1. Write a temp .sh script with tee → log file
-      2. Use osascript to open it in a fresh Terminal.app window
-      3. Return immediately
+    Architecture:
+      1. Write a temp JSON payload file with all parameters
+      2. Generate a .sh script that calls github_upload.py --json <payload>
+      3. Launch script in Terminal.app via osascript
+      4. Return immediately with log file path for monitoring
+
+    This avoids ARG_MAX limits and uses the backend script's native JSON interface.
+    Note: skip_existing defaults to True in the backend script.
     """
     python = os.path.abspath(os.path.join(os.path.dirname(_PUSH_SCRIPT), "..", ".venv", "bin", "python"))
     if not os.path.exists(python):
@@ -51,16 +54,34 @@ def _launch_terminal(files: list[str], repo: str, dest: str) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
     log_file = f"/tmp/push_github_{timestamp}.log"  # noqa: S108
 
-    file_args = " ".join(shlex.quote(f) for f in files)
+    # Write JSON payload to temp file (backend script supports --json)
+    import json
 
+    fd_json, json_payload_file = tempfile.mkstemp(suffix=".json", prefix="push_github_payload_")
+    os.close(fd_json)
+    with open(json_payload_file, "w") as f:
+        json.dump(
+            {
+                "files": files,
+                "repo": repo,
+                "dest": dest,
+                # skip_existing defaults to True in backend
+            },
+            f,
+            ensure_ascii=False,
+        )
+
+    # Generate shell script that calls backend with --json
     fd, tmp_script = tempfile.mkstemp(suffix=".sh", prefix="push_github_run_")
     os.close(fd)
     with open(tmp_script, "w") as f:
         f.write(f"""#!/usr/bin/env bash
-printf '\\n\\033[1;36m\u2550\u2550 Push to GitHub \u2192 {repo}/{dest}  Log: {log_file}\\033[0m\\n\\n'
-'{python}' -u '{_PUSH_SCRIPT}' --files {file_args} --repo '{repo}' --dest '{dest}' 2>&1 | tee '{log_file}'
+printf '\\n\\033[1;36m\u2550\u2550 Push to GitHub \u2192 {repo}/{dest}  ({len(files)} files)\\033[0m\\n'
+printf '\\033[0;90mLog: {log_file}\\033[0m\\n\\n'
+'{python}' -u '{_PUSH_SCRIPT}' --json '{json_payload_file}' 2>&1 | tee '{log_file}'
 EXIT_CODE=${{PIPESTATUS[0]}}
 ln -sf '{log_file}' '{PROGRESS_LOG}'
+rm -f '{json_payload_file}'  # cleanup payload file
 echo ''
 if [[ $EXIT_CODE -eq 0 ]]; then
   printf '\\033[1;32m\u2705  Push complete.\\033[0m\\n'
@@ -102,10 +123,10 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
     """Return an async handler for push_to_github."""
 
     async def push_to_github(
-        files: list[str],
+        files: list[str] | str | None = None,
+        files_json: str | None = None,
         repo: str = "kevin-toles/pdf-text-repo",
         dest: str = "Textbooks",
-        skip_existing: bool = True,
         ctx: Context | None = None,
     ) -> dict:
         """Push one or more files to a GitHub repo. Routing is automatic by size:
@@ -117,17 +138,25 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         Always launches in a new Terminal.app window and returns immediately.
         Monitor live progress with: tail -f /tmp/push_github_latest.log
 
+        Note: Files already in the repo are skipped by default (backend behavior).
+
+        Usage Examples:
+            Single file:       files="/path/to/file.pdf"
+            Comma-separated:   files="/path/1.pdf,/path/2.pdf,/path/3.pdf"
+            Multiple files:    files=["/path/1.pdf", "/path/2.pdf"]
+            JSON file:         files=[], files_json="/tmp/files.json"
+
         Args:
-            files: List of absolute local file paths to upload.
+            files: Single path (string), array of paths, or empty [] if using files_json.
+            files_json: Path to JSON file containing array of file paths (e.g. '/tmp/files.json').
             repo: GitHub repo as owner/name (default: kevin-toles/pdf-text-repo).
             dest: Destination directory inside the repo (default: Textbooks).
-            skip_existing: Skip files already present in the repo (default: True).
         """
         validated = PushToGithubInput(
             files=files,
+            files_json=files_json,
             repo=repo,
             dest=dest,
-            skip_existing=skip_existing,
         )
 
         missing = [f for f in validated.files if not os.path.exists(f)]

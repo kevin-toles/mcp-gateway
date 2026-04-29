@@ -60,6 +60,13 @@ dependencies = [
 
     # Async file I/O
     "aiofiles>=23.2.0",
+    # P1-01: Prometheus metrics (Phase 1 — Prometheus Metrics Pipeline)
+    "prometheus-client>=0.21.0",
+    # P1-09: OpenTelemetry SDK (required by Phase 4 configure_otel)
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0",
 ]
 
 [project.optional-dependencies]

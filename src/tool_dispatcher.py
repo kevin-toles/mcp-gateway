@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.ai_platform_metrics import TOOL_CALLS_TOTAL
 from src.core.config import Settings
 from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeoutError
 from src.resilience.circuit_breaker import CircuitBreakerRegistry
@@ -544,27 +545,38 @@ class ToolDispatcher:
         last_exc: Exception | None = None
         attempts = 1 + self._max_retries
 
-        for attempt in range(attempts):
-            await self._check_circuit_breaker(cb)
-            result = await self._attempt_dispatch(
-                client,
-                cb,
-                method,
-                url,
-                payload,
-                route,
-                tool_name,
-                service_name,
-                attempt,
-                attempts,
-                extra_headers=extra_headers,
-            )
-            if result is not None:
-                return result
+        try:
+            for attempt in range(attempts):
+                await self._check_circuit_breaker(cb)
+                result = await self._attempt_dispatch(
+                    client,
+                    cb,
+                    method,
+                    url,
+                    payload,
+                    route,
+                    tool_name,
+                    service_name,
+                    attempt,
+                    attempts,
+                    extra_headers=extra_headers,
+                )
+                if result is not None:
+                    # P1-06: Increment tool calls counter on successful dispatch
+                    _status = "success" if result.status_code < 400 else "error"
+                    TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status=_status).inc()
+                    return result
 
-        if last_exc is not None:
-            raise last_exc
-        raise BackendUnavailableError(service_name, "All retry attempts exhausted")
+            # P1-06: Increment tool calls counter on exhausted retries
+            TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
+            if last_exc is not None:
+                raise last_exc
+            raise BackendUnavailableError(service_name, "All retry attempts exhausted")
+
+        except CircuitOpenError:
+            # P1-06: Circuit-open = request filtered before reaching backend
+            TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="filtered").inc()
+            raise
 
     async def _attempt_dispatch(
         self,

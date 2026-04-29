@@ -488,12 +488,24 @@ class RenameNormalizationInput(BaseModel):
 
 
 class PushToGithubInput(BaseModel):
-    """Input for push_to_github tool — push one or more files to a GitHub repo via git push."""
+    """Input for push_to_github tool — push one or more files to a GitHub repo via git push.
 
-    files: list[str] = Field(
-        ...,
-        min_length=1,
-        description="List of absolute local file paths to push (e.g. ['/path/to/file.pdf'])",
+    Flexible input formats:
+      - Single file:         files="/path/to/file.pdf"
+      - Comma-separated:     files="/path/1.pdf,/path/2.pdf,/path/3.pdf"
+      - Array:               files=["/path/1.pdf", "/path/2.pdf"]
+      - JSON file reference: files_json="/tmp/files.json" (with files=[])
+
+    Note: skip_existing defaults to True in backend script (--no-skip-existing disables it).
+    """
+
+    files: list[str] | str = Field(
+        default_factory=list,
+        description="File path(s): string (single/comma-separated), array, or [] if using files_json",
+    )
+    files_json: str | None = Field(
+        default=None,
+        description="Path to JSON file containing array of file paths (e.g. '/tmp/files.json')",
     )
     repo: str = Field(
         default="kevin-toles/pdf-text-repo",
@@ -507,12 +519,57 @@ class PushToGithubInput(BaseModel):
         max_length=500,
         description="Destination directory path inside the repo (e.g. 'Textbooks')",
     )
-    skip_existing: bool = Field(default=True, description="Skip files already present in the repo")
 
-    @field_validator("files", mode="before")
-    @classmethod
-    def sanitize_files(cls, v: list) -> list:
-        return [_sanitize_str_field(f) for f in v]
+    @model_validator(mode="after")
+    def normalize_and_load_files(self) -> "PushToGithubInput":
+        """Normalize all input formats to a validated list of absolute file paths."""
+        import json
+        import os
+
+        # 1. Normalize string → list
+        if isinstance(self.files, str):
+            if not self.files:
+                self.files = []
+            # Handle comma-separated paths (common LLM mistake)
+            elif "," in self.files:
+                self.files = [p.strip() for p in self.files.split(",") if p.strip()]
+            else:
+                self.files = [self.files]
+
+        # 2. Load from JSON file if provided
+        if self.files_json:
+            if not os.path.isfile(self.files_json):
+                raise ValueError(f"JSON file not found: {self.files_json}")
+
+            with open(self.files_json) as f:
+                loaded = json.load(f)
+
+            if not isinstance(loaded, list):
+                raise ValueError(f"JSON file must contain an array, got {type(loaded)}")
+
+            self.files = loaded
+            self.files_json = None  # Clear after loading
+
+        # 3. Validate non-empty
+        if not self.files:
+            raise ValueError("No files provided. Use: files='/path' OR files=['p1','p2'] OR files_json='/tmp/f.json'")
+
+        # 4. Sanitize and validate all paths
+        sanitized = []
+        for f in self.files:
+            clean = _sanitize_str_field(f).strip()
+            if not clean:
+                continue
+            # Expand home directory if present
+            if clean.startswith("~"):
+                clean = os.path.expanduser(clean)
+            sanitized.append(clean)
+
+        if not sanitized:
+            raise ValueError("All file paths were empty after sanitization")
+
+        self.files = sanitized
+        return self
 
     @field_validator("repo", "dest", mode="before")
     @classmethod

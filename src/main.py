@@ -14,7 +14,14 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 
+# P1-02 / P1-04: Platform metrics and middleware
+from src.ai_platform_metrics import mount_metrics
 from src.core.config import Settings
+from src.middleware.metrics import MetricsMiddleware
+from src.middleware.session_recovery import SessionRecoveryMiddleware
+
+# P4-07: configure_otel() — idempotent OTel init with FastAPIInstrumentor
+from src.middleware.tracing import configure_otel
 from src.models.schemas import HealthResponse
 from src.security.audit import AuditMiddleware
 from src.security.authn import OIDCAuthMiddleware
@@ -54,6 +61,23 @@ app.add_middleware(
 
 app.add_middleware(OIDCAuthMiddleware, settings=settings)
 
+# P1-04: Platform-standard MetricsMiddleware (ai_platform_* names for fleet dashboards)
+# Added innermost so it runs after auth/rate-limit and records only admitted requests.
+# /metrics excluded so scraping does not produce recursive observations.
+app.add_middleware(
+    MetricsMiddleware,
+    service_name="mcp-gateway",
+    exclude_paths=["/metrics", "/health"],
+)
+
+# P4-07: configure_otel() — env-var-driven, idempotent; no-op if OTEL_EXPORTER_OTLP_ENDPOINT unset
+configure_otel(service_name="mcp-gateway", app=app)
+
+# Session recovery: convert 404s on stale sessions to 410 with recovery instructions
+# This prevents the "tool hangs forever" UX when server restarts.
+# Added early in chain so it catches 404s from downstream handlers.
+app.add_middleware(SessionRecoveryMiddleware, service_version=settings.SERVICE_VERSION)
+
 
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next) -> Response:
@@ -73,6 +97,45 @@ async def health() -> HealthResponse:
         status="healthy",
         uptime_seconds=round(time.monotonic() - _start_time, 2),
     )
+
+
+@app.get("/mcp/sessions/{session_id}/health")
+async def check_session_health(session_id: str):
+    """Check if a specific session ID is valid.
+
+    This endpoint allows MCP clients to verify session validity without
+    making a full tool call. Useful for implementing client-side heartbeats
+    or reconnection logic.
+
+    Returns:
+        {
+            "session_id": "abc123...",
+            "valid": false,
+            "message": "Session not found - server may have restarted",
+            "server_version": "1.0.0",
+            "server_uptime_seconds": 123.45,
+            "recovery_endpoint": "/mcp/sse"
+        }
+    """
+    # FastMCP doesn't expose session_exists() publicly, so we infer from
+    # whether we can find the session in the active sessions.
+    # For now, return a helpful message - clients should use this to detect
+    # stale sessions and reconnect.
+
+    # TODO: Once FastMCP exposes session introspection, actually check validity
+    # For now, always return guidance to reconnect on 404s
+
+    return {
+        "session_id": session_id,
+        "valid": "unknown",
+        "message": (
+            "Session validity check not fully implemented. "
+            "If you receive 410 errors on tool calls, reconnect via /mcp/sse"
+        ),
+        "server_version": settings.SERVICE_VERSION,
+        "server_uptime_seconds": round(time.monotonic() - _start_time, 2),
+        "recovery_endpoint": "/mcp/sse",
+    }
 
 
 # ── Admin / Diagnostics ────────────────────────────────────────────────
@@ -123,3 +186,6 @@ if _config_path.exists():
     logger.info("MCP server mounted at /mcp with %d tools", _registry.tool_count)
 else:
     logger.warning("config/tools.yaml not found — MCP server not mounted")
+
+# P1-04: Mount /metrics endpoint for Prometheus scraping (ai_platform_* metrics)
+mount_metrics(app, service_name="mcp-gateway")

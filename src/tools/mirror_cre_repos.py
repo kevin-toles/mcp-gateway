@@ -159,11 +159,17 @@ def _register_repo(
 
 def _launch_terminal(repo_ids: list[str], force: bool, auto_continue: bool, dry_run: bool) -> dict:
     """Open a new Terminal.app window running mirror_all_repos.sh."""
+    import sys
+
+    print(f"[DEBUG] _launch_terminal called with repo_ids={repo_ids}", file=sys.stderr, flush=True)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
     log_file = f"/tmp/mirror_{timestamp}.log"  # noqa: S108
 
     args_str = _build_args(repo_ids, force, auto_continue, dry_run)
     label = f"--only {','.join(repo_ids)}" if repo_ids else "all new repos"
+
+    print("[DEBUG] About to create temp script", file=sys.stderr, flush=True)
 
     fd, tmp_script = tempfile.mkstemp(suffix=".sh", prefix="mirror_cre_run_")
     os.close(fd)
@@ -200,7 +206,11 @@ end run
     with open(osa_file, "w") as f:
         f.write(osascript)
 
+    import sys
+
+    print(f"[DEBUG] About to call osascript: {osa_file} {tmp_script}", file=sys.stderr, flush=True)
     subprocess.Popen(["/usr/bin/osascript", osa_file, tmp_script])  # noqa: S603
+    print("[DEBUG] subprocess.Popen returned successfully", file=sys.stderr, flush=True)
 
     return {
         "status": "launched",
@@ -263,10 +273,16 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             )
 
         # --- Registry check + auto-register step ---
+        import sys
+
+        print(f"[DEBUG] Starting registry check for ids={ids}", file=sys.stderr, flush=True)
         registration_result: dict | None = None
         if ids:
+            print("[DEBUG] Calling _all_registry_ids()", file=sys.stderr, flush=True)
             known_ids = _all_registry_ids()
+            print(f"[DEBUG] Found {len(known_ids)} known IDs", file=sys.stderr, flush=True)
             unknown = [rid for rid in ids if rid not in known_ids]
+            print(f"[DEBUG] Unknown IDs: {unknown}, source_url={source_url is not None}", file=sys.stderr, flush=True)
 
             if unknown and not source_url:
                 return sanitizer.sanitize(
