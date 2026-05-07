@@ -1,7 +1,7 @@
 """Tests for Workflow MCP Tools — WBS-WF6 (RED).
 
 Verifies the 5 workflow tools that bridge MCP protocol to backend endpoints:
-- convert_pdf: POST /api/v1/workflows/convert-pdf → Code-Orchestrator :8083
+- convert_pdf_to_json: POST /api/v1/workflows/convert-pdf → Code-Orchestrator :8083
 - extract_book_metadata: POST /api/v1/workflows/extract-book → Code-Orchestrator :8083
 - generate_taxonomy: POST /api/v1/workflows/generate-taxonomy → Code-Orchestrator :8083
 - enrich_book_metadata: POST /v1/workflows/enrich-book → ai-agents :8082
@@ -63,7 +63,7 @@ def sanitizer():
 
 
 WORKFLOW_TOOLS = [
-    "convert_pdf",
+    "convert_pdf_to_json",
     "extract_book_metadata",
     "batch_extract_metadata",
     "generate_taxonomy",
@@ -123,7 +123,7 @@ class TestToolRegistryWorkflow:
 
 
 EXPECTED_WORKFLOW_ROUTES = {
-    "convert_pdf": {
+    "convert_pdf_to_json": {
         "base_url": "http://localhost:8083",
         "path": "/api/v1/workflows/convert-pdf",
         "timeout": 900.0,
@@ -217,7 +217,7 @@ class TestWorkflowServiceNames:
     @pytest.mark.parametrize(
         "tool_name,expected_service",
         [
-            ("convert_pdf", "code-orchestrator"),
+            ("convert_pdf_to_json", "code-orchestrator"),
             ("extract_book_metadata", "code-orchestrator"),
             ("batch_extract_metadata", "code-orchestrator"),
             ("generate_taxonomy", "code-orchestrator"),
@@ -249,7 +249,7 @@ class TestWorkflowServiceNames:
 
 
 class TestConvertPDFSchema:
-    """Input validation for convert_pdf tool."""
+    """Input validation for convert_pdf_to_json tool."""
 
     def test_valid_minimal(self):
         from src.models.schemas import ConvertPDFInput
@@ -661,21 +661,21 @@ class TestAnalyzeTaxonomyCoverageSchema:
 
 
 class TestConvertPDFHandler:
-    """Test the convert_pdf tool handler."""
+    """Test the convert_pdf_to_json tool handler."""
 
     @pytest.mark.asyncio
     async def test_dispatches_correct_tool_name(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
+        from src.tools.convert_pdf_to_json import create_handler
 
         handler = create_handler(mock_dispatcher, sanitizer)
         await handler(input_path="/tmp/book.pdf")
 
         mock_dispatcher.dispatch.assert_called_once()
-        assert mock_dispatcher.dispatch.call_args[0][0] == "convert_pdf"
+        assert mock_dispatcher.dispatch.call_args[0][0] == "convert_pdf_to_json"
 
     @pytest.mark.asyncio
     async def test_dispatches_validated_payload(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
+        from src.tools.convert_pdf_to_json import create_handler
 
         handler = create_handler(mock_dispatcher, sanitizer)
         await handler(input_path="/tmp/book.pdf", output_path="/tmp/out.json", enable_ocr=False)
@@ -687,7 +687,7 @@ class TestConvertPDFHandler:
 
     @pytest.mark.asyncio
     async def test_returns_sanitized_body(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
+        from src.tools.convert_pdf_to_json import create_handler
 
         handler = create_handler(mock_dispatcher, sanitizer)
         result = await handler(input_path="/tmp/book.pdf")
@@ -695,7 +695,7 @@ class TestConvertPDFHandler:
 
     @pytest.mark.asyncio
     async def test_rejects_empty_input_path(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
+        from src.tools.convert_pdf_to_json import create_handler
 
         handler = create_handler(mock_dispatcher, sanitizer)
         with pytest.raises(ValidationError):
@@ -1407,7 +1407,7 @@ EXPECTED_ALL_TOOL_NAMES = {
     "pattern_search",
     "diagram_search",
     # 6 workflow tools
-    "convert_pdf",
+    "convert_pdf_to_json",
     "extract_book_metadata",
     "batch_extract_metadata",
     "generate_taxonomy",
@@ -1499,7 +1499,7 @@ class TestToolsListWorkflow:
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        tool = next(t for t in tools if t.name == "convert_pdf")
+        tool = next(t for t in tools if t.name == "convert_pdf_to_json")
         props = tool.inputSchema["properties"]
         assert "input_path" in props
         assert "enable_ocr" in props
@@ -1577,7 +1577,7 @@ class TestToolsListWorkflow:
         from fastmcp import Client
 
         test_cases = [
-            ("convert_pdf", {"input_path": "/tmp/book.pdf"}),
+            ("convert_pdf_to_json", {"input_path": "/tmp/book.pdf"}),
             ("extract_book_metadata", {"input_path": "/tmp/book.json"}),
             ("generate_taxonomy", {"tier_books": {"t": ["/tmp/b.json"]}}),
             ("enrich_book_metadata", {"input_path": "/tmp/book.json"}),

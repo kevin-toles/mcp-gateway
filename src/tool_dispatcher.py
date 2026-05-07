@@ -80,7 +80,7 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "a2a_get_task": "ai-agents",
     "a2a_cancel_task": "ai-agents",
     # Workflow tools (WBS-WF6)
-    "convert_pdf": "code-orchestrator",
+    "convert_pdf_to_json": "code-orchestrator",
     "extract_book_metadata": "code-orchestrator",
     "batch_extract_metadata": "code-orchestrator",
     "generate_taxonomy": "code-orchestrator",
@@ -184,7 +184,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/a2a/v1/tasks",  # /{task_id}:cancel appended at dispatch time
         ),
         # Workflow tools (WBS-WF6) — no timeout (large scanned PDFs can exceed 900s with OCR)
-        "convert_pdf": DispatchRoute(
+        "convert_pdf_to_json": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
             path="/api/v1/workflows/convert-pdf",
             timeout=None,

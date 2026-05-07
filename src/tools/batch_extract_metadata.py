@@ -152,7 +152,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
     async def batch_extract_metadata(
         input_dir: str,
         output_dir: str | None = None,
-        file_pattern: str = "*.json",
+        file_pattern: str = "**/*.json",
         skip_existing: bool = True,
         enable_summary: bool = False,
         vtf_path: str | None = None,
@@ -166,7 +166,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         Args:
             input_dir: Directory containing raw book JSON files.
             output_dir: Directory for metadata output (defaults to sibling 'metadata' dir).
-            file_pattern: Glob pattern for book files (default: *.json).
+            file_pattern: Glob pattern for book files (default: **/*.json — recursive).
             skip_existing: Skip books that already have metadata output files.
             enable_summary: Whether to generate LLM summaries (default: False for speed).
             vtf_path: Optional path to a custom validated_term_filter.json for this batch.
@@ -205,7 +205,8 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
         # ── Discover books (mirrors original discover_books()) ──────────
         pattern = os.path.join(validated.input_dir, validated.file_pattern)
-        all_files = sorted(glob.glob(pattern))
+        is_recursive = "**" in validated.file_pattern
+        all_files = sorted(glob.glob(pattern, recursive=is_recursive))
 
         if not all_files:
             return {"status": "no_files", "message": f"No files matching {pattern}"}

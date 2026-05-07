@@ -1,4 +1,4 @@
-"""convert_pdf tool handler — WBS-WF6.
+"""convert_pdf_to_json tool handler — WBS-WF6.
 
 1:1 mirror of batch_extract_metadata — launches Terminal.app window and returns
 immediately. Discovers all PDFs in input_dir and converts each one.
@@ -18,7 +18,7 @@ import httpx
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 
-TOOL_NAME = "convert_pdf"
+TOOL_NAME = "convert_pdf_to_json"
 PROGRESS_LOG = "/tmp/conversion_progress.log"  # noqa: S108
 _STANDALONE_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "batch_convert_pdfs_standalone.py")
 
@@ -107,7 +107,7 @@ end tell
 def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
     """Return an async handler — mirrors batch_extract_metadata interface."""
 
-    async def convert_pdf(
+    async def convert_pdf_to_json(
         input_path: str,
         output_path: str | None = None,
         file_pattern: str = "*.pdf",
@@ -164,4 +164,4 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             co_url=co_url,
         )
 
-    return convert_pdf
+    return convert_pdf_to_json

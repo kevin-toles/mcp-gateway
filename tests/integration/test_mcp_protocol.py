@@ -63,7 +63,7 @@ class TestMCPToolsList:
                 "a2a_get_task",
                 "a2a_cancel_task",
                 # Book / document pipeline
-                "convert_pdf",
+                "convert_pdf_to_json",
                 "extract_book_metadata",
                 "batch_extract_metadata",
                 "generate_taxonomy",

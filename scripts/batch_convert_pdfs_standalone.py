@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone batch document conversion script.
 
-Launched by the convert_pdf MCP tool. Discovers PDF and Markdown files in
+Launched by the convert_pdf_to_json MCP tool. Discovers PDF and Markdown files in
 input_dir and calls code-orchestrator /api/v1/workflows/convert-pdf for each.
 
   .pdf files  — converted via PyMuPDF + optional OCR.
@@ -325,7 +325,7 @@ def main() -> None:
                         stop_evt.set()
                         watcher.join(timeout=1.0)
                     except Exception:
-                        pass
+                        _log(yellow("   ⚠  watcher join failed (non-fatal)"))
                 _log(red(f"   ❌  Failed ({elapsed:.1f}s): {str(e)[:200]}"))
                 failed += 1
                 failed_names.append(doc_name)

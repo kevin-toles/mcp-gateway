@@ -301,8 +301,8 @@ class A2ACancelTaskInput(BaseModel):
 # ── Workflow tool schemas (WBS-WF6) ─────────────────────────────────────
 
 
-class ConvertPDFInput(BaseModel):
-    """Input for convert_pdf tool — convert PDF to structured JSON."""
+class ConvertPDFToJsonInput(BaseModel):
+    """Input for convert_pdf_to_json tool — convert PDF to structured JSON."""
 
     input_path: str = Field(..., min_length=1, max_length=1000, description="Path to PDF file")
     output_path: str | None = Field(
@@ -339,7 +339,11 @@ class BatchExtractMetadataInput(BaseModel):
     output_dir: str | None = Field(
         default=None, max_length=1000, description="Output directory for metadata (defaults to sibling 'metadata' dir)"
     )
-    file_pattern: str = Field(default="*.json", max_length=100, description="Glob pattern for book files")
+    file_pattern: str = Field(
+        default="**/*.json",
+        max_length=100,
+        description="Glob pattern for book files (supports ** recursive)",
+    )
     skip_existing: bool = Field(default=True, description="Skip books that already have metadata output files")
 
     @field_validator("input_dir", mode="before")

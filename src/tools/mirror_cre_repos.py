@@ -143,7 +143,7 @@ def _register_repo(
     entry = _infer_repo_entry(repo_id, source_url, domain_id)
     target_domain.setdefault("repos", []).append(entry)
     target_domain["repo_count"] = len(target_domain["repos"])
-    reg["total_repos"] = reg.get("total_repos", 0) + 1
+    reg["total_repos"] = int(reg.get("total_repos", 0)) + 1
 
     with open(_REGISTRY_PATH, "w") as f:
         json.dump(reg, f, indent=2)

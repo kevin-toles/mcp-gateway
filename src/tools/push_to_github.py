@@ -1,6 +1,6 @@
 """push_to_github tool handler — push files to GitHub via git push.
 
-Mirrors the convert_pdf / batch_extract_metadata pattern exactly:
+Mirrors the convert_pdf_to_json / batch_extract_metadata pattern exactly:
   1. Accept file paths + repo + dest as parameters
   2. Launch a Terminal.app window running push_large_files.py
   3. Return immediately with log path to monitor

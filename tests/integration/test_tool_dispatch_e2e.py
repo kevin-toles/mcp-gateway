@@ -256,13 +256,13 @@ class TestGenerateTaxonomyE2E:
 
 
 class TestConvertPDFE2E:
-    """Tool: convert_pdf → code-orchestrator-service :8083."""
+    """Tool: convert_pdf_to_json → code-orchestrator-service :8083."""
 
     async def test_dispatch_returns_result(self, dispatcher):
         if not await _check_backend("http://localhost:8083/health"):
             pytest.skip("code-orchestrator-service not running on :8083")
         result = await dispatcher.dispatch(
-            "convert_pdf",
+            "convert_pdf_to_json",
             {
                 "input_path": "/tmp/nonexistent_test.pdf"  # noqa: S108,
             },
@@ -336,7 +336,7 @@ class TestAllToolsCovered:
             "extract_book_metadata",
             "batch_extract_metadata",
             "generate_taxonomy",
-            "convert_pdf",
+            "convert_pdf_to_json",
             "enrich_book_metadata",
             "enhance_guideline",
             "analyze_taxonomy_coverage",

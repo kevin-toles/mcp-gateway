@@ -60,7 +60,7 @@ GATEWAY_TOOLS = {
     "a2a_get_task",
     "a2a_cancel_task",
     # Workflow tools (WBS-WF6)
-    "convert_pdf",
+    "convert_pdf_to_json",
     "extract_book_metadata",
     "batch_extract_metadata",
     "generate_taxonomy",

@@ -23,7 +23,7 @@ EXPECTED_TOOL_NAMES = {
     "a2a_get_task",
     "a2a_cancel_task",
     # Workflow tools (WBS-WF6)
-    "convert_pdf",
+    "convert_pdf_to_json",
     "extract_book_metadata",
     "batch_extract_metadata",
     "generate_taxonomy",
@@ -101,7 +101,7 @@ tools:
     description: "Cancel A2A task"
     tier: silver
     tags: [a2a, agent, cancel]
-  - name: convert_pdf
+  - name: convert_pdf_to_json
     description: "Convert PDF to JSON"
     tier: gold
     tags: [workflow, pdf, conversion]
