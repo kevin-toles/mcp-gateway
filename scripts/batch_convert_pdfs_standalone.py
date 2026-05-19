@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
@@ -136,12 +137,29 @@ def main() -> None:
     parser.add_argument("--file-pattern", default="*.pdf")
     parser.add_argument("--skip-existing", action="store_true", default=False)
     parser.add_argument("--enable-ocr", action="store_true", default=False)
+    parser.add_argument("--mirror-structure", action="store_true", default=False,
+                        help="Mirror input directory structure under output dir (auto-enabled when subdirs detected)")
     parser.add_argument("--co-url", default=os.environ.get("CODE_ORCHESTRATOR_URL", "http://localhost:8083"))
     args = parser.parse_args()
 
     # Resolve output dir
     out_dir = args.output_dir or os.path.join(os.path.dirname(args.input_dir.rstrip("/")), "converted")
     os.makedirs(out_dir, exist_ok=True)
+
+    # Discover PDFs — recursive glob (mirrors extraction/enrichment using rglob)
+    input_path = Path(args.input_dir)
+    if "**" in args.file_pattern:
+        all_files = sorted(glob.glob(os.path.join(args.input_dir, args.file_pattern), recursive=True))
+    else:
+        all_files = sorted(str(p) for p in input_path.rglob(args.file_pattern))
+
+    if not all_files:
+        _log(yellow(f"⚠️  No PDFs found under: {args.input_dir}  (pattern: {args.file_pattern})"))
+        sys.exit(0)
+
+    # Determine whether to mirror directory structure
+    has_subdirs = len(list(input_path.rglob(args.file_pattern))) > len(list(input_path.glob(args.file_pattern)))
+    mirror = args.mirror_structure or has_subdirs
 
     # Header
     _log("=" * 60)
@@ -151,27 +169,28 @@ def main() -> None:
     _log(f"   Pattern: {args.file_pattern}")
     _log(f"   Skip existing: {args.skip_existing}")
     _log(f"   OCR: {args.enable_ocr}")
+    _log(f"   Mirror structure: {mirror}")
     _log("=" * 60)
 
     # Health check — fail fast before touching any files
     _health_check(args.co_url)
 
-    # Discover PDFs
-    pattern = os.path.join(args.input_dir, args.file_pattern)
-    all_files = sorted(glob.glob(pattern))
-    if not all_files:
-        _log(yellow(f"⚠️  No files matching: {pattern}"))
-        sys.exit(0)
-
     to_process = []
     skipped = []
     for fpath in all_files:
-        stem = os.path.splitext(os.path.basename(fpath))[0]
-        out_path = os.path.join(out_dir, f"{stem}.json")
-        if args.skip_existing and os.path.exists(out_path):
-            skipped.append(os.path.basename(fpath))
+        fpath_str = str(fpath) if isinstance(fpath, Path) else fpath
+        fpath_obj = Path(fpath_str)
+        if mirror:
+            rel = fpath_obj.relative_to(input_path)
+            out_path = os.path.join(out_dir, rel.with_suffix(".json"))
         else:
-            to_process.append((fpath, out_path))
+            stem = fpath_obj.stem
+            out_path = os.path.join(out_dir, f"{stem}.json")
+
+        if args.skip_existing and os.path.exists(out_path):
+            skipped.append(fpath_obj.name)
+        else:
+            to_process.append((fpath_str, out_path))
 
     total = len(to_process)
     _log(f"   PDFs to convert: {bold(str(total))}  |  Skipped (existing): {len(skipped)}")
@@ -180,6 +199,13 @@ def main() -> None:
     if total == 0:
         _log(green("✅  All PDFs already converted. Nothing to do."))
         sys.exit(0)
+
+    # Ensure output subdirectories exist when mirroring structure
+    if mirror:
+        for pdf_path, out_path in to_process:
+            out_parent = os.path.dirname(out_path)
+            if out_parent and not os.path.exists(out_parent):
+                os.makedirs(out_parent, exist_ok=True)
 
     # Conversion loop
     succeeded = 0

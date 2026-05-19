@@ -99,7 +99,8 @@ All settings use environment variables with the `MCP_GATEWAY_` prefix:
 | `MCP_GATEWAY_SERVICE_NAME` | `mcp-gateway` | Service identity |
 | `MCP_GATEWAY_SERVICE_VERSION` | `0.1.0` | Service version |
 | `MCP_GATEWAY_LLM_GATEWAY_URL` | `http://localhost:8080` | LLM gateway backend |
-| `MCP_GATEWAY_SEMANTIC_SEARCH_URL` | `http://localhost:8081` | Semantic search backend |
+| `MCP_GATEWAY_UNIFIED_SEARCH_URL` | `http://localhost:8081` | Unified search backend (Python) |
+| `MCP_GATEWAY_UNIFIED_SEARCH_RS_URL` | `http://localhost:8089` | Unified search backend (Rust) |
 | `MCP_GATEWAY_AI_AGENTS_URL` | `http://localhost:8082` | AI agents backend |
 | `MCP_GATEWAY_CODE_ORCHESTRATOR_URL` | `http://localhost:8083` | Code orchestrator backend |
 | `MCP_GATEWAY_AUTH_ENABLED` | `false` | Enable JWT authentication |

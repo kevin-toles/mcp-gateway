@@ -21,6 +21,8 @@ import httpx
 
 from src.core.config import Settings
 from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeoutError
+from src.core.idle_timeout import get_tracker
+from src.middleware.health_proxy import HealthAwareProxy, get_proxy
 from src.resilience.circuit_breaker import CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
@@ -64,16 +66,16 @@ class DispatchResult:
 
 # Maps tool_name → human-friendly service name (for error messages)
 _TOOL_SERVICE_NAMES: dict[str, str] = {
-    "semantic_search": "semantic-search",
-    "hybrid_search": "semantic-search",
-    "graph_traverse": "semantic-search",
+    "semantic_search": "unified-search-service",
+    "hybrid_search": "unified-search-service",
+    "graph_traverse": "unified-search-service",
     # Issue #6: consolidated KB tools
-    "knowledge_search": "semantic-search",
-    "knowledge_refine": "semantic-search",
-    "pattern_search": "semantic-search",
+    "knowledge_search": "unified-search-service",
+    "knowledge_refine": "unified-search-service",
+    "pattern_search": "unified-search-service",
     "code_analyze": "code-orchestrator",
     "code_pattern_audit": "code-orchestrator",
-    "graph_query": "semantic-search",
+    "graph_query": "unified-search-service",
     "llm_complete": "llm-gateway",
     "a2a_send_message": "ai-agents",
     "a2a_get_task": "ai-agents",
@@ -112,7 +114,7 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "audit_search_exploits": "audit-service",
     "audit_search_cves": "audit-service",
     # WBS-F7: Foundation search (scientific / theoretical layer)
-    "foundation_search": "unified-search-service",
+    "foundation_search": "unified-search-rs",
 }
 
 
@@ -124,30 +126,30 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     """
     return {
         "semantic_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search",
         ),
         "hybrid_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         # Issue #6: consolidated KB tools — all route to USS /v1/search/hybrid
         "knowledge_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         "knowledge_refine": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         "pattern_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         # diagram_search: routes to USS /v1/search/hybrid with collection=ascii_diagrams.
         # USS detects the CLIP collection and uses CLIPEncoder.encode_text() instead of MiniLM.
         "diagram_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         "code_analyze": DispatchRoute(
@@ -159,11 +161,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/patterns/detect",
         ),
         "graph_query": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/graph/query",
         ),
         "graph_traverse": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/graph/traverse",
         ),
         "llm_complete": DispatchRoute(
@@ -302,7 +304,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         # WBS-F7: Foundation search (scientific / theoretical layer)
         "foundation_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_RS_URL,
             path="/v1/search/foundation",
         ),
     }
@@ -491,8 +493,9 @@ class ToolDispatcher:
     ) -> DispatchResult:
         """Send *payload* to the backend for *tool_name*.
 
-        Includes per-backend circuit breaker protection and exponential
-        backoff retry for transient failures (C-5).
+        Includes per-backend circuit breaker protection, exponential
+        backoff retry for transient failures (C-5), and health-aware
+        auto-restart for dead services (MCP-AGENTIC).
 
         Args:
             tool_name: Registered tool name from the route table.
@@ -516,17 +519,12 @@ class ToolDispatcher:
         path = path_override or route.path
         url = f"{route.base_url}{path}"
         service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
-        client = self._get_client(route.base_url)
-        cb = self._cb_registry.get(service_name)
-
+        
         # G1.4 (GREEN) — Phase 1: Session Correlation
-        # Build extra_headers with X-Session-ID when CORRELATION_ENABLED.
-        # When flag is False the helper returns None and nothing is added.
         session_id = _get_or_create_session_id(request_headers, enabled=self._settings.CORRELATION_ENABLED)
         extra_headers: dict | None = {"x-session-id": session_id} if session_id else None
 
         # G3.6 (GREEN) — Phase 3: Multi-Tenant Identity Propagation
-        # Merge X-Tenant-ID + X-Agent-ID into extra_headers when flag enabled.
         identity_headers = _get_identity_headers(
             request_headers,
             enabled=self._settings.IDENTITY_PROPAGATION,
@@ -535,30 +533,40 @@ class ToolDispatcher:
         if identity_headers:
             extra_headers = {**(extra_headers or {}), **identity_headers}
 
-        last_exc: Exception | None = None
-        attempts = 1 + self._max_retries
-
-        for attempt in range(attempts):
-            await self._check_circuit_breaker(cb)
-            result = await self._attempt_dispatch(
-                client,
-                cb,
-                method,
-                url,
+        # MCP-AGENTIC: Use health-aware proxy for auto-restart
+        proxy = get_proxy()
+        try:
+            # Try to call via health-aware proxy
+            result_data = await proxy.call_tool(
+                tool_name=tool_name,
+                arguments=payload,
+                original_url=url,
+            )
+            
+            # Convert proxy result to DispatchResult
+            return DispatchResult(
+                status_code=result_data.get("status_code", 200),
+                body=result_data.get("body", {}),
+                headers=result_data.get("headers", {}),
+                elapsed_ms=result_data.get("elapsed_ms", 0),
+            )
+            
+        except Exception as e:
+            # Fallback to traditional dispatch if proxy fails
+            logger.warning(
+                "Health-aware proxy failed for %s, falling back to traditional dispatch: %s",
+                tool_name,
+                e,
+            )
+            return await self._dispatch_fallback(
+                tool_name,
                 payload,
                 route,
-                tool_name,
                 service_name,
-                attempt,
-                attempts,
-                extra_headers=extra_headers,
+                method,
+                url,
+                extra_headers,
             )
-            if result is not None:
-                return result
-
-        if last_exc is not None:
-            raise last_exc
-        raise BackendUnavailableError(service_name, "All retry attempts exhausted")
 
     async def _attempt_dispatch(
         self,
@@ -685,6 +693,49 @@ class ToolDispatcher:
         except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as err:
             await cb.on_failure()
             raise ToolTimeoutError(tool_name, route.timeout or 0.0) from err
+
+    async def _dispatch_fallback(
+        self,
+        tool_name: str,
+        payload: dict,
+        route: DispatchRoute,
+        service_name: str,
+        method: str,
+        url: str,
+        extra_headers: dict | None = None,
+    ) -> DispatchResult:
+        """Fallback dispatch path when the health-aware proxy is unavailable.
+
+        Calls the backend directly with circuit breaker protection and retry.
+        """
+        client = self._get_client(route.base_url)
+        cb = self._cb_registry.get(service_name)
+        await self._check_circuit_breaker(cb)
+
+        attempts = self._max_retries
+
+        for attempt in range(attempts):
+            result = await self._attempt_dispatch(
+                client,
+                cb,
+                method,
+                url,
+                payload,
+                route,
+                tool_name,
+                service_name,
+                attempt,
+                attempts,
+                extra_headers,
+            )
+            if result is not None:
+                return result
+
+        # If all attempts exhausted without a result or exception
+        raise BackendUnavailableError(
+            service_name,
+            f"All {attempts} dispatch attempts exhausted",
+        )
 
     async def close(self) -> None:
         """Close all pooled httpx clients."""

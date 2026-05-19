@@ -10,11 +10,13 @@ Reference: AC-1.1, AC-1.2, AC-1.5, AC-7.6, AC-8.1, AC-8.5
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 
 from src.core.config import Settings
+from src.core.idle_timeout_checker import get_checker
 from src.models.schemas import HealthResponse
 from src.security.audit import AuditMiddleware
 from src.security.authn import OIDCAuthMiddleware
@@ -26,9 +28,29 @@ settings = Settings()
 
 _start_time = time.monotonic()
 
+
+# ── Lifespan handler with idle timeout checker ─────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle with idle timeout checker."""
+    # Startup: Start idle timeout checker
+    checker = get_checker()
+    await checker.start()
+    logger.info("Idle timeout checker started")
+    
+    try:
+        yield
+    finally:
+        # Shutdown: Stop idle timeout checker
+        await checker.stop()
+        logger.info("Idle timeout checker stopped")
+
+
 app = FastAPI(
     title=settings.SERVICE_NAME,
     version=settings.SERVICE_VERSION,
+    lifespan=lifespan,
 )
 
 
@@ -75,6 +97,18 @@ async def health() -> HealthResponse:
     )
 
 
+@app.get("/api/idle-timeout/status")
+async def idle_timeout_status() -> dict:
+    """Return idle timeout status for all tracked services."""
+    from src.core.idle_timeout import get_tracker
+    
+    tracker = get_tracker()
+    return {
+        "services": tracker.get_all_statuses(),
+        "default_timeout": tracker.default_timeout,
+    }
+
+
 # ── MCP Protocol Server (AC-8.1, AC-8.5) ───────────────────────────────
 
 _config_path = Path(__file__).parent.parent / "config" / "tools.yaml"
@@ -91,5 +125,12 @@ if _config_path.exists():
     mcp_server = create_mcp_server(_registry, _dispatcher, _sanitizer)
     app.mount("/mcp", mcp_server.http_app(transport="sse"))
     logger.info("MCP server mounted at /mcp with %d tools", _registry.tool_count)
+
+    # ── REST Tools API (LLM-friendly) ─────────────────────────────
+    from src.tools_rest_api import create_tools_router
+
+    tools_router = create_tools_router(_dispatcher)
+    app.include_router(tools_router)
+    logger.info("REST tools API mounted at /api/v1/tools")
 else:
     logger.warning("config/tools.yaml not found — MCP server not mounted")

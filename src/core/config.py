@@ -29,7 +29,8 @@ class Settings(BaseSettings):
 
     # ── Backend service URLs ────────────────────────────────────────
     LLM_GATEWAY_URL: str = "http://localhost:8080"
-    SEMANTIC_SEARCH_URL: str = "http://localhost:8081"
+    UNIFIED_SEARCH_URL: str = "http://localhost:8081"
+    UNIFIED_SEARCH_RS_URL: str = "http://localhost:8089"
     AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
     AUDIT_SERVICE_URL: str = "http://localhost:8084"
