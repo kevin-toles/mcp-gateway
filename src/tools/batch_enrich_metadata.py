@@ -8,7 +8,6 @@ The tool:
 Monitor: tail -f /tmp/batch_enrich_latest.log
 """
 
-import glob
 import os
 import subprocess
 import tempfile
@@ -150,16 +149,15 @@ LOG_FILE='{log_file}'
 LATEST_LINK='{LATEST_LINK}'
 CO_URL='{CO_ENRICH_URL}'
 
-mkdir -p "$OUTPUT_DIR"
-
 printf '\\n\\033[1;36m══ Batch Enrich ══  Log: '"$LOG_FILE"'\\033[0m\\n\\n'
+exec > >(tee "$LOG_FILE") 2>&1
 
-# Collect files
+# Collect files recursively, preserving subdirectory structure
 ALL_FILES=()
-while IFS= read -r _f; do ALL_FILES+=("$_f"); done < <(ls "$METADATA_DIR"/*_metadata.json 2>/dev/null | sort)
+while IFS= read -r _f; do ALL_FILES+=("$_f"); done < <(find "$METADATA_DIR" -name '*_metadata.json' -type f 2>/dev/null | sort)
 TOTAL=${{#ALL_FILES[@]}}
 if [[ $TOTAL -eq 0 ]]; then
-  echo "ERROR: No *_metadata.json files in $METADATA_DIR"
+  echo "ERROR: No *_metadata.json files found under $METADATA_DIR"
   exit 1
 fi
 
@@ -176,13 +174,24 @@ if [[ -n "$BOOK_FILTER" ]]; then
   ALL_FILES=("${{FILTERED[@]}}")
 fi
 
-# Apply resume filter
+# Apply resume filter with mirrored output paths
 if [[ "$RESUME" == "true" ]]; then
   TO_PROCESS=()
   SKIPPED=0
   for f in "${{ALL_FILES[@]}}"; do
-    stem=$(basename "$f" _metadata.json)
-    if [[ -f "$OUTPUT_DIR/${{stem}}_enriched.json" ]]; then
+    rel="$f"
+    if [[ "$f" == "$METADATA_DIR/"* ]]; then
+      rel="${{f#"$METADATA_DIR"/}}"
+    fi
+    stem=$(basename "$rel" _metadata.json)
+    # Compute the mirror path: preserve domain/subdomain/role under OUTPUT_DIR
+    rel_dir=$(dirname "$rel")
+    if [[ "$rel_dir" == "." ]]; then
+      mirror_out="$OUTPUT_DIR/${{stem}}_enriched.json"
+    else
+      mirror_out="$OUTPUT_DIR/$rel_dir/${{stem}}_enriched.json"
+    fi
+    if [[ -f "$mirror_out" ]]; then
       (( SKIPPED++ )) || true
     else
       TO_PROCESS+=("$f")
@@ -218,7 +227,18 @@ for i in "${{!TO_PROCESS[@]}}"; do
   IDX=$(( i + 1 ))
   FPATH="${{TO_PROCESS[$i]}}"
   STEM=$(basename "$FPATH" _metadata.json)
-  OUT_PATH="$OUTPUT_DIR/${{STEM}}_enriched.json"
+  # Compute mirrored output path: preserve subdirectory structure
+  REL="$FPATH"
+  if [[ "$FPATH" == "$METADATA_DIR/"* ]]; then
+    REL="${{FPATH#"$METADATA_DIR"/}}"
+  fi
+  REL_DIR=$(dirname "$REL")
+  if [[ "$REL_DIR" == "." ]]; then
+    OUT_PATH="$OUTPUT_DIR/${{STEM}}_enriched.json"
+  else
+    OUT_PATH="$OUTPUT_DIR/$REL_DIR/${{STEM}}_enriched.json"
+    mkdir -p "$(dirname "$OUT_PATH")"
+  fi
 
   T_BOOK=$SECONDS
   printf "\\033[0;33m[%d/%d]\\033[0m %s ... " "$IDX" "$TOTAL" "$STEM"
@@ -282,18 +302,21 @@ read -rp 'Press Enter to close...'
             f.write(script_body)
         os.chmod(tmpscript_path, 0o755)  # noqa: S103
 
-        # Count books to process for the summary (quick estimate)
-        all_files = sorted(glob.glob(os.path.join(metadata_dir, "*_metadata.json")))
+        # Count books to process for the summary (recursive, mirrors runtime behavior)
+        all_files = sorted(str(p) for p in Path(metadata_dir).rglob("*_metadata.json"))
         if book:
             all_files = [f for f in all_files if book.lower() in os.path.basename(f).lower()]
         if resume:
-            all_files = [
-                f
-                for f in all_files
-                if not Path(
-                    os.path.join(output_dir, Path(f).stem.removesuffix("_metadata").strip() + "_enriched.json")
-                ).exists()
-            ]
+          pending_files = []
+          for f in all_files:
+            rel = os.path.relpath(f, metadata_dir)
+            rel_dir = os.path.dirname(rel)
+            stem = Path(f).stem.removesuffix("_metadata").strip()
+            out_name = stem + "_enriched.json"
+            out_path = os.path.join(output_dir, out_name) if rel_dir == "." else os.path.join(output_dir, rel_dir, out_name)
+            if not Path(out_path).exists():
+              pending_files.append(f)
+          all_files = pending_files
         if limit > 0:
             all_files = all_files[:limit]
         total = len(all_files)

@@ -152,7 +152,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
     async def batch_extract_metadata(
         input_dir: str,
         output_dir: str | None = None,
-        file_pattern: str = "*.json",
+        file_pattern: str = "**/*.json",
         skip_existing: bool = True,
         enable_summary: bool = False,
         vtf_path: str | None = None,

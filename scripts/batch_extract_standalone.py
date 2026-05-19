@@ -110,7 +110,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Batch metadata extraction via code-orchestrator")
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--file-pattern", default="*.json")
+    parser.add_argument("--file-pattern", default="**/*.json")
     parser.add_argument("--skip-existing", action="store_true", default=False)
     parser.add_argument("--enable-summary", action="store_true", default=False)
     parser.add_argument("--vtf-path", default=None, help="Path to a custom validated_term_filter.json")
@@ -137,7 +137,7 @@ def main() -> None:
 
     # Discover books
     pattern = os.path.join(args.input_dir, args.file_pattern)
-    all_files = sorted(glob.glob(pattern))
+    all_files = sorted(glob.glob(pattern, recursive=True))
     if not all_files:
         _log(yellow(f"⚠️  No files matching: {pattern}"))
         sys.exit(0)
@@ -146,7 +146,8 @@ def main() -> None:
     skipped = []
     for fpath in all_files:
         stem = os.path.splitext(os.path.basename(fpath))[0]
-        out_path = os.path.join(out_dir, f"{stem}_metadata.json")
+        rel_dir = os.path.dirname(os.path.relpath(fpath, args.input_dir))
+        out_path = os.path.join(out_dir, rel_dir, f"{stem}_metadata.json")
         if args.skip_existing and os.path.exists(out_path):
             skipped.append(os.path.basename(fpath))
         else:
@@ -168,7 +169,9 @@ def main() -> None:
     with httpx.Client() as client:
         for idx, book_path in enumerate(books_to_process, 1):
             book_name = os.path.splitext(os.path.basename(book_path))[0]
-            out_path = os.path.join(out_dir, f"{book_name}_metadata.json")
+            rel_dir = os.path.dirname(os.path.relpath(book_path, args.input_dir))
+            out_path = os.path.join(out_dir, rel_dir, f"{book_name}_metadata.json")
+            os.makedirs(os.path.join(out_dir, rel_dir), exist_ok=True)
             book_start = time.time()
 
             _log("")
