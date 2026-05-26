@@ -52,6 +52,9 @@ class SessionRecoveryMiddleware:
         self.app = app
         self.service_version = service_version
 
+    _HTTP_RESP_BODY = "http.response.body"
+    _HTTP_RESP_START = "http.response.start"
+
     async def __call__(self, scope, receive, send):
         """ASGI middleware implementation safe for streaming endpoints.
 
@@ -63,7 +66,8 @@ class SessionRecoveryMiddleware:
             return
 
         path = scope.get("path", "")
-        if not path.startswith("/mcp/messages"):
+        session_path_prefix = "/mcp/messages"
+        if not path.startswith(session_path_prefix):
             await self.app(scope, receive, send)
             return
 
@@ -80,11 +84,11 @@ class SessionRecoveryMiddleware:
             nonlocal response_start
 
             message_type = message.get("type")
-            if message_type == "http.response.start":
+            if message_type == _HTTP_RESP_START:
                 response_start = message
                 return
 
-            if message_type == "http.response.body" and response_start is not None:
+            if message_type == _HTTP_RESP_BODY and response_start is not None:
                 response_body_chunks.append(message.get("body", b""))
                 if message.get("more_body", False):
                     return

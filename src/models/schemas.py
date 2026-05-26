@@ -5,6 +5,12 @@ constraints, null-byte stripping, and Unicode NFC normalization.
 
 Reference: Strategy §4.3 (Input Validation), §8 APP_SEC.API_SECURITY.INPUT_VALIDATION
 """
+_DESC_MAX_RESULTS = "Max results (canonical)"
+_DESC_MAX_ALIAS = "Max results (alias for top_k)"
+_DESC_MAX_ALIAS_LIMIT = "Max results (alias for limit)"
+_ERR_TOPK_LIMIT = "Cannot specify both top_k and limit with different values"
+
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -17,6 +23,7 @@ class HealthResponse(BaseModel):
 
     service: str
     version: str
+    dependencies: dict[str, str] = Field(default_factory=dict)
     status: str
     uptime_seconds: float
 
@@ -43,8 +50,8 @@ class SemanticSearchInput(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
-    top_k: int | None = Field(default=None, ge=1, le=100, description="Max results (canonical)")
-    limit: int | None = Field(default=None, ge=1, le=100, description="Max results (alias for top_k)")
+    top_k: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_RESULTS)
+    limit: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_ALIAS)
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("query", mode="before")
@@ -60,7 +67,7 @@ class SemanticSearchInput(BaseModel):
         elif self.top_k is None:
             self.top_k = self.limit  # normalize limit → top_k
         elif self.limit is not None and self.limit != self.top_k:
-            raise ValueError("Cannot specify both top_k and limit with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.limit = None  # clear alias
         return self
 
@@ -74,8 +81,8 @@ class HybridSearchInput(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
-    top_k: int | None = Field(default=None, ge=1, le=100, description="Max results (canonical)")
-    limit: int | None = Field(default=None, ge=1, le=100, description="Max results (alias for top_k)")
+    top_k: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_RESULTS)
+    limit: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_ALIAS)
     semantic_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     keyword_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     # TXS5: Taxonomy-enhanced search parameters
@@ -157,7 +164,7 @@ class HybridSearchInput(BaseModel):
         elif self.top_k is None:
             self.top_k = self.limit  # normalize limit → top_k
         elif self.limit is not None and self.limit != self.top_k:
-            raise ValueError("Cannot specify both top_k and limit with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.limit = None  # clear alias
         return self
 
@@ -301,8 +308,8 @@ class A2ACancelTaskInput(BaseModel):
 # ── Workflow tool schemas (WBS-WF6) ─────────────────────────────────────
 
 
-class ConvertPDFInput(BaseModel):
-    """Input for convert_pdf tool — convert PDF to structured JSON."""
+class ConvertPDFToJsonInput(BaseModel):
+    """Input for convert_pdf_to_json tool — convert PDF to structured JSON."""
 
     input_path: str = Field(..., min_length=1, max_length=1000, description="Path to PDF file")
     output_path: str | None = Field(
@@ -339,7 +346,11 @@ class BatchExtractMetadataInput(BaseModel):
     output_dir: str | None = Field(
         default=None, max_length=1000, description="Output directory for metadata (defaults to sibling 'metadata' dir)"
     )
-    file_pattern: str = Field(default="*.json", max_length=100, description="Glob pattern for book files")
+    file_pattern: str = Field(
+        default="**/*.json",
+        max_length=100,
+        description="Glob pattern for book files (supports ** recursive)",
+    )
     skip_existing: bool = Field(default=True, description="Skip books that already have metadata output files")
 
     @field_validator("input_dir", mode="before")
@@ -356,7 +367,7 @@ class GenerateTaxonomyInput(BaseModel):
     """
 
     enriched_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
+        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/enriched",
         min_length=1,
         max_length=1000,
         description="Directory containing *_enriched.json files",
@@ -391,13 +402,13 @@ class BatchEnrichMetadataInput(BaseModel):
     """Input for batch_enrich_metadata tool — batch enrich all metadata files in a directory."""
 
     metadata_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/metadata",
+        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/metadata",
         min_length=1,
         max_length=1000,
         description="Directory containing *_metadata.json files",
     )
     output_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/software engineering collections/enriched",
+        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/enriched",
         min_length=1,
         max_length=1000,
         description="Output directory for enriched JSON files",
@@ -447,11 +458,184 @@ class BatchEnrichMetadataInput(BaseModel):
     resume: bool = Field(default=True, description="Skip books that already have an enriched output file")
     limit: int = Field(default=0, ge=0, description="Cap at N books (0 = no limit)")
     book: str = Field(default="", max_length=500, description="Process only books whose filename contains this string")
+    workers: int = Field(
+        default=24,
+        ge=1,
+        le=64,
+        description="Number of parallel enrichment workers (default 24, max 64)",
+    )
 
     @field_validator("metadata_dir", "output_dir", mode="before")
     @classmethod
     def sanitize_dir(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+
+class RenameNormalizationInput(BaseModel):
+    """Input for rename_normalization tool — run the 4-round PDF rename protocol."""
+
+    source_dir: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Directory of PDF/EPUB files to analyze",
+    )
+    output: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Absolute path to write rename_suggestions.json",
+    )
+    limit: int = Field(
+        default=0,
+        ge=0,
+        description="Cap at N files for testing (0 = no limit)",
+    )
+
+    @field_validator("source_dir", "output", mode="before")
+    @classmethod
+    def sanitize_paths(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class PushToGithubInput(BaseModel):
+    """Input for push_to_github tool — push one or more files to a GitHub repo via git push.
+
+    Flexible input formats:
+      - Single file:         files="/path/to/file.pdf"
+      - Comma-separated:     files="/path/1.pdf,/path/2.pdf,/path/3.pdf"
+      - Array:               files=["/path/1.pdf", "/path/2.pdf"]
+      - JSON file reference: files_json="/tmp/files.json" (with files=[])
+
+    Note: skip_existing defaults to True in backend script (--no-skip-existing disables it).
+    """
+
+    files: list[str] | str = Field(
+        default_factory=list,
+        description="File path(s): string (single/comma-separated), array, or [] if using files_json",
+    )
+    files_json: str | None = Field(
+        default=None,
+        description="Path to JSON file containing array of file paths (e.g. '/tmp/files.json')",
+    )
+    repo: str = Field(
+        default="kevin-toles/pdf-text-repo",
+        min_length=1,
+        max_length=200,
+        description="GitHub repo as owner/name",
+    )
+    dest: str = Field(
+        default="Textbooks",
+        min_length=1,
+        max_length=500,
+        description="Destination directory path inside the repo (e.g. 'Textbooks')",
+    )
+
+    @model_validator(mode="after")
+    def normalize_and_load_files(self) -> "PushToGithubInput":
+        """Normalize all input formats to a validated list of absolute file paths."""
+        import json
+        import os
+
+        # 1. Normalize string → list
+        if isinstance(self.files, str):
+            if not self.files:
+                self.files = []
+            # Handle comma-separated paths (common LLM mistake)
+            elif "," in self.files:
+                self.files = [p.strip() for p in self.files.split(",") if p.strip()]
+            else:
+                self.files = [self.files]
+
+        # 2. Load from JSON file if provided
+        if self.files_json:
+            if not os.path.isfile(self.files_json):
+                raise ValueError(f"JSON file not found: {self.files_json}")
+
+            with open(self.files_json) as f:
+                loaded = json.load(f)
+
+            if not isinstance(loaded, list):
+                raise ValueError(f"JSON file must contain an array, got {type(loaded)}")
+
+            self.files = loaded
+            self.files_json = None  # Clear after loading
+
+        # 3. Validate non-empty
+        if not self.files:
+            raise ValueError("No files provided. Use: files='/path' OR files=['p1','p2'] OR files_json='/tmp/f.json'")
+
+        # 4. Sanitize and validate all paths
+        sanitized = []
+        for f in self.files:
+            clean = _sanitize_str_field(f).strip()
+            if not clean:
+                continue
+            # Expand home directory if present
+            if clean.startswith("~"):
+                clean = os.path.expanduser(clean)
+            sanitized.append(clean)
+
+        if not sanitized:
+            raise ValueError("All file paths were empty after sanitization")
+
+        self.files = sanitized
+        return self
+
+    @field_validator("repo", "dest", mode="before")
+    @classmethod
+    def sanitize_str(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
+class MirrorCREReposInput(BaseModel):
+    """Input for mirror_cre_repos tool — mirror repos into the Code Reference Engine.
+
+    Supports auto-registration: if repo_ids contains an ID not found in the registry
+    AND source_url is provided, the repo is registered automatically before mirroring.
+    """
+
+    repo_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Registry IDs of repos to mirror (e.g. ['aws-lambda-power-tuning', 'openfaas']). "
+            "Omit or pass [] to mirror all repos not yet present in the CRE. "
+            "If an ID is not in the registry and source_url is provided, it is registered automatically."
+        ),
+    )
+    source_url: str | None = Field(
+        default=None,
+        description=(
+            "GitHub URL of the repo to register if the repo_id is not yet in the registry "
+            "(e.g. 'https://github.com/schedmd/slurm'). Only used when repo_ids has exactly "
+            "one entry that is not already registered. Ignored when all IDs are already registered."
+        ),
+    )
+    domain: str | None = Field(
+        default=None,
+        description=(
+            "Registry domain ID to register the new repo under (e.g. 'infrastructure', "
+            "'distributed-systems'). Required when source_url is provided and the repo_id "
+            "is not yet registered. If omitted, defaults to 'specialized'."
+        ),
+    )
+    force: bool = Field(
+        default=False,
+        description="Re-mirror repos even if already present in the CRE. Default: skip existing.",
+    )
+    auto_continue: bool = Field(
+        default=False,
+        description="Skip failure prompts and continue automatically.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Preview what would be mirrored without actually triggering workflows.",
+    )
+
+    @field_validator("repo_ids", mode="before")
+    @classmethod
+    def sanitize_repo_ids(cls, v: list) -> list:
+        return [_sanitize_str_field(r) for r in v]
 
 
 class EnhanceGuidelineInput(BaseModel):
@@ -637,8 +821,8 @@ class AuditCorpusSearchInput(BaseModel):
         default_factory=lambda: ["code_chunks", "chapters"],
         description="Qdrant collections to search",
     )
-    top_k: int | None = Field(default=None, ge=1, le=100, description="Max results per collection (canonical)")
-    limit: int | None = Field(default=None, ge=1, le=100, description="Max results per collection (alias for top_k)")
+    top_k: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_RESULTS)
+    limit: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_ALIAS)
     threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")
 
     @model_validator(mode="after")
@@ -649,7 +833,7 @@ class AuditCorpusSearchInput(BaseModel):
         elif self.top_k is None:
             self.top_k = self.limit  # normalize limit → top_k
         elif self.limit is not None and self.limit != self.top_k:
-            raise ValueError("Cannot specify both top_k and limit with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.limit = None  # clear alias
         return self
 
@@ -749,6 +933,49 @@ class AuditDependencyAssessInput(BaseModel):
     )
 
 
+# -- Codebase Scanner (VRE-SCAN) ----------------------------------------
+
+
+from typing import Literal
+
+
+PriorityLevel = Literal["CRITICAL", "HIGH", "MEDIUM"]
+
+
+class AuditCodebaseScanInput(BaseModel):
+    """Input for audit_codebase_scan — walk a local codebase and return findings.
+
+    Walks *source_path* recursively, runs the full 4-layer detection pipeline
+    on each scannable file (.py .js .ts .tsx .jsx .go .java), deduplicates by
+    (pattern_id, file), and enriches any SEC* findings with VRE exploit
+    evidence and advisory context from Qdrant :6336.
+
+    Note:
+        ``confidence_threshold`` and ``max_findings`` are deliberately omitted
+        from the LLM-facing tool definition. These are quality/performance knobs
+        that the dev team hardcodes on the backend to ensure deterministic,
+        vetted results. The LLM only selects the scan target and an optional
+        priority filter.
+    """
+
+    source_path: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="Absolute path to the local directory (or file) to scan.",
+    )
+    priority_filter: list[PriorityLevel] | None = Field(
+        default=None,
+        description=(
+            "Filter results by priority level: CRITICAL, HIGH, or MEDIUM. "
+            "None = all priorities (default). "
+            "CRITICAL = security with >=0.80 confidence. "
+            "HIGH = security at any confidence or anti-pattern >=0.80. "
+            "MEDIUM = anti-pattern any confidence, SA>=0.70, CP>=0.80."
+        ),
+    )
+
+
 # -- Resolution Lookup (AEI-20) ----------------------------------------
 
 
@@ -820,7 +1047,7 @@ class AuditToolBase(BaseModel):
         elif self.top_k is None:
             self.top_k = self.limit  # normalize limit → top_k
         elif self.limit is not None and self.limit != self.top_k:
-            raise ValueError("Cannot specify both top_k and limit with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.limit = None  # clear alias
         return self
 
@@ -854,21 +1081,25 @@ class AuditSearchExploitsInput(AuditToolBase):
 class AuditSearchCVEsInput(BaseModel):
     """Input for audit_search_cves — query PostgreSQL for CVE records.
 
-    Filters the vuln_cve_records table by CWE ID, severity, and/or ecosystem.
-    Returns structured CVE records with CVSS scores and references.
+    **Schema bridge (MCP ↔ Backend):** The MCP tool exposes
+    ``cwe_id``/``severity``/``ecosystem`` as filter fields, but the backend
+    ``POST /v1/audit/cves`` expects ``cve_id`` or ``query``.  The handler
+    translates MCP filter fields into a backend ``query`` string.  Both
+    dialects are accepted here.
     """
 
+    # -- MCP dialect (translated to backend "query" by handler)
     cwe_id: str | None = Field(
         default=None,
-        description="Filter by CWE identifier (e.g. 'CWE-89'). Optional.",
+        description="Filter by CWE identifier (e.g. 'CWE-89'). Optional. Translated to backend query.",
     )
     severity: str | None = Field(
         default=None,
-        description=("Filter by severity level ('critical', 'high', 'medium', 'low'). Optional."),
+        description=("Filter by severity level ('critical', 'high', 'medium', 'low'). Optional. Translated to backend query."),
     )
     ecosystem: str | None = Field(
         default=None,
-        description=("Filter by affected ecosystem (e.g. 'python', 'npm', 'java'). Optional."),
+        description=("Filter by affected ecosystem (e.g. 'python', 'npm', 'java'). Optional. Translated to backend query."),
     )
     limit: int = Field(
         default=50,
@@ -877,17 +1108,30 @@ class AuditSearchCVEsInput(BaseModel):
         description="Maximum number of CVE records to return (default 50).",
     )
 
+    # -- Backend dialect (passed through directly)
+    cve_id: str | None = Field(
+        default=None,
+        description="Exact CVE identifier (e.g. 'CVE-2021-44228'). Optional. Passed directly to backend.",
+    )
+    query: str | None = Field(
+        default=None,
+        description="Free-text query string. Optional. Passed directly to backend.",
+    )
+
     @model_validator(mode="after")
     def require_at_least_one_filter(self) -> "AuditSearchCVEsInput":
         """Reject queries with no filter criteria.
 
-        AC-PDW3.4: At least one of ``cwe_id``, ``severity``, or ``ecosystem``
-        must be provided.  A fully unfiltered CVE query would scan the entire
-        ``vuln_cve_records`` table and is disallowed for both performance and
-        security-signal clarity reasons.
+        Accepts either the MCP dialect (``cwe_id``/``severity``/``ecosystem``)
+        or the backend dialect (``cve_id``/``query``).
         """
-        if self.cwe_id is None and self.severity is None and self.ecosystem is None:
-            raise ValueError("At least one filter is required: provide cwe_id, severity, or ecosystem.")
+        has_mcp = self.cwe_id is not None or self.severity is not None or self.ecosystem is not None
+        has_backend = self.cve_id is not None or self.query is not None
+        if not has_mcp and not has_backend:
+            raise ValueError(
+                "At least one filter is required: provide cwe_id/severity/ecosystem "
+                "(MCP dialect) or cve_id/query (backend dialect)."
+            )
         return self
 
 
@@ -936,8 +1180,8 @@ class KnowledgeSearchInput(BaseModel):
     """
 
     query: str = Field(..., min_length=1, max_length=2000)
-    limit: int | None = Field(default=None, ge=1, le=50, description="Max results (canonical)")
-    top_k: int | None = Field(default=None, ge=1, le=50, description="Max results (alias for limit)")
+    limit: int | None = Field(default=None, ge=1, le=50, description=_DESC_MAX_RESULTS)
+    top_k: int | None = Field(default=None, ge=1, le=50, description=_DESC_MAX_ALIAS_LIMIT)
     expand_taxonomy: bool = Field(
         default=True,
         description="Expand query via Neo4j SIMILAR_TO edges (default ON for broad KB retrieval)",
@@ -979,7 +1223,7 @@ class KnowledgeSearchInput(BaseModel):
         elif self.limit is None:
             self.limit = self.top_k  # normalize top_k → limit
         elif self.top_k is not None and self.top_k != self.limit:
-            raise ValueError("Cannot specify both limit and top_k with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.top_k = None  # clear alias
         return self
 
@@ -1000,8 +1244,8 @@ class KnowledgeRefineInput(BaseModel):
             "pattern_instances/patterns, code_good_patterns, repo_concepts/concepts"
         ),
     )
-    limit: int | None = Field(default=None, ge=1, le=20, description="Max results (canonical)")
-    top_k: int | None = Field(default=None, ge=1, le=20, description="Max results (alias for limit)")
+    limit: int | None = Field(default=None, ge=1, le=20, description=_DESC_MAX_RESULTS)
+    top_k: int | None = Field(default=None, ge=1, le=20, description=_DESC_MAX_ALIAS_LIMIT)
     bloom_tier_filter: list[int] | None = Field(
         default=None,
         description="Filter chapters by Bloom cognitive tier (0-6)",
@@ -1046,7 +1290,7 @@ class KnowledgeRefineInput(BaseModel):
         elif self.limit is None:
             self.limit = self.top_k  # normalize top_k → limit
         elif self.top_k is not None and self.top_k != self.limit:
-            raise ValueError("Cannot specify both limit and top_k with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.top_k = None  # clear alias
         return self
 
@@ -1069,8 +1313,8 @@ class PatternSearchInput(BaseModel):
             "'all' = both (fan-out across all primary collections)"
         ),
     )
-    limit: int | None = Field(default=None, ge=1, le=30, description="Max results (canonical)")
-    top_k: int | None = Field(default=None, ge=1, le=30, description="Max results (alias for limit)")
+    limit: int | None = Field(default=None, ge=1, le=30, description=_DESC_MAX_RESULTS)
+    top_k: int | None = Field(default=None, ge=1, le=30, description=_DESC_MAX_ALIAS_LIMIT)
 
     @field_validator("query", mode="before")
     @classmethod
@@ -1085,7 +1329,7 @@ class PatternSearchInput(BaseModel):
         elif self.limit is None:
             self.limit = self.top_k  # normalize top_k → limit
         elif self.top_k is not None and self.top_k != self.limit:
-            raise ValueError("Cannot specify both limit and top_k with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.top_k = None  # clear alias
         return self
 
@@ -1112,8 +1356,8 @@ class DiagramSearchInput(BaseModel):
             "Omit (null) to search all diagram types."
         ),
     )
-    limit: int | None = Field(default=None, ge=1, le=30, description="Max results (canonical)")
-    top_k: int | None = Field(default=None, ge=1, le=30, description="Max results (alias for limit)")
+    limit: int | None = Field(default=None, ge=1, le=30, description=_DESC_MAX_RESULTS)
+    top_k: int | None = Field(default=None, ge=1, le=30, description=_DESC_MAX_ALIAS_LIMIT)
 
     @field_validator("query", mode="before")
     @classmethod
@@ -1128,7 +1372,7 @@ class DiagramSearchInput(BaseModel):
         elif self.limit is None:
             self.limit = self.top_k  # normalize top_k → limit
         elif self.top_k is not None and self.top_k != self.limit:
-            raise ValueError("Cannot specify both limit and top_k with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         # Clear the alias after normalization (optional - keeps payload clean)
         self.top_k = None
         return self
@@ -1186,8 +1430,8 @@ class FoundationSearchInput(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     domains: list[str] | None = Field(default=None)
     include_graph_neighbors: bool = Field(default=False)
-    limit: int | None = Field(default=None, ge=1, le=50, description="Max results (canonical)")
-    top_k: int | None = Field(default=None, ge=1, le=50, description="Max results (alias for limit)")
+    limit: int | None = Field(default=None, ge=1, le=50, description=_DESC_MAX_RESULTS)
+    top_k: int | None = Field(default=None, ge=1, le=50, description=_DESC_MAX_ALIAS_LIMIT)
 
     @field_validator("query", mode="before")
     @classmethod
@@ -1202,6 +1446,6 @@ class FoundationSearchInput(BaseModel):
         elif self.limit is None:
             self.limit = self.top_k  # normalize top_k → limit
         elif self.top_k is not None and self.top_k != self.limit:
-            raise ValueError("Cannot specify both limit and top_k with different values")
+            raise ValueError(_ERR_TOPK_LIMIT)
         self.top_k = None
         return self

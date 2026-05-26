@@ -9,6 +9,9 @@ Reference: Strategy §4.1 (dispatcher pattern), AC-2.1 through AC-2.5
            C-5 (Missing Circuit Breakers Across All HTTP Clients)
 """
 
+_CONN_FAILED = "Connection failed"
+_HYBRID_PATH = "/v1/search/hybrid"
+
 from __future__ import annotations
 
 import asyncio
@@ -19,10 +22,9 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.ai_platform_metrics import TOOL_CALLS_TOTAL
 from src.core.config import Settings
 from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeoutError
-from src.core.idle_timeout import get_tracker
-from src.middleware.health_proxy import HealthAwareProxy, get_proxy
 from src.resilience.circuit_breaker import CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
@@ -66,22 +68,22 @@ class DispatchResult:
 
 # Maps tool_name → human-friendly service name (for error messages)
 _TOOL_SERVICE_NAMES: dict[str, str] = {
-    "semantic_search": "unified-search-service",
-    "hybrid_search": "unified-search-service",
-    "graph_traverse": "unified-search-service",
+    "semantic_search": "semantic-search",
+    "hybrid_search": "semantic-search",
+    "graph_traverse": "semantic-search",
     # Issue #6: consolidated KB tools
-    "knowledge_search": "unified-search-service",
-    "knowledge_refine": "unified-search-service",
-    "pattern_search": "unified-search-service",
+    "knowledge_search": "semantic-search",
+    "knowledge_refine": "semantic-search",
+    "pattern_search": "semantic-search",
     "code_analyze": "code-orchestrator",
     "code_pattern_audit": "code-orchestrator",
-    "graph_query": "unified-search-service",
+    "graph_query": "semantic-search",
     "llm_complete": "llm-gateway",
     "a2a_send_message": "ai-agents",
     "a2a_get_task": "ai-agents",
     "a2a_cancel_task": "ai-agents",
     # Workflow tools (WBS-WF6)
-    "convert_pdf": "code-orchestrator",
+    "convert_pdf_to_json": "code-orchestrator",
     "extract_book_metadata": "code-orchestrator",
     "batch_extract_metadata": "code-orchestrator",
     "generate_taxonomy": "code-orchestrator",
@@ -114,7 +116,7 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "audit_search_exploits": "audit-service",
     "audit_search_cves": "audit-service",
     # WBS-F7: Foundation search (scientific / theoretical layer)
-    "foundation_search": "unified-search-rs",
+    "foundation_search": "unified-search-service",
 }
 
 
@@ -124,32 +126,36 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     Each entry uses the default 30s timeout.  Per-tool overrides can be
     added later without breaking the route table structure.
     """
+    _HYBRID = "/v1/search/hybrid"
     return {
         "semantic_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search",
         ),
         "hybrid_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
-            path="/v1/search/hybrid",
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path=_HYBRID,
         ),
-        # Issue #6: consolidated KB tools — all route to USS /v1/search/hybrid
         "knowledge_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
-            path="/v1/search/hybrid",
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path=_HYBRID,
         ),
         "knowledge_refine": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
-            path="/v1/search/hybrid",
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path=_HYBRID,
+        ),
+        "find_code_pattern": DispatchRoute(
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path=_HYBRID,
         ),
         "pattern_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
-            path="/v1/search/hybrid",
+            base_url=settings.SEMANTIC_SEARCH_URL,
+            path=_HYBRID,
         ),
         # diagram_search: routes to USS /v1/search/hybrid with collection=ascii_diagrams.
         # USS detects the CLIP collection and uses CLIPEncoder.encode_text() instead of MiniLM.
         "diagram_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         "code_analyze": DispatchRoute(
@@ -161,11 +167,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/patterns/detect",
         ),
         "graph_query": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/query",
         ),
         "graph_traverse": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/traverse",
         ),
         "llm_complete": DispatchRoute(
@@ -185,7 +191,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/a2a/v1/tasks",  # /{task_id}:cancel appended at dispatch time
         ),
         # Workflow tools (WBS-WF6) — no timeout (large scanned PDFs can exceed 900s with OCR)
-        "convert_pdf": DispatchRoute(
+        "convert_pdf_to_json": DispatchRoute(
             base_url=settings.CODE_ORCHESTRATOR_URL,
             path="/api/v1/workflows/convert-pdf",
             timeout=None,
@@ -302,9 +308,16 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.AUDIT_SERVICE_URL,
             path="/v1/audit/quality",
         ),
+        # VRE-SCAN: Full codebase scan with VRE enrichment.
+        # Use a long but bounded timeout to avoid indefinite hung sessions.
+        "audit_codebase_scan": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/audit/scan",
+            timeout=600.0,
+        ),
         # WBS-F7: Foundation search (scientific / theoretical layer)
         "foundation_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_RS_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/foundation",
         ),
     }
@@ -493,9 +506,8 @@ class ToolDispatcher:
     ) -> DispatchResult:
         """Send *payload* to the backend for *tool_name*.
 
-        Includes per-backend circuit breaker protection, exponential
-        backoff retry for transient failures (C-5), and health-aware
-        auto-restart for dead services (MCP-AGENTIC).
+        Includes per-backend circuit breaker protection and exponential
+        backoff retry for transient failures (C-5).
 
         Args:
             tool_name: Registered tool name from the route table.
@@ -519,12 +531,17 @@ class ToolDispatcher:
         path = path_override or route.path
         url = f"{route.base_url}{path}"
         service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
-        
+        client = self._get_client(route.base_url)
+        cb = self._cb_registry.get(service_name)
+
         # G1.4 (GREEN) — Phase 1: Session Correlation
+        # Build extra_headers with X-Session-ID when CORRELATION_ENABLED.
+        # When flag is False the helper returns None and nothing is added.
         session_id = _get_or_create_session_id(request_headers, enabled=self._settings.CORRELATION_ENABLED)
         extra_headers: dict | None = {"x-session-id": session_id} if session_id else None
 
         # G3.6 (GREEN) — Phase 3: Multi-Tenant Identity Propagation
+        # Merge X-Tenant-ID + X-Agent-ID into extra_headers when flag enabled.
         identity_headers = _get_identity_headers(
             request_headers,
             enabled=self._settings.IDENTITY_PROPAGATION,
@@ -533,40 +550,45 @@ class ToolDispatcher:
         if identity_headers:
             extra_headers = {**(extra_headers or {}), **identity_headers}
 
-        # MCP-AGENTIC: Use health-aware proxy for auto-restart
-        proxy = get_proxy()
+        last_exc: Exception | None = None
+        attempts = 1 + self._max_retries
+        # Non-idempotent long-running scans should not be retried automatically,
+        # otherwise a timeout can trigger duplicate expensive backend work.
+        if tool_name == "audit_codebase_scan":
+            attempts = 1
+
         try:
-            # Try to call via health-aware proxy
-            result_data = await proxy.call_tool(
-                tool_name=tool_name,
-                arguments=payload,
-                original_url=url,
-            )
-            
-            # Convert proxy result to DispatchResult
-            return DispatchResult(
-                status_code=result_data.get("status_code", 200),
-                body=result_data.get("body", {}),
-                headers=result_data.get("headers", {}),
-                elapsed_ms=result_data.get("elapsed_ms", 0),
-            )
-            
-        except Exception as e:
-            # Fallback to traditional dispatch if proxy fails
-            logger.warning(
-                "Health-aware proxy failed for %s, falling back to traditional dispatch: %s",
-                tool_name,
-                e,
-            )
-            return await self._dispatch_fallback(
-                tool_name,
-                payload,
-                route,
-                service_name,
-                method,
-                url,
-                extra_headers,
-            )
+            for attempt in range(attempts):
+                await self._check_circuit_breaker(cb)
+                result = await self._attempt_dispatch(
+                    client,
+                    cb,
+                    method,
+                    url,
+                    payload,
+                    route,
+                    tool_name,
+                    service_name,
+                    attempt,
+                    attempts,
+                    extra_headers=extra_headers,
+                )
+                if result is not None:
+                    # P1-06: Increment tool calls counter on successful dispatch
+                    _status = "success" if result.status_code < 400 else "error"
+                    TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status=_status).inc()
+                    return result
+
+            # P1-06: Increment tool calls counter on exhausted retries
+            TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
+            if last_exc is not None:
+                raise last_exc
+            raise BackendUnavailableError(service_name, _CONN_FAILED)
+
+        except CircuitOpenError:
+            # P1-06: Circuit-open = request filtered before reaching backend
+            TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="filtered").inc()
+            raise
 
     async def _attempt_dispatch(
         self,
@@ -617,7 +639,7 @@ class ToolDispatcher:
 
         except (httpx.ConnectError, httpx.ConnectTimeout):
             await cb.on_failure()
-            exc = BackendUnavailableError(service_name, "Connection failed")
+            exc = BackendUnavailableError(service_name, _CONN_FAILED)
             if attempt < attempts - 1:
                 await self._retry_delay(attempt, attempts, service_name, "Connection failed")
                 return None
@@ -693,49 +715,6 @@ class ToolDispatcher:
         except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as err:
             await cb.on_failure()
             raise ToolTimeoutError(tool_name, route.timeout or 0.0) from err
-
-    async def _dispatch_fallback(
-        self,
-        tool_name: str,
-        payload: dict,
-        route: DispatchRoute,
-        service_name: str,
-        method: str,
-        url: str,
-        extra_headers: dict | None = None,
-    ) -> DispatchResult:
-        """Fallback dispatch path when the health-aware proxy is unavailable.
-
-        Calls the backend directly with circuit breaker protection and retry.
-        """
-        client = self._get_client(route.base_url)
-        cb = self._cb_registry.get(service_name)
-        await self._check_circuit_breaker(cb)
-
-        attempts = self._max_retries
-
-        for attempt in range(attempts):
-            result = await self._attempt_dispatch(
-                client,
-                cb,
-                method,
-                url,
-                payload,
-                route,
-                tool_name,
-                service_name,
-                attempt,
-                attempts,
-                extra_headers,
-            )
-            if result is not None:
-                return result
-
-        # If all attempts exhausted without a result or exception
-        raise BackendUnavailableError(
-            service_name,
-            f"All {attempts} dispatch attempts exhausted",
-        )
 
     async def close(self) -> None:
         """Close all pooled httpx clients."""

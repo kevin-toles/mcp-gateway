@@ -86,7 +86,7 @@ async def request_id_middleware(request: Request, call_next) -> Response:
     return response
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health")
 async def health() -> HealthResponse:
     """Return service health with name, version, status, and uptime."""
     return HealthResponse(
