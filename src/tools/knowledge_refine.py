@@ -37,7 +37,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         Args:
             query: Natural language question or concept to search for.
             collection: Collection to search. Valid values:
-                - 'chapters' / 'textbooks' — textbook chapter prose
+                - 'chunks' / 'textbooks' — textbook chapter chunks (with full text)
                 - 'code_chunks' / 'code'   — CRE code examples
                 - 'pattern_instances' / 'patterns' — architectural pattern instances
                 - 'code_good_patterns'     — canonical good-code examples

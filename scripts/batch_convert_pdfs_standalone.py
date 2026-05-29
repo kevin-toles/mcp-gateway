@@ -35,6 +35,10 @@ CO_HEALTH_TIMEOUT = 5.0
 CO_REQUEST_TIMEOUT = None  # no timeout — large PDFs can take minutes
 
 
+class FatalBatchError(RuntimeError):
+    """Non-recoverable conversion error requiring immediate batch stop."""
+
+
 # ── ANSI colours (disabled when not a TTY) ──────────────────────────────────
 def _c(code: str, text: str) -> str:
     if sys.stdout.isatty():
@@ -101,6 +105,22 @@ def _convert_pdf(
         json=payload,
         timeout=CO_REQUEST_TIMEOUT,
     )
+
+    if resp.status_code >= 400:
+        detail = ""
+        try:
+            body = resp.json()
+            detail = str(body.get("detail", "")).strip()
+        except Exception:  # noqa: BLE001
+            detail = resp.text.strip()
+
+        normalized = detail.lower()
+        if resp.status_code == 507 or "no space left on device" in normalized or "insufficient storage" in normalized:
+            raise FatalBatchError(
+                "Insufficient storage on output volume. Free space and restart batch. "
+                f"Output path: {output_path}"
+            )
+
     resp.raise_for_status()
     return resp.json()
 
@@ -146,7 +166,7 @@ def main() -> None:
     out_dir = args.output_dir or os.path.join(os.path.dirname(args.input_dir.rstrip("/")), "converted")
     os.makedirs(out_dir, exist_ok=True)
 
-    # Discover PDFs — recursive glob (mirrors extraction/enrichment using rglob)
+    # Discover PDFs — single rglob pass
     input_path = Path(args.input_dir)
     if "**" in args.file_pattern:
         all_files = sorted(glob.glob(os.path.join(args.input_dir, args.file_pattern), recursive=True))
@@ -157,8 +177,8 @@ def main() -> None:
         _log(yellow(f"⚠️  No PDFs found under: {args.input_dir}  (pattern: {args.file_pattern})"))
         sys.exit(0)
 
-    # Determine whether to mirror directory structure
-    has_subdirs = len(list(input_path.rglob(args.file_pattern))) > len(list(input_path.glob(args.file_pattern)))
+    # Determine whether to mirror directory structure — infer from all_files (no extra scan)
+    has_subdirs = any(Path(f).parent != input_path for f in all_files)
     mirror = args.mirror_structure or has_subdirs
 
     # Header
@@ -175,6 +195,27 @@ def main() -> None:
     # Health check — fail fast before touching any files
     _health_check(args.co_url)
 
+    # Build existing-JSON set once via scandir (O(1) lookups vs O(N) stat calls)
+    if args.skip_existing:
+        _log("   Scanning output dir for existing JSONs...")
+        existing_jsons: set[str] = set()
+        try:
+            if mirror:
+                for dirpath, _dirs, filenames in os.walk(out_dir):
+                    for fn in filenames:
+                        if fn.endswith(".json"):
+                            existing_jsons.add(os.path.join(dirpath, fn))
+            else:
+                with os.scandir(out_dir) as it:
+                    for entry in it:
+                        if entry.name.endswith(".json"):
+                            existing_jsons.add(entry.path)
+        except FileNotFoundError:
+            pass
+        _log(f"   Found {len(existing_jsons):,} existing JSONs")
+    else:
+        existing_jsons = set()
+
     to_process = []
     skipped = []
     for fpath in all_files:
@@ -182,12 +223,12 @@ def main() -> None:
         fpath_obj = Path(fpath_str)
         if mirror:
             rel = fpath_obj.relative_to(input_path)
-            out_path = os.path.join(out_dir, rel.with_suffix(".json"))
+            out_path = os.path.join(out_dir, str(rel.with_suffix(".json")))
         else:
             stem = fpath_obj.stem
             out_path = os.path.join(out_dir, f"{stem}.json")
 
-        if args.skip_existing and os.path.exists(out_path):
+        if args.skip_existing and out_path in existing_jsons:
             skipped.append(fpath_obj.name)
         else:
             to_process.append((fpath_str, out_path))
@@ -212,6 +253,9 @@ def main() -> None:
     failed = 0
     failed_names: list[str] = []
     batch_start = time.time()
+
+    aborted_due_fatal = False
+    fatal_reason = ""
 
     with httpx.Client() as client:
         for idx, (pdf_path, out_path) in enumerate(to_process, 1):
@@ -239,6 +283,17 @@ def main() -> None:
                 _log(f"   📄  {out}")
                 succeeded += 1
 
+            except FatalBatchError as e:
+                elapsed = time.time() - book_start
+                stop_evt.set()
+                watcher.join(timeout=1.0)
+                _log(red(f"   ❌  Fatal ({elapsed:.1f}s): {str(e)}"))
+                failed += 1
+                failed_names.append(pdf_name)
+                aborted_due_fatal = True
+                fatal_reason = str(e)
+                break
+
             except Exception as e:
                 elapsed = time.time() - book_start
                 stop_evt.set()
@@ -251,7 +306,11 @@ def main() -> None:
     batch_elapsed = time.time() - batch_start
     _log("")
     _log("=" * 60)
-    if failed == 0:
+    if aborted_due_fatal:
+        _log(red("🛑  ABORTED — non-recoverable storage error"))
+        _log(red(f"   Reason: {fatal_reason}"))
+        _log(yellow(f"   Progress before abort: {succeeded} succeeded, {failed} failed, {len(skipped)} skipped"))
+    elif failed == 0:
         _log(green(f"🏁  COMPLETE — {succeeded} converted, {len(skipped)} skipped — {batch_elapsed:.0f}s"))
     else:
         _log(
@@ -264,6 +323,8 @@ def main() -> None:
             _log(yellow(f"     • {name}"))
     _log("=" * 60)
 
+    if aborted_due_fatal:
+        sys.exit(2)
     sys.exit(1 if failed and succeeded == 0 else 0)
 
 

@@ -9,10 +9,10 @@ Reference: Strategy §4.1 (dispatcher pattern), AC-2.1 through AC-2.5
            C-5 (Missing Circuit Breakers Across All HTTP Clients)
 """
 
+from __future__ import annotations
+
 _CONN_FAILED = "Connection failed"
 _HYBRID_PATH = "/v1/search/hybrid"
-
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -129,33 +129,33 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     _HYBRID = "/v1/search/hybrid"
     return {
         "semantic_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search",
         ),
         "hybrid_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path=_HYBRID,
         ),
         "knowledge_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path=_HYBRID,
         ),
         "knowledge_refine": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path=_HYBRID,
         ),
         "find_code_pattern": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path=_HYBRID,
         ),
         "pattern_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path=_HYBRID,
         ),
         # diagram_search: routes to USS /v1/search/hybrid with collection=ascii_diagrams.
         # USS detects the CLIP collection and uses CLIPEncoder.encode_text() instead of MiniLM.
         "diagram_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         "code_analyze": DispatchRoute(
@@ -167,11 +167,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/patterns/detect",
         ),
         "graph_query": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/graph/query",
         ),
         "graph_traverse": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/graph/traverse",
         ),
         "llm_complete": DispatchRoute(
@@ -317,7 +317,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         # WBS-F7: Foundation search (scientific / theoretical layer)
         "foundation_search": DispatchRoute(
-            base_url=settings.SEMANTIC_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_URL,
             path="/v1/search/foundation",
         ),
     }

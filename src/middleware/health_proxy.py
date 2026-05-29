@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -28,6 +29,7 @@ from typing import Any, Optional
 import httpx
 
 from src.core.idle_timeout import get_tracker
+from src.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -54,72 +56,8 @@ class HealthAwareProxy:
     downtime and makes it transparent to the user.
     """
     
-    # Service configuration - ALL use sync strategy
-    SERVICE_CONFIG = {
-        "semantic_search": {
-            "name": "unified-search-service",
-            "url": "http://localhost:8081",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/unified-search-service && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8081",
-            "timeout": 2.0,  # 2 second strict timeout
-        },
-        "code_analyze": {
-            "name": "code-orchestrator",
-            "url": "http://localhost:8083",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/Code-Orchestrator-Service && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8083",
-            "timeout": 2.0,
-        },
-        "llm_complete": {
-            "name": "llm-gateway",
-            "url": "http://localhost:8080",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/llm-gateway && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8080",
-            "timeout": 2.0,
-        },
-        "run_agent_function": {
-            "name": "ai-agents",
-            "url": "http://localhost:8082",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/ai-agents && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8082",
-            "timeout": 2.0,
-        },
-        "audit_quality_scan": {
-            "name": "audit-service",
-            "url": "http://localhost:8084",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/audit-service && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8084",
-            "timeout": 2.0,
-        },
-        "context_management": {
-            "name": "context-management-service",
-            "url": "http://localhost:8086",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/context-management-service && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8086",
-            "timeout": 2.0,
-        },
-        "amve_evaluate_fitness": {
-            "name": "amve",
-            "url": "http://localhost:8088",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/architecture-mapping-validation-engine && source .venv/bin/activate && python -m src.main",
-            "timeout": 2.0,
-        },
-        "foundation_search": {
-            "name": "unified-search-rs",
-            "url": "http://localhost:8089",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/unified-search-rs && cargo run --release",
-            "timeout": 2.0,
-        },
-        "inference": {
-            "name": "inference-service-cpp",
-            "url": "http://localhost:8085",
-            "health_endpoint": "/health",
-            "restart_command": "cd /Users/kevintoles/POC/inference-service-cpp && ./build/inference-service",
-            "timeout": 2.0,
-        },
-    }
+    # Service configuration is injected from Settings at runtime.
+    SERVICE_CONFIG: dict[str, dict[str, Any]] = {}
     
     def __init__(self, http_client: Optional[httpx.AsyncClient] = None):
         """
@@ -131,6 +69,8 @@ class HealthAwareProxy:
         self.http_client = http_client
         self._restarting: set[str] = set()  # Services currently restarting
         self._tracker = get_tracker()
+        self._settings = Settings()
+        self.SERVICE_CONFIG = copy.deepcopy(self._settings.HEALTH_PROXY_SERVICE_CONFIG)
     
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create httpx.AsyncClient."""
@@ -382,14 +322,36 @@ class HealthAwareProxy:
         tool_to_service = {
             "semantic_search": "semantic_search",
             "hybrid_search": "semantic_search",
+            "knowledge_search": "semantic_search",
+            "knowledge_refine": "semantic_search",
+            "pattern_search": "semantic_search",
+            "diagram_search": "semantic_search",
+            "graph_query": "semantic_search",
+            "graph_traverse": "semantic_search",
             "code_analyze": "code_analyze",
             "code_pattern_audit": "code_analyze",
             "llm_complete": "llm_complete",
+            "a2a_send_message": "ai_agents",
+            "a2a_get_task": "ai_agents",
+            "a2a_cancel_task": "ai_agents",
+            "enhance_guideline": "ai_agents",
+            "audit_security_scan": "audit_service",
+            "audit_code_metrics": "audit_service",
+            "audit_corpus_search": "audit_service",
+            "audit_dependency_assess": "audit_service",
+            "audit_resolve_lookup": "audit_service",
+            "audit_search_exploits": "audit_service",
+            "audit_search_cves": "audit_service",
+            "audit_quality_scan": "audit_service",
+            "generate_taxonomy": "code_orchestrator",
+            "extract_book_metadata": "code_orchestrator",
+            "enrich_book_metadata": "code_orchestrator",
+            "batch_extract_metadata": "code_orchestrator",
+            "batch_enrich_metadata": "code_orchestrator",
+            "analyze_taxonomy_coverage": "code_orchestrator",
             "run_agent_function": "run_agent_function",
             "run_discussion": "run_agent_function",
             "agent_execute": "run_agent_function",
-            "audit_quality_scan": "audit_quality_scan",
-            "audit_code_metrics": "audit_quality_scan",
             "context_management": "context_management",
             "amve_evaluate_fitness": "amve",
             "foundation_search": "foundation_search",

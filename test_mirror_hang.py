@@ -9,7 +9,7 @@ import httpx
 
 async def test_mirror_via_sse():
     """Call mirror_cre_repos via SSE and see if it hangs."""
-    url = "http://localhost:8087/mcp/sse"
+    url = "http://localhost:8090/mcp/sse"
 
     # MCP SSE request format
     request_data = {

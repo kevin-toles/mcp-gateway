@@ -44,7 +44,7 @@ from src.tools import (
     batch_extract_metadata,
     code_analyze,
     code_pattern_audit,
-    convert_pdf,
+    convert_pdf_to_json,
     diagram_search,
     enhance_guideline,
     enrich_book_metadata,
@@ -59,6 +59,7 @@ from src.tools import (
     knowledge_search,
     llm_complete,
     pattern_search,
+    push_to_github,
     search_in,
     semantic_search,
 )
@@ -83,12 +84,13 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "a2a_get_task": a2a_get_task.create_handler,
     "a2a_cancel_task": a2a_cancel_task.create_handler,
     # Workflow tools (WBS-WF6)
-    "convert_pdf": convert_pdf.create_handler,
+    "convert_pdf_to_json": convert_pdf_to_json.create_handler,
     "extract_book_metadata": extract_book_metadata.create_handler,
     "batch_extract_metadata": batch_extract_metadata.create_handler,
     "generate_taxonomy": generate_taxonomy.create_handler,
     "enrich_book_metadata": enrich_book_metadata.create_handler,
     "batch_enrich_metadata": batch_enrich_metadata.create_handler,
+    "push_to_github": push_to_github.create_handler,
     "enhance_guideline": enhance_guideline.create_handler,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": analyze_taxonomy_coverage.create_handler,

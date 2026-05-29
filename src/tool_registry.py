@@ -38,7 +38,7 @@ from src.models.schemas import (
     BatchExtractMetadataInput,
     CodeAnalyzeInput,
     CodePatternAuditInput,
-    ConvertPDFInput,
+    ConvertPDFToJsonInput,
     DiagramSearchInput,
     EnhanceGuidelineInput,
     EnrichBookMetadataInput,
@@ -53,6 +53,7 @@ from src.models.schemas import (
     KnowledgeSearchInput,
     LLMCompleteInput,
     PatternSearchInput,
+    PushToGithubInput,
     SearchInInput,
     SemanticSearchInput,
 )
@@ -77,12 +78,13 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "a2a_get_task": A2AGetTaskInput,
     "a2a_cancel_task": A2ACancelTaskInput,
     # Workflow tools (WBS-WF6)
-    "convert_pdf": ConvertPDFInput,
+    "convert_pdf_to_json": ConvertPDFToJsonInput,
     "extract_book_metadata": ExtractBookMetadataInput,
     "batch_extract_metadata": BatchExtractMetadataInput,
     "generate_taxonomy": GenerateTaxonomyInput,
     "enrich_book_metadata": EnrichBookMetadataInput,
     "batch_enrich_metadata": BatchEnrichMetadataInput,
+    "push_to_github": PushToGithubInput,
     "enhance_guideline": EnhanceGuidelineInput,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": AnalyzeTaxonomyCoverageInput,

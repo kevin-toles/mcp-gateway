@@ -1,6 +1,6 @@
 // shim-mcp-gateway.rs
 // Minimal cold-start shim for mcp-gateway (Rust)
-// Listens on :8088, proxies to mcp-gateway on :8087.
+// Listens on :8090, proxies to mcp-gateway on :8087.
 // Starts mcp-gateway if not running on first request.
 
 use std::net::{TcpListener, TcpStream};
@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 // Public port that clients (VS Code) connect to
-const SHIM_ADDR: &str = "127.0.0.1:8088";
+const SHIM_ADDR: &str = "127.0.0.1:8090";
 // Internal port where mcp-gateway actually listens
 const MCP_ADDR: &str = "127.0.0.1:8087";
 const MCP_STARTUP_TIMEOUT_MS: u64 = 4000;
@@ -45,15 +45,18 @@ fn wait_for_mcp_ready(timeout_ms: u64) -> bool {
 fn proxy(mut client: TcpStream) {
     match TcpStream::connect(MCP_ADDR) {
         Ok(mut backend) => {
-            let mut buf = [0u8; 8192];
-            let n = client.read(&mut buf).unwrap_or(0);
-            if n > 0 {
-                backend.write_all(&buf[..n]).ok();
-            }
+            // Set up bidirectional proxy immediately (no blocking read first).
+            // This avoids deadlocks where client waits for server before sending.
             let mut backend_clone = backend.try_clone().unwrap();
             let mut client_clone = client.try_clone().unwrap();
-            thread::spawn(move || std::io::copy(&mut backend, &mut client_clone).ok());
-            std::io::copy(&mut client, &mut backend_clone).ok();
+            
+            // Copy from client → backend in one thread
+            thread::spawn(move || {
+                let _ = std::io::copy(&mut client, &mut backend_clone);
+            });
+            
+            // Copy from backend → client in main thread
+            let _ = std::io::copy(&mut backend, &mut client_clone);
         }
         Err(_) => {
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway failed to start\n");
@@ -62,24 +65,33 @@ fn proxy(mut client: TcpStream) {
 }
 
 fn main() {
-    if is_mcp_running() {
-        println!("mcp-gateway already running on {}", MCP_ADDR);
-        return;
-    }
-    let listener = TcpListener::bind(SHIM_ADDR).expect("Failed to bind shim to port 8088");
+    let listener = TcpListener::bind(SHIM_ADDR).expect("Failed to bind shim to port 8090");
     println!("shim-mcp-gateway: listening on {} (proxying to {} on demand)", SHIM_ADDR, MCP_ADDR);
     for stream in listener.incoming() {
         match stream {
             Ok(client) => {
-                if !is_mcp_running() {
-                    println!("shim: launching mcp-gateway...");
-                    let _child = start_mcp_gateway();
-                    if !wait_for_mcp_ready(MCP_STARTUP_TIMEOUT_MS) {
-                        let _ = client.try_clone().unwrap().write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway failed to start\n");
-                        continue;
+                // Spawn immediately — never block the accept loop for cold-start.
+                // Each connection handles its own gateway health check and startup
+                // wait inside the thread, so concurrent connections are not stalled.
+                thread::spawn(move || {
+                    let mut client = client;
+                    if !is_mcp_running() {
+                        println!("shim: launching mcp-gateway...");
+                        if start_mcp_gateway().is_none() {
+                            let _ = client.write_all(
+                                b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway launch command failed\n",
+                            );
+                            return;
+                        }
+                        if !wait_for_mcp_ready(MCP_STARTUP_TIMEOUT_MS) {
+                            let _ = client.write_all(
+                                b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway failed to start\n",
+                            );
+                            return;
+                        }
                     }
-                }
-                thread::spawn(move || proxy(client));
+                    proxy(client);
+                });
             }
             Err(e) => eprintln!("shim: connection failed: {}", e),
         }

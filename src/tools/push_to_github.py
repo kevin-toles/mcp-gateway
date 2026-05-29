@@ -1,19 +1,7 @@
-"""push_to_github tool handler — push files to GitHub via git push.
+"""push_to_github — blind pass-through proxy to github_upload.py.
 
-Mirrors the convert_pdf / batch_extract_metadata pattern exactly:
-  1. Accept file paths + repo + dest as parameters
-  2. Launch a Terminal.app window running push_large_files.py
-  3. Return immediately with log path to monitor
-
-Standalone script: ai-platform-data/scripts/github_upload.py
-
-Routing is automatic — github_upload.py picks the right flow based on file size:
-  < 30 MB  → GitHub Git Data API (blob upload, zero git)
-  30-100 MB → GitHub Git Data API (same path, heavier files)
-  > 100 MB  → git-lfs push (sparse checkout, GIT_LFS_SKIP_SMUDGE=1)
-
-Monitor live progress with:
-    tail -f /tmp/push_github_latest.log
+Direct "Pipe" Language — no validation, no transformation.
+Passes the raw --json argument exactly as received to the script.
 """
 
 import os
@@ -24,54 +12,72 @@ from datetime import datetime
 
 from fastmcp import Context
 
-from src.models.schemas import PushToGithubInput
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 
 TOOL_NAME = "push_to_github"
 PROGRESS_LOG = "/tmp/push_github_latest.log"  # noqa: S108
-_PUSH_SCRIPT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "ai-platform-data", "scripts", "github_upload.py")
-)
+_PUSH_SCRIPT = "/Users/kevintoles/POC/ai-platform-data/scripts/github_upload.py"
 
 
-def _launch_terminal(files: list[str], repo: str, dest: str) -> dict:
-    """Open a new Terminal.app window running push_large_files.py.
+def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
+    """Return an async handler for push_to_github — blind pass-through."""
 
-    Follows the same osascript pattern as convert_pdf and batch_extract_metadata:
-      1. Write a temp .sh script with tee → log file
-      2. Use osascript to open it in a fresh Terminal.app window
-      3. Return immediately
-    """
-    python = os.path.abspath(os.path.join(os.path.dirname(_PUSH_SCRIPT), "..", ".venv", "bin", "python"))
-    if not os.path.exists(python):
+    async def push_to_github(
+        json: str | None = None,
+        json_file: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict:
+        """Blind pass-through to github_upload.py --json.
+
+        For small payloads pass json directly. For large payloads (>10KB)
+        write the JSON to a file and pass json_file instead.
+
+        Args:
+            json: Raw JSON string passed directly to --json flag.
+            json_file: Path to file containing the JSON payload (for large batches).
+        """
         python = "python3"
+        if os.path.exists(os.path.join(os.path.dirname(_PUSH_SCRIPT), "..", ".venv", "bin", "python")):
+            python = os.path.join(os.path.dirname(_PUSH_SCRIPT), "..", ".venv", "bin", "python")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
-    log_file = f"/tmp/push_github_{timestamp}.log"  # noqa: S108
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
+        log_file = f"/tmp/push_github_{timestamp}.log"  # noqa: S108
 
-    file_args = " ".join(f"'{f}'" for f in files)
+        # Use json_file if provided, otherwise write json string to temp file
+        if json_file:
+            payload_file = json_file
+        else:
+            import json as _json_module
+            fd, payload_file = tempfile.mkstemp(suffix=".json", prefix="push_github_payload_")
+            os.close(fd)
+            with open(payload_file, "w") as f:
+                f.write(json if json else "{}")
 
-    fd, tmp_script = tempfile.mkstemp(suffix=".sh", prefix="push_github_run_")
-    os.close(fd)
-    with open(tmp_script, "w") as f:
-        f.write(f"""#!/usr/bin/env bash
-printf '\\n\\033[1;36m\u2550\u2550 Push to GitHub \u2192 {repo}/{dest}  Log: {log_file}\\033[0m\\n\\n'
-'{python}' -u '{_PUSH_SCRIPT}' --files {file_args} --repo '{repo}' --dest '{dest}' 2>&1 | tee '{log_file}'
-EXIT_CODE=${{PIPESTATUS[0]}}
-ln -sf '{log_file}' '{PROGRESS_LOG}'
-echo ''
-if [[ $EXIT_CODE -eq 0 ]]; then
-  printf '\\033[1;32m\u2705  Push complete.\\033[0m\\n'
-else
-  printf '\\033[1;31m\u274c  Push failed (exit '$EXIT_CODE'). Check log above.\\033[0m\\n'
-fi
-echo ''
-read -rp 'Press Enter to close...'
-""")
-    os.chmod(tmp_script, os.stat(tmp_script).st_mode | stat.S_IEXEC)
+        fd, tmp_script = tempfile.mkstemp(suffix=".sh", prefix="push_github_run_")
+        os.close(fd)
 
-    osascript = """on run argv
+        script_content = (
+            "#!/usr/bin/env bash\n"
+            "printf '\\n\\033[1;36m══ Push to GitHub\\033[0m\\n'\n"
+            "printf '\\033[0;90mLog: " + log_file + "\\033[0m\\n\\n'\n"
+            "'" + python + "' -u '" + _PUSH_SCRIPT + "' --json \"$(cat '" + payload_file + "')\" 2>&1 | tee '" + log_file + "'\n"
+            "EXIT_CODE=${PIPESTATUS[0]}\n"
+            "ln -sf '" + log_file + "' '" + PROGRESS_LOG + "'\n"
+            "echo ''\n"
+            "if [[ $EXIT_CODE -eq 0 ]]; then\n"
+            "  printf '\\033[1;32m✅  Push complete.\\033[0m\\n'\n"
+            "else\n"
+            "  printf '\\033[1;31m❌  Push failed (exit '$EXIT_CODE'). Check log above.\\033[0m\\n'\n"
+            "fi\n"
+            "echo ''\n"
+            "read -rp 'Press Enter to close...'\n"
+        )
+        with open(tmp_script, "w") as f:
+            f.write(script_content)
+        os.chmod(tmp_script, os.stat(tmp_script).st_mode | stat.S_IEXEC)
+
+        osascript = """on run argv
     set scriptPath to item 1 of argv
     tell application "Terminal"
         do script scriptPath
@@ -80,75 +86,20 @@ read -rp 'Press Enter to close...'
     end tell
 end run
 """
-    fd2, osa_file = tempfile.mkstemp(suffix=".applescript")
-    os.close(fd2)
-    with open(osa_file, "w") as f:
-        f.write(osascript)
+        fd2, osa_file = tempfile.mkstemp(suffix=".applescript")
+        os.close(fd2)
+        with open(osa_file, "w") as f:
+            f.write(osascript)
 
-    subprocess.Popen(["/usr/bin/osascript", osa_file, tmp_script])  # noqa: S603
-
-    return {
-        "status": "launched",
-        "log_file": log_file,
-        "monitor_cmd": f"tail -f {log_file}",
-        "files": files,
-        "repo": repo,
-        "dest": dest,
-    }
-
-
-def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
-    """Return an async handler for push_to_github."""
-
-    async def push_to_github(
-        files: list[str],
-        repo: str = "kevin-toles/pdf-text-repo",
-        dest: str = "Textbooks",
-        skip_existing: bool = True,
-        ctx: Context | None = None,
-    ) -> dict:
-        """Push one or more files to a GitHub repo. Routing is automatic by size:
-
-        < 30 MB  → GitHub Git Data API (no git required)
-        30-100 MB → GitHub Git Data API
-        > 100 MB  → git-lfs push
-
-        Always launches in a new Terminal.app window and returns immediately.
-        Monitor live progress with: tail -f /tmp/push_github_latest.log
-
-        Args:
-            files: List of absolute local file paths to upload.
-            repo: GitHub repo as owner/name (default: kevin-toles/pdf-text-repo).
-            dest: Destination directory inside the repo (default: Textbooks).
-            skip_existing: Skip files already present in the repo (default: True).
-        """
-        validated = PushToGithubInput(
-            files=files,
-            repo=repo,
-            dest=dest,
-            skip_existing=skip_existing,
-        )
-
-        missing = [f for f in validated.files if not os.path.exists(f)]
-        if missing:
-            return {
-                "status": "error",
-                "message": f"Files not found locally: {missing}",
-                "hint": "Provide absolute paths to existing files.",
-            }
-
-        result = _launch_terminal(
-            files=validated.files,
-            repo=validated.repo,
-            dest=validated.dest,
-        )
+        subprocess.Popen(["/usr/bin/osascript", osa_file, tmp_script])  # noqa: S603
 
         if ctx:
-            await ctx.info(
-                f"Push launched: {len(validated.files)} file(s) → {validated.repo}/{validated.dest}\n"
-                f"Monitor: tail -f {result['log_file']}"
-            )
+            await ctx.info(f"Push launched. Monitor: tail -f {log_file}")
 
-        return result
+        return {
+            "status": "launched",
+            "log_file": log_file,
+            "monitor_cmd": f"tail -f {log_file}",
+        }
 
     return push_to_github

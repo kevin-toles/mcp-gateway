@@ -23,13 +23,16 @@ _SEARCH_COLLECTION_MAP: dict[str, str] = {
     "all": "all",  # search across all collections (default)
     "code": "code",  # CRE code implementation examples
     "docs": "docs",  # documentation
-    "textbooks": "textbooks",  # textbook chapter prose
+    "textbooks": "chunks",  # textbook chapter prose — routes to chunks with full text
 }
 
 # ── knowledge_refine backend Qdrant collection names ─────────────────────────
 
 _SHELF_COLLECTION_MAP: dict[str, str] = {
-    "textbooks": "chapters",
+    # NOTE: "textbooks" routes to "chunks" (the fine-grained chunk collection
+    # with verbatim text), not "chapters" (which is metadata-only with no text body).
+    # WBS_CHUNK_RETRIEVAL Phase 3 — 273K chunks with full text.
+    "textbooks": "chunks",
     "code": "code_chunks",
     "patterns": "code_good_patterns",
     "diagrams": "ascii_diagrams",

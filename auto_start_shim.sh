@@ -14,6 +14,19 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
+# Handle stale/missing PID file when shim is already running
+RUNNING_PID=$(pgrep -f "shim-mcp-gateway" | head -1)
+if [ -n "$RUNNING_PID" ]; then
+    echo "$RUNNING_PID" > "$PID_FILE"
+    echo "shim-mcp-gateway already running (PID: $RUNNING_PID)"
+    exit 0
+fi
+
+if lsof -i :8090 > /dev/null 2>&1; then
+    echo "Port 8090 already in use; shim startup skipped"
+    exit 0
+fi
+
 # Start the shim in background
 cd /Users/kevintoles/POC/mcp-gateway
 nohup "$SHIM_BIN" > /tmp/shim-mcp-gateway.log 2>&1 &
