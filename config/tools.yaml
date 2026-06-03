@@ -113,16 +113,15 @@ tools:
     tier: gold
     tags: [workflow, enrichment, batch, dma, direct_co]
 
-  - name: push_to_github
-    description: "Push one or more local files to a GitHub repository via API/LFS routing. Optimized for large PDF batch uploads and launches github_upload.py in Terminal with live log output."
-    when_to_use: "Use for large textbook PDF batch uploads to GitHub. Accepts single file, comma-separated files, list, or files_json payload."
-    tier: gold
-    tags: [workflow, github, upload, pdf, batch]
-
   - name: enhance_guideline
     description: "Enhance a guideline's chapters via LLM with cross-book context. Requires ai-agents (:8082)."
     tier: gold
     tags: [workflow, enhancement, llm]
+
+  - name: push_to_github
+    description: "Upload one or more local files to a GitHub repository. Routing is automatic by file size: <30MB uses the GitHub Git Data API (pure HTTPS, no git), 30-100MB also uses the Git Data API, >100MB uses git-lfs push. Accepts a list of absolute file paths, a target repo (owner/name), and a destination directory inside the repo. Launches a Terminal.app window for live progress. Monitor: tail -f /tmp/push_github_latest.log"
+    tier: gold
+    tags: [workflow, github, upload, pdf, git]
 
   # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────
   - name: analyze_taxonomy_coverage
@@ -254,8 +253,6 @@ tools:
       dependencies required. Requires audit-service (:8084).
     tier: bronze
     tags: [audit, quality, patterns, antipatterns, static-analysis]
-
-  # ── MCP Facade Tools (MCP-F) ─────────────────────────────────────────
 
   - name: ask
     description: >
