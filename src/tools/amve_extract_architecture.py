@@ -22,7 +22,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
 
     async def handler(source_path: str) -> dict:
         validated = AMVEExtractArchitectureInput(source_path=source_path)
-        payload = {"source_paths": [validated.source_path]}
+        payload = {"source_path": validated.source_path}
         result = await dispatcher.dispatch(TOOL_NAME, payload)
         sanitized = sanitizer.sanitize(result.body)
         # AC-2.4: include source_path in the returned dict (AMVE ExtractResponse

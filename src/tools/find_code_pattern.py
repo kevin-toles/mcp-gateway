@@ -3,6 +3,10 @@
 Intent-level tool that surfaces code pattern search to LLM clients using
 user-friendly `examples` vocabulary ("good", "bad", "both") instead of the
 internal `pattern_type` values accepted by the `pattern_search` backend route.
+
+Translates `examples` to a Qdrant collection name that the unified-search-service
+HybridSearchRequest model accepts (avoids sending unknown fields like `pattern_type`
+which would cause a 422 Pydantic validation error).
 """
 
 from __future__ import annotations
@@ -17,6 +21,14 @@ _EXAMPLES_MAP: dict[str, str] = {
     "both": "all",
 }
 
+# Maps resolved pattern_type → USS collection value
+# Must match _PATTERN_COLLECTION_MAP in pattern_search.py
+_PATTERN_COLLECTION_MAP: dict[str, str] = {
+    "good": "code_good_patterns",
+    "bad": "code_bad_patterns",
+    "all": "all",
+}
+
 
 def _resolve_examples(examples: str) -> str:
     resolved = _EXAMPLES_MAP.get(examples)
@@ -29,7 +41,15 @@ def _resolve_examples(examples: str) -> str:
 def create_handler(dispatcher: ToolDispatcher, sanitizer=None):
     async def find_code_pattern(query: str, examples: str = "both") -> dict:
         pattern_type = _resolve_examples(examples)
-        payload = {"query": query, "pattern_type": pattern_type, "limit": 10}
+        collection = _PATTERN_COLLECTION_MAP[pattern_type]
+        payload = {
+            "query": query,
+            "collection": collection,
+            "limit": 10,
+            "include_graph": True,
+            "tier_boost": True,
+            "expand_taxonomy": False,
+        }
         result = await dispatcher.dispatch("pattern_search", payload)
         return result.body
 

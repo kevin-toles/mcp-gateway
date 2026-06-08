@@ -86,6 +86,12 @@ class Settings(BaseSettings):
         "env_prefix": "MCP_GATEWAY_",
     }
 
+    # ── Backward-compat aliases ────────────────────────────────────
+    @property
+    def SEMANTIC_SEARCH_URL(self) -> str:
+        """Alias: renamed to UNIFIED_SEARCH_URL in config, preserved for tool dispatcher."""
+        return self.UNIFIED_SEARCH_URL
+
     @property
     def CO_RESTART_COMMAND(self) -> str:
         """Build the canonical CO restart command with lifecycle env vars."""

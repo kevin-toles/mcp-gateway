@@ -54,11 +54,13 @@ class TestSettingsBackendURLs:
         settings = Settings()
         assert settings.LLM_GATEWAY_URL == "http://localhost:8080"
 
-    def test_semantic_search_url_default(self):
+    def test_semantic_search_url_alias(self):
         from src.core.config import Settings
 
         settings = Settings()
+        # SEMANTIC_SEARCH_URL is a backward-compat alias for UNIFIED_SEARCH_URL
         assert settings.SEMANTIC_SEARCH_URL == "http://localhost:8081"
+        assert settings.SEMANTIC_SEARCH_URL == settings.UNIFIED_SEARCH_URL
 
     def test_ai_agents_url_default(self):
         from src.core.config import Settings

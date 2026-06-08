@@ -15,7 +15,7 @@ Run with:
     INTEGRATION=1 pytest tests/integration/test_tier_search_e2e.py -v
 
 Requires:
-    - mcp-gateway :8087 (or SEMANTIC_SEARCH_URL set)
+    - mcp-gateway :8087 (or UNIFIED_SEARCH_URL set)
     - unified-search-service :8081
     - Qdrant :6333 (with bloom_tier_level backfilled — TXS2 complete)
     - Neo4j :7687 (with TaxonomyConcept nodes — TXS1/V008 complete)
@@ -33,7 +33,7 @@ from src.tool_dispatcher import ToolDispatcher
 
 pytestmark = pytest.mark.integration
 
-SEARCH_URL = os.environ.get("SEMANTIC_SEARCH_URL", "http://localhost:8081")
+SEARCH_URL = os.environ.get("UNIFIED_SEARCH_URL", "http://localhost:8081")
 HYBRID_ENDPOINT = f"{SEARCH_URL}/v1/search/hybrid"
 
 
