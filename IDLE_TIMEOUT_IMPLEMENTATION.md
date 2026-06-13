@@ -30,7 +30,9 @@ Copilot → MCP tool call → mcp-gateway detects service is down
 | `src/main.py` | Integrated lifespan handler with idle timeout checker |
 | `src/tool_dispatcher.py` | Integrated health-aware proxy into dispatch |
 | `config/idle_timeout.env` | Configuration for per-service timeouts |
-| `tests/unit/test_idle_timeout_tracker.py` | TDD test suite (13 tests) |
+| `tests/unit/test_idle_timeout_tracker.py` | TDD test suite (46 tests) |
+| `tests/unit/test_idle_timeout_wiring.py` | TDD test suite (5 tests) |
+| `tests/unit/test_idle_timeout_slo.py` | SLO stress test suite (11 tests) |
 | `tests/unit/test_health_proxy.py` | TDD test suite (22 tests) |
 
 ### ai-platform-data (Startup Integration)
@@ -98,15 +100,17 @@ Returns idle timeout status for all tracked services:
 
 ```
 tests/unit/test_health_proxy.py ...................... [22 passed]
-tests/unit/test_idle_timeout_tracker.py ............. [13 passed]
-============================== 35 passed in 2.81s ==============================
+tests/unit/test_idle_timeout_tracker.py ............. [46 passed]
+tests/unit/test_idle_timeout_wiring.py .............. [5 passed]
+tests/unit/test_idle_timeout_slo.py ................. [11 passed]
+============================== 62 passed in 0.59s ==============================
 ```
 
 ## TDD Compliance
 
 All implementation followed **RED → GREEN → REFACTOR** pattern:
 
-1. **RED**: Created failing tests first (13 tests for tracker, 22 for proxy)
+1. **RED**: Created failing tests first (46 tests for tracker, 5 for wiring, 11 for SLO, 22 for proxy)
 2. **GREEN**: Implemented minimal code to pass tests
 3. **REFACTOR**: Cleaned up code, added configuration, integrated with existing systems
 

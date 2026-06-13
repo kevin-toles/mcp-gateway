@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle with idle timeout checker."""
     # Startup: Start idle timeout checker
     checker = get_checker()
-    await checker.start()
+    checker.start()
     logger.info("Idle timeout checker started")
     
     try:

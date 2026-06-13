@@ -41,6 +41,9 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Rust build artifacts
+target/
+
 # TLS test certs (never commit real certs)
 *.pem
 *.key

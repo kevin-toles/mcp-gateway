@@ -25,6 +25,7 @@ import httpx
 from src.ai_platform_metrics import TOOL_CALLS_TOTAL
 from src.core.config import Settings
 from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeoutError
+from src.core.idle_timeout import get_tracker
 from src.resilience.circuit_breaker import CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,9 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "audit_search_exploits": "audit-service",
     "audit_search_cves": "audit-service",
     # WBS-F7: Foundation search (scientific / theoretical layer)
-    "foundation_search": "unified-search-service",
+    "foundation_search": "unified-search-rs",
+    # Inference (native C++ service)
+    "inference": "inference-service-cpp",
 }
 
 
@@ -129,33 +132,33 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     _HYBRID = "/v1/search/hybrid"
     return {
         "semantic_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search",
         ),
         "hybrid_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
         ),
         "knowledge_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
         ),
         "knowledge_refine": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
         ),
         "find_code_pattern": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
         ),
         "pattern_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
         ),
         # diagram_search: routes to USS /v1/search/hybrid with collection=ascii_diagrams.
         # USS detects the CLIP collection and uses CLIPEncoder.encode_text() instead of MiniLM.
         "diagram_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/hybrid",
         ),
         "code_analyze": DispatchRoute(
@@ -167,11 +170,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/patterns/detect",
         ),
         "graph_query": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/query",
         ),
         "graph_traverse": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/traverse",
         ),
         "llm_complete": DispatchRoute(
@@ -317,8 +320,13 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         # WBS-F7: Foundation search (scientific / theoretical layer)
         "foundation_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_URL,
+            base_url=settings.UNIFIED_SEARCH_RS_URL,
             path="/v1/search/foundation",
+        ),
+        # Inference (C++ local inference service)
+        "inference": DispatchRoute(
+            base_url=settings.INFERENCE_SERVICE_URL,
+            path="/health",
         ),
     }
 
@@ -524,13 +532,21 @@ class ToolDispatcher:
             BackendUnavailableError: If the backend cannot be reached.
             CircuitOpenError: If the circuit breaker rejects the call.
         """
+        service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
+
+        # F10 (P0) — Record request for idle-timeout tracking.
+        # Executes before route validation so unknown tools are tracked too.
+        try:
+            get_tracker().record_request(service_name)
+        except Exception:
+            pass
+
         route = self.get_route(tool_name)
         if route is None:
             raise ValueError(f"Unknown tool: {tool_name}")
 
         path = path_override or route.path
         url = f"{route.base_url}{path}"
-        service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
         client = self._get_client(route.base_url)
         cb = self._cb_registry.get(service_name)
 

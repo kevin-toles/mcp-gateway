@@ -24,28 +24,41 @@ import logging
 import subprocess
 from typing import Optional
 
+from src.core.config import ServiceKey, Settings
 from src.core.idle_timeout import get_tracker
 
 logger = logging.getLogger(__name__)
+
+
+def _get_settings() -> Settings:
+    """Lazy-access Settings to avoid circular imports at module level."""
+    return Settings()  # pydantic-settings loads env vars; no cached singleton needed
+
+
+def _build_shutdown_commands() -> dict[str, str]:
+    """Build flat command dict from Settings structured SERVICE_SHUTDOWN_COMMANDS.
+    
+    Composes ``command`` + grace-period sleep + ``health_check`` into a single
+    shell string for backward compatibility with ``_shutdown_service()``.
+    """
+    settings = _get_settings()
+    cmds: dict[str, str] = {}
+    for service_id, cfg in settings.SERVICE_SHUTDOWN_COMMANDS.items():
+        cmd = cfg["command"]
+        grace = cfg.get("grace_period_seconds", 30)
+        health = cfg.get("health_check", "")
+        if health:
+            cmds[service_id] = f"{cmd}; sleep {grace}; {health}"
+        else:
+            cmds[service_id] = cmd
+    return cmds
 
 
 class IdleTimeoutChecker:
     """
     Background checker that monitors service idle times and shuts down idle services.
     """
-    
-    # Service shutdown commands
-    SERVICE_SHUTDOWN_COMMANDS = {
-        "unified-search-service": "pkill -f 'uvicorn.*8081'",
-        "unified-search-rs": "pkill -f 'uvicorn.*8089'",
-        "code-orchestrator": "pkill -f 'uvicorn.*8083'",
-        "llm-gateway": "pkill -f 'uvicorn.*8080'",
-        "ai-agents": "pkill -f 'uvicorn.*8082'",
-        "audit-service": "pkill -f 'uvicorn.*8084'",
-        "context-management-service": "pkill -f 'uvicorn.*8086'",
-        "amve": "pkill -f 'uvicorn.*8088'",
-    }
-    
+
     def __init__(self, check_interval: int = 60):
         """
         Initialize checker.
@@ -57,12 +70,18 @@ class IdleTimeoutChecker:
         self._task: Optional[asyncio.Task] = None
         self._running = False
     
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the background checker."""
         if self._task is not None:
             logger.warning("Idle timeout checker already running")
             return
-        
+
+        # Honour the central enabled flag
+        settings = _get_settings()
+        if not settings.IDLE_TIMEOUT_ENABLED:
+            logger.info("Idle timeout checker disabled via IDLE_TIMEOUT_ENABLED=False")
+            return
+
         self._running = True
         self._task = asyncio.create_task(self._check_loop())
         logger.info("Idle timeout checker started (interval: %ds)", self.check_interval)
@@ -77,7 +96,8 @@ class IdleTimeoutChecker:
         try:
             await self._task
         except asyncio.CancelledError:
-            pass
+            logger.debug("Idle timeout checker task cancelled")
+            raise
         
         self._task = None
         logger.info("Idle timeout checker stopped")
@@ -87,8 +107,8 @@ class IdleTimeoutChecker:
         while self._running:
             try:
                 await self._check_and_shutdown_idle()
-            except Exception as e:
-                logger.error("Error in idle timeout check: %s", e)
+            except Exception:
+                logger.exception("Error in idle timeout check")
             
             await asyncio.sleep(self.check_interval)
     
@@ -100,43 +120,46 @@ class IdleTimeoutChecker:
         if not idle_services:
             return
         
+        commands = _build_shutdown_commands()
         for service_id in idle_services:
-            await self._shutdown_service(service_id)
+            await self._shutdown_service(service_id, commands)
     
-    async def _shutdown_service(self, service_id: str) -> None:
+    async def _shutdown_service(self, service_id: str, commands: dict[str, str]) -> None:
         """
         Shut down a service gracefully.
         
         Args:
             service_id: Service identifier
+            commands: Flat command dict built from Settings
         """
         logger.info("Shutting down idle service: %s", service_id)
-        
-        # Get shutdown command
-        command = self.SERVICE_SHUTDOWN_COMMANDS.get(service_id)
+
+        # Normalize to canonical key (hyphen form) for shutdown lookup
+        svc = str(ServiceKey(service_id))
+        command = commands.get(svc)
         if command is None:
             logger.warning("No shutdown command for service: %s", service_id)
             return
         
-        # Execute shutdown
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
+            _, stderr = await process.communicate(timeout=30)
             
             if process.returncode == 0:
                 logger.info("Successfully shut down %s", service_id)
             else:
-                logger.error(
-                    "Failed to shut down %s: %s",
+                logger.warning(
+                    "Shutdown process for %s returned %d: %s",
                     service_id,
-                    stderr.decode() if stderr else "unknown error",
+                    process.returncode,
+                    stderr.decode() if stderr else "",
                 )
-        except Exception as e:
-            logger.error("Error shutting down %s: %s", service_id, e)
+        except Exception:
+            logger.exception("Error shutting down %s", service_id)
 
 
 # =============================================================================
