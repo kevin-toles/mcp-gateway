@@ -24,8 +24,6 @@ from datetime import datetime, timezone
 from typing import Optional
 from functools import lru_cache
 
-from src.core.config import ServiceKey
-
 
 class IdleTimeoutTracker:
     """Tracks service idle timeouts and enforces shutdown."""
@@ -88,7 +86,6 @@ class IdleTimeoutTracker:
         Args:
             service_id: Service identifier (e.g., "semantic-search")
         """
-        service_id = str(ServiceKey(service_id))
         self._service_states[service_id] = {
             "last_request": datetime.now(timezone.utc),
             "total_requests": self._service_states.get(service_id, {}).get("total_requests", 0) + 1,
@@ -104,7 +101,6 @@ class IdleTimeoutTracker:
         Returns:
             Seconds since last request, or None if service never seen
         """
-        service_id = str(ServiceKey(service_id))
         if service_id not in self._service_states:
             return None
         
@@ -140,7 +136,6 @@ class IdleTimeoutTracker:
         Returns:
             Timeout in seconds (custom or default)
         """
-        service_id = str(ServiceKey(service_id))
         return self._custom_timeouts.get(service_id, self.default_timeout)
     
     def set_custom_timeout(self, service_id: str, timeout_seconds: int) -> None:
@@ -151,7 +146,6 @@ class IdleTimeoutTracker:
             service_id: Service identifier
             timeout_seconds: Custom timeout in seconds
         """
-        service_id = str(ServiceKey(service_id))
         self._custom_timeouts[service_id] = timeout_seconds
     
     def get_services_needing_shutdown(self) -> list[str]:
@@ -179,7 +173,6 @@ class IdleTimeoutTracker:
         Returns:
             Dict with last_request, idle_seconds, timeout, is_idle, total_requests
         """
-        service_id = str(ServiceKey(service_id))
         if service_id not in self._service_states:
             return {
                 "last_request": None,

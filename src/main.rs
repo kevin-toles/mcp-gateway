@@ -11,6 +11,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 
+mod config;
+mod registry;
+mod spawn;
+mod lifecycle;
+
 // Public port that clients (VS Code) connect to
 const SHIM_ADDR: &str = "127.0.0.1:8090";
 // Internal port where mcp-gateway actually listens
@@ -77,6 +82,17 @@ fn proxy(mut client: TcpStream) {
 }
 
 fn main() {
+    // ── Deployment mode detection and validation ──────────────────────────
+    let deployment_mode = config::DeploymentMode::from_env();
+    if let Err(e) = config::validate_config(&deployment_mode) {
+        eprintln!("shim: config validation failed: {}", e);
+        std::process::exit(1);
+    }
+    println!(
+        "shim-mcp-gateway: deployment_mode={:?}",
+        deployment_mode
+    );
+
     let idle_enabled = idle_timeout_enabled();
     println!(
         "shim-mcp-gateway: listening on {} (proxying to {} on demand, idle_timeout_enabled={})",
@@ -84,6 +100,23 @@ fn main() {
     );
 
     let listener = TcpListener::bind(SHIM_ADDR).expect("Failed to bind shim to port 8090");
+
+    // ── Startup scan: BOOT→COLD transition for registered services ────────
+    // Create a registry with Boot-tier entries and run the startup health scan.
+    // Services already responding are promoted to Cold immediately.
+    let registry = Arc::new(registry::ServiceRegistry::new());
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for lifecycle");
+    rt.block_on(async {
+        lifecycle::startup_scan(&registry).await;
+
+        // Spawn the HOT→WARM idle monitor as a background task.
+        // Runs periodically (IDLE_CHECK_INTERVAL_SECS) and transitions
+        // mcp-gateway to Warm if idle for HOT_IDLE_TIMEOUT_SECS.
+        let reg_for_idle = Arc::clone(&registry);
+        tokio::spawn(async move {
+            lifecycle::shim_idle_monitor(reg_for_idle).await;
+        });
+    });
 
     // ── Signal handling for graceful shutdown ──────────────────────────────
     // Uses a static AtomicBool so the signal handler (C ABI) can set it without
@@ -132,8 +165,23 @@ fn main() {
         match listener.accept() {
             Ok((client, _addr)) => {
                 let idle_enabled = idle_enabled;
+                let dm = deployment_mode.clone();
                 thread::spawn(move || {
                     let mut client = client;
+
+                    // In Docker mode, mcp-gateway is managed by the container runtime.
+                    // Skip native spawn entirely — the Python gateway runs in its own
+                    // container alongside or managed by Docker Compose restart policies.
+                    if dm == config::DeploymentMode::Docker {
+                        if !is_mcp_running() {
+                            let _ = client.write_all(
+                                b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway is not running (Docker mode)\n",
+                            );
+                        } else {
+                            proxy(client);
+                        }
+                        return;
+                    }
 
                     // Only start mcp-gateway on demand when idle timeout is enabled.
                     // When disabled, mcp-gateway is expected to already be running

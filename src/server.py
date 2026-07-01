@@ -60,6 +60,7 @@ from src.tools import (
     llm_complete,
     pattern_search,
     push_to_github,
+    rename_normalization,
     search_in,
     semantic_search,
 )
@@ -123,6 +124,8 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "find_code_pattern": find_code_pattern.create_handler,
     # WBS-F7: Foundation search (scientific / theoretical layer)
     "foundation_search": foundation_search.create_handler,
+    # WBS-RN: Rename normalization
+    "rename_normalization": rename_normalization.create_handler,
 }
 
 

@@ -29,7 +29,7 @@ from typing import Any, Optional
 import httpx
 
 from src.core.idle_timeout import get_tracker
-from src.core.config import ServiceKey, Settings
+from src.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +102,8 @@ class HealthAwareProxy:
             # Not a managed service, call directly
             return await self._call_direct(original_url, arguments)
         
-        # Record request for idle tracking (normalize to canonical key)
-        self._tracker.record_request(str(ServiceKey(service_key)))
+        # Record request for idle tracking
+        self._tracker.record_request(service_key)
         
         config = self.SERVICE_CONFIG.get(service_key, {})
         timeout = config.get("timeout", 2.0)
@@ -261,6 +261,8 @@ class HealthAwareProxy:
                 pass
             
             await asyncio.sleep(poll_interval)
+            
+            await asyncio.sleep(poll_interval)
     
     async def _call_backend(
         self,
@@ -353,9 +355,6 @@ class HealthAwareProxy:
             "context_management": "context_management",
             "amve_evaluate_fitness": "amve",
             "foundation_search": "foundation_search",
-            "inference": "inference",
-            "inference_complete": "inference",
-            "inference_embed": "inference",
         }
         
         return tool_to_service.get(tool_name)
@@ -376,8 +375,8 @@ class HealthAwareProxy:
         config = self.SERVICE_CONFIG[service_key]
         is_restarting = service_key in self._restarting
         
-        # Get idle status from tracker (normalize to canonical key)
-        idle_status = self._tracker.get_status(str(ServiceKey(service_key)))
+        # Get idle status from tracker
+        idle_status = self._tracker.get_status(service_key)
         
         return {
             "name": config["name"],

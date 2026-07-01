@@ -91,7 +91,8 @@ RUN chmod +x /usr/local/bin/start_mcp_gateway.sh && \
 # Make sure Python can find the venv
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app" \
-    MCP_GATEWAY_ENV_FILE="/app/config/idle_timeout.env"
+    MCP_GATEWAY_ENV_FILE="/app/config/idle_timeout.env" \
+    DEPLOYMENT_MODE=docker
 
 # Expose ports:
 #   8090 — Rust shim (cold-start proxy, primary entry point for clients)

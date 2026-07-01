@@ -23,9 +23,9 @@ from dataclasses import dataclass
 import httpx
 
 from src.ai_platform_metrics import TOOL_CALLS_TOTAL
-from src.core.config import Settings
+from src.core.config import SLA_TIMEOUT, ServiceKey, Settings
 from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeoutError
-from src.core.idle_timeout import get_tracker
+from src.core.idle_timeout import get_tracker, record_dispatch_for_promotion
 from src.resilience.circuit_breaker import CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class DispatchRoute:
 
     base_url: str
     path: str
-    timeout: float | None = 30.0
+    timeout: float | None = SLA_TIMEOUT
 
 
 @dataclass
@@ -68,58 +68,58 @@ class DispatchResult:
 # ── Route table builder ────────────────────────────────────────────────
 
 # Maps tool_name → human-friendly service name (for error messages)
-_TOOL_SERVICE_NAMES: dict[str, str] = {
-    "semantic_search": "semantic-search",
-    "hybrid_search": "semantic-search",
-    "graph_traverse": "semantic-search",
+_TOOL_SERVICE_NAMES: dict[str, ServiceKey] = {
+    "semantic_search": ServiceKey("semantic-search"),
+    "hybrid_search": ServiceKey("semantic-search"),
+    "graph_traverse": ServiceKey("semantic-search"),
     # Issue #6: consolidated KB tools
-    "knowledge_search": "semantic-search",
-    "knowledge_refine": "semantic-search",
-    "pattern_search": "semantic-search",
-    "code_analyze": "code-orchestrator",
-    "code_pattern_audit": "code-orchestrator",
-    "graph_query": "semantic-search",
-    "llm_complete": "llm-gateway",
-    "a2a_send_message": "ai-agents",
-    "a2a_get_task": "ai-agents",
-    "a2a_cancel_task": "ai-agents",
+    "knowledge_search": ServiceKey("semantic-search"),
+    "knowledge_refine": ServiceKey("semantic-search"),
+    "pattern_search": ServiceKey("semantic-search"),
+    "code_analyze": ServiceKey("code-orchestrator"),
+    "code_pattern_audit": ServiceKey("code-orchestrator"),
+    "graph_query": ServiceKey("semantic-search"),
+    "llm_complete": ServiceKey("llm-gateway"),
+    "a2a_send_message": ServiceKey("ai-agents"),
+    "a2a_get_task": ServiceKey("ai-agents"),
+    "a2a_cancel_task": ServiceKey("ai-agents"),
     # Workflow tools (WBS-WF6)
-    "convert_pdf_to_json": "code-orchestrator",
-    "extract_book_metadata": "code-orchestrator",
-    "batch_extract_metadata": "code-orchestrator",
-    "generate_taxonomy": "code-orchestrator",
-    "enrich_book_metadata": "code-orchestrator",
-    "batch_enrich_metadata": "code-orchestrator",
-    "enhance_guideline": "ai-agents",
+    "convert_pdf_to_json": ServiceKey("code-orchestrator"),
+    "extract_book_metadata": ServiceKey("code-orchestrator"),
+    "batch_extract_metadata": ServiceKey("code-orchestrator"),
+    "generate_taxonomy": ServiceKey("code-orchestrator"),
+    "enrich_book_metadata": ServiceKey("code-orchestrator"),
+    "batch_enrich_metadata": ServiceKey("code-orchestrator"),
+    "enhance_guideline": ServiceKey("ai-agents"),
     # Taxonomy Analysis (WBS-TAP9)
-    "analyze_taxonomy_coverage": "code-orchestrator",
+    "analyze_taxonomy_coverage": ServiceKey("code-orchestrator"),
     # AMVE tools (AEI-7)
-    "amve_detect_patterns": "amve",
-    "amve_detect_boundaries": "amve",
-    "amve_detect_communication": "amve",
-    "amve_build_call_graph": "amve",
-    "amve_evaluate_fitness": "amve",
-    "amve_generate_architecture_log": "amve",
+    "amve_detect_patterns": ServiceKey("amve"),
+    "amve_detect_boundaries": ServiceKey("amve"),
+    "amve_detect_communication": ServiceKey("amve"),
+    "amve_build_call_graph": ServiceKey("amve"),
+    "amve_evaluate_fitness": ServiceKey("amve"),
+    "amve_generate_architecture_log": ServiceKey("amve"),
     # AEI-17: Dead code detection
-    "amve_detect_dead_code": "amve",
+    "amve_detect_dead_code": ServiceKey("amve"),
     # Phase 2: Content-Addressed Snapshot Store tools
-    "amve_extract_architecture": "amve",
-    "amve_detect_drift": "amve",
+    "amve_extract_architecture": ServiceKey("amve"),
+    "amve_detect_drift": ServiceKey("amve"),
     # Audit Service (WBS-AEI13)
-    "audit_security_scan": "audit-service",
-    "audit_code_metrics": "audit-service",
-    "audit_corpus_search": "audit-service",
+    "audit_security_scan": ServiceKey("audit-service"),
+    "audit_code_metrics": ServiceKey("audit-service"),
+    "audit_corpus_search": ServiceKey("audit-service"),
     # AEI-18: Dependency assessment
-    "audit_dependency_assess": "audit-service",
+    "audit_dependency_assess": ServiceKey("audit-service"),
     # AEI-20: Resolution lookup
-    "audit_resolve_lookup": "audit-service",
+    "audit_resolve_lookup": ServiceKey("audit-service"),
     # AEI-23: VRE quarantine tools
-    "audit_search_exploits": "audit-service",
-    "audit_search_cves": "audit-service",
+    "audit_search_exploits": ServiceKey("audit-service"),
+    "audit_search_cves": ServiceKey("audit-service"),
     # WBS-F7: Foundation search (scientific / theoretical layer)
-    "foundation_search": "unified-search-rs",
-    # Inference (native C++ service)
-    "inference": "inference-service-cpp",
+    "foundation_search": ServiceKey("unified-search-service"),
+    # Item 36: inference-service-cpp (HWC F2, P0)
+    "inference": ServiceKey("inference-service-cpp"),
 }
 
 
@@ -320,13 +320,13 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         ),
         # WBS-F7: Foundation search (scientific / theoretical layer)
         "foundation_search": DispatchRoute(
-            base_url=settings.UNIFIED_SEARCH_RS_URL,
+            base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/foundation",
         ),
-        # Inference (C++ local inference service)
+        # Item 36: inference-service-cpp (HWC F2, P0)
         "inference": DispatchRoute(
             base_url=settings.INFERENCE_SERVICE_URL,
-            path="/health",
+            path="/v1/models",
         ),
     }
 
@@ -532,23 +532,15 @@ class ToolDispatcher:
             BackendUnavailableError: If the backend cannot be reached.
             CircuitOpenError: If the circuit breaker rejects the call.
         """
-        service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
-
-        # F10 (P0) — Record request for idle-timeout tracking.
-        # Executes before route validation so unknown tools are tracked too.
-        try:
-            get_tracker().record_request(service_name)
-        except Exception:
-            pass
-
         route = self.get_route(tool_name)
         if route is None:
             raise ValueError(f"Unknown tool: {tool_name}")
 
         path = path_override or route.path
         url = f"{route.base_url}{path}"
+        service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
         client = self._get_client(route.base_url)
-        cb = self._cb_registry.get(service_name)
+        cb = self._cb_registry.get(str(service_name))
 
         # G1.4 (GREEN) — Phase 1: Session Correlation
         # Build extra_headers with X-Session-ID when CORRELATION_ENABLED.
@@ -599,7 +591,7 @@ class ToolDispatcher:
             TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
             if last_exc is not None:
                 raise last_exc
-            raise BackendUnavailableError(service_name, _CONN_FAILED)
+            raise BackendUnavailableError(str(service_name), _CONN_FAILED)
 
         except CircuitOpenError:
             # P1-06: Circuit-open = request filtered before reaching backend
@@ -638,6 +630,10 @@ class ToolDispatcher:
                 )
 
             await cb.on_success()
+
+            # HWC-PY-1: Record successful dispatch for COLD→WARM promotion
+            record_dispatch_for_promotion(str(service_name))
+
             return DispatchResult(
                 status_code=response.status_code,
                 body=self._parse_body(response),
@@ -655,7 +651,7 @@ class ToolDispatcher:
 
         except (httpx.ConnectError, httpx.ConnectTimeout):
             await cb.on_failure()
-            exc = BackendUnavailableError(service_name, _CONN_FAILED)
+            exc = BackendUnavailableError(str(service_name), _CONN_FAILED)
             if attempt < attempts - 1:
                 await self._retry_delay(attempt, attempts, service_name, "Connection failed")
                 return None
@@ -671,7 +667,7 @@ class ToolDispatcher:
     ) -> None:
         """Handle a retryable HTTP status code; raise on final attempt."""
         await cb.on_failure()
-        exc = BackendUnavailableError(service_name, f"HTTP {status_code}")
+        exc = BackendUnavailableError(str(service_name), f"HTTP {status_code}")
         if attempt < attempts - 1:
             await self._retry_delay(
                 attempt,
@@ -710,7 +706,7 @@ class ToolDispatcher:
         url = f"{route.base_url}{route.path}"
         service_name = _TOOL_SERVICE_NAMES.get(tool_name, tool_name)
         client = self._get_client(route.base_url)
-        cb = self._cb_registry.get(service_name)
+        cb = self._cb_registry.get(str(service_name))
 
         await self._check_circuit_breaker(cb)
 
@@ -727,7 +723,7 @@ class ToolDispatcher:
                     yield line
         except (httpx.ConnectError, httpx.ConnectTimeout) as err:
             await cb.on_failure()
-            raise BackendUnavailableError(service_name, "Connection failed") from err
+            raise BackendUnavailableError(str(service_name), "Connection failed") from err
         except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as err:
             await cb.on_failure()
             raise ToolTimeoutError(tool_name, route.timeout or 0.0) from err

@@ -39,8 +39,6 @@ class Settings(BaseSettings):
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
     AUDIT_SERVICE_URL: str = "http://localhost:8084"
     AMVE_SERVICE_URL: str = "http://localhost:8088"
-    CONTEXT_MANAGEMENT_URL: str = "http://localhost:8086"
-    INFERENCE_SERVICE_URL: str = "http://localhost:8085"
 
     # ── Code-Orchestrator lifecycle policy (hot/warm/cold) ──────────
     # Central source of truth for CO startup behavior used by gateway restarts.
@@ -81,10 +79,6 @@ class Settings(BaseSettings):
     DISPATCH_MAX_RETRIES: int = 2  # Max retry attempts for transient failures
     DISPATCH_RETRY_BASE_DELAY: float = 0.5  # Base delay in seconds (exponential backoff)
 
-    # ── Idle Timeout / Shutdown (K8s Patterns Ch8) ─────────────
-    IDLE_TIMEOUT_ENABLED: bool = True  # Enable background idle-timeout checker
-    IDLE_TIMEOUT_CHECK_INTERVAL: int = 60  # Seconds between idle checks
-
     # ── Audit ───────────────────────────────────────────────────────
     AUDIT_LOG_PATH: str = "logs/audit.jsonl"
 
@@ -110,88 +104,6 @@ class Settings(BaseSettings):
             "/Users/kevintoles/POC/Code-Orchestrator-Service/.venv/bin/uvicorn "
             "src.main:app --host 0.0.0.0 --port 8083"
         )
-
-    @property
-    def SERVICE_SHUTDOWN_COMMANDS(self) -> dict[str, dict[str, object]]:
-        """Structured per-service shutdown configs (K8s Patterns Ch8).
-
-        Each entry contains:
-          kill_signal         — Signal sent first (SIGTERM for graceful)
-          grace_period_seconds— Wait after SIGTERM before SIGKILL
-          command             — Shell command to execute
-          health_check        — How to verify the process is gone
-        """
-        return {
-            "unified-search-service": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8081' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8081' 2>/dev/null || true",
-            },
-            "unified-search-rs": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8089' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8089' 2>/dev/null || true",
-            },
-            "code-orchestrator": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8083' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8083' 2>/dev/null || true",
-            },
-            "llm-gateway": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8080' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8080' 2>/dev/null || true",
-            },
-            "ai-agents": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8082' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8082' 2>/dev/null || true",
-            },
-            "audit-service": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8084' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8084' 2>/dev/null || true",
-            },
-            "context-management-service": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8086' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8086' 2>/dev/null || true",
-            },
-            "amve": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM -f 'uvicorn.*8088' 2>/dev/null",
-                "health_check": "pkill -SIGKILL -f 'uvicorn.*8088' 2>/dev/null || true",
-            },
-            "inference-service-cpp": {
-                "kill_signal": "SIGTERM",
-                "grace_period_seconds": 30,
-                "command": "pkill -SIGTERM inference-service 2>/dev/null",
-                "health_check": "pkill -SIGKILL inference-service 2>/dev/null || true",
-            },
-        }
-
-    @property
-    def SHUTDOWN_TEMPLATES(self) -> dict[str, str]:
-        """Service-type shutdown templates (F4).
-
-        Maps service binary type to a parameterised pkill template.
-        Consumers call ``.format(port=N)`` or ``.format(process=NAME)``.
-        """
-        return {
-            "python_uvicorn": "pkill -SIGTERM -f 'uvicorn.*{port}' 2>/dev/null",
-            "rust_binary": "kill $(lsof -ti:{port}) 2>/dev/null || true",
-            "cpp_binary": "kill $(lsof -ti:{port}) 2>/dev/null || true",
-            "go_binary": "kill $(lsof -ti:{port}) 2>/dev/null || true",
-            "docker": "docker stop {container_name} 2>/dev/null || true",
-        }
 
     @property
     def HEALTH_PROXY_SERVICE_CONFIG(self) -> dict[str, dict[str, object]]:
@@ -259,10 +171,10 @@ class Settings(BaseSettings):
             },
             "context_management": {
                 "name": "context-management-service",
-                "url": self.CONTEXT_MANAGEMENT_URL,
+                "url": "http://localhost:8086",
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "cd /Users/kevintoles/POC/context-management-service && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8086",
-                "timeout": 8.0,
+                "timeout": 2.0,
             },
             "amve_evaluate_fitness": {
                 "name": "amve",
@@ -280,10 +192,10 @@ class Settings(BaseSettings):
             },
             "inference": {
                 "name": "inference-service-cpp",
-                "url": self.INFERENCE_SERVICE_URL,
+                "url": "http://localhost:8085",
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "cd /Users/kevintoles/POC/inference-service-cpp && ./build/inference-service",
-                "timeout": 10.0,
+                "timeout": 2.0,
             },
         }
 
@@ -313,41 +225,3 @@ def get_ssl_config(settings: Settings) -> dict | None:
         "ssl_certfile": str(cert_path),
         "ssl_keyfile": str(key_path),
     }
-
-
-class ServiceKey:
-    """Canonical service key with automatic underscore-to-hyphen normalisation.
-
-    MCP tool-to-service mapping (``_tool_to_service``) historically returns
-    underscore-formatted keys (``"semantic_search"``), while shutdown
-    commands, timeouts, and service configs all use hyphen keys
-    (``"semantic-search"``).  This wrapper normalises at every boundary
-    so lookups always match.
-
-    Usage::
-
-        key = ServiceKey("semantic_search")
-        str(key)           # → "semantic-search"
-        key == "semantic-search"   # → True
-        commands.get(key)          # → matches hyphen entry
-        SERVICE_TIMEOUTS.get(key)  # → matches hyphen entry
-    """
-
-    def __init__(self, key: str) -> None:
-        self._key = key.replace("_", "-")
-
-    def __str__(self) -> str:
-        return self._key
-
-    def __repr__(self) -> str:
-        return f"ServiceKey({self._key!r})"
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, ServiceKey):
-            return self._key == other._key
-        if isinstance(other, str):
-            return self._key == other
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        return hash(self._key)
