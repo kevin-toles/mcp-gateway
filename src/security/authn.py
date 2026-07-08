@@ -20,9 +20,8 @@ from typing import Any
 import httpx
 from jose import JWTError
 from jose import jwt as jose_jwt
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 
 from src.core.config import Settings
 
@@ -212,39 +211,55 @@ async def validate_token(
 # ── Middleware ───────────────────────────────────────────────────────────
 
 
-class OIDCAuthMiddleware(BaseHTTPMiddleware):
+class OIDCAuthMiddleware:
     """Starlette middleware that validates JWTs on every request.
 
     - Excluded paths (e.g. ``/health``) bypass validation entirely.
     - When ``AUTH_ENABLED=false``, all requests pass with an anonymous
       ``AuthenticatedUser`` attached to ``request.state.auth``.
     - Auth success/failure tracked via ``auth_metrics``.
+
+    Raw ASGI implementation avoids BaseHTTPMiddleware anyio buffer wrapping
+    that breaks SSE streams under Starlette 0.52+.
     """
 
     def __init__(self, app: Any, settings: Settings) -> None:
-        super().__init__(app)
+        self.app = app
         self.settings = settings
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # ── Public paths — always allowed ───────────────────────────
-        if request.url.path in _PUBLIC_PATHS or request.url.path.startswith(_SSE_PREFIX):
-            return await call_next(request)
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+
+        # ── Public paths and SSE — always allowed ───────────────────
+        if path in _PUBLIC_PATHS or path.startswith(_SSE_PREFIX):
+            await self.app(scope, receive, send)
+            return
+
+        # Use Request for convenient header access and state mutation
+        request = Request(scope, receive)
 
         # ── Dev-mode bypass (AC-3.7) ────────────────────────────────
         if not self.settings.AUTH_ENABLED:
             request.state.auth = AuthenticatedUser.anonymous()
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         # ── Extract bearer token ────────────────────────────────────
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             auth_metrics.record_rejection()
-            return _unauthorized("Missing or malformed Authorization header")
+            await _unauthorized("Missing or malformed Authorization header")(scope, receive, send)
+            return
 
         token = auth_header[len("Bearer ") :]
         if not token or not token.strip():
             auth_metrics.record_rejection()
-            return _unauthorized("Empty bearer token")
+            await _unauthorized("Empty bearer token")(scope, receive, send)
+            return
 
         # ── Validate ────────────────────────────────────────────────
         try:
@@ -256,7 +271,8 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
             )
         except Exception:
             auth_metrics.record_rejection()
-            return _unauthorized("Invalid or expired token")
+            await _unauthorized("Invalid or expired token")(scope, receive, send)
+            return
 
         # ── Attach to request state (AC-3.8) ────────────────────────
         auth_metrics.record_validation()
@@ -269,7 +285,7 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
             raw_claims=claims,
         )
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
 
 def _unauthorized(detail: str) -> JSONResponse:

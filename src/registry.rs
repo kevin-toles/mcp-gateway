@@ -51,6 +51,7 @@ pub const FAILURE_DEMOTION_THRESHOLD: u32 = 5;
 pub struct ServiceEntry {
     pub name: String,
     pub port: u16,
+    pub health_port: u16, // 0 means use port
     pub tier: ActivationTier,
     pub runtime: ServiceRuntime,
     pub health_path: String,
@@ -63,6 +64,14 @@ pub struct ServiceEntry {
     /// Timestamps of recent requests for COLD→WARM auto-promotion (RS-4).
     /// Pruned to retain only entries within COLD_PROMOTION_WINDOW_SECS.
     pub request_timestamps: VecDeque<Instant>,
+}
+
+impl ServiceEntry {
+    /// Returns the number of seconds since the last request, or `None` if
+    /// no request has ever been recorded.
+    pub fn last_request_elapsed_secs(&self) -> Option<f64> {
+        self.last_request.map(|t| t.elapsed().as_secs_f64())
+    }
 }
 
 /// Thread-safe in-memory registry for all platform service entries.
@@ -131,6 +140,12 @@ impl ServiceRegistry {
     }
 
     pub fn update_health(&self, name: &str, state: HealthState) {
+        // Record last_request when healthy so idle timers measure from
+        // the most recent health-check success, not from registration.
+        if matches!(state, HealthState::Healthy) {
+            self.record_request(name);
+        }
+
         let mut entries = self.entries.write().unwrap();
         if let Some(entry) = entries.get_mut(name) {
             // Reset failure count on healthy; apply threshold demotion on failure
@@ -178,6 +193,7 @@ mod tests {
         ServiceEntry {
             name: name.to_string(),
             port,
+            health_port: 0,
             tier,
             runtime: ServiceRuntime::Auto,
             health_path: "/health".to_string(),

@@ -16,7 +16,13 @@ from src.models import schemas
 
 # Facade models use max_results as their external parameter name by design.
 # They do not participate in the limit/top_k dual-parameter pattern.
-_FACADE_MODEL_EXCLUSIONS = {"AskInput", "SearchInInput", "FindCodePatternInput"}
+_FACADE_MODEL_EXCLUSIONS = {
+    "AskInput",
+    "SearchInInput",
+    "FindCodePatternInput",
+    # CVE database query tool — uses PostgreSQL limit, not semantic search top_k pattern
+    "AuditSearchCVEsInput",
+}
 
 
 def _get_all_search_input_models() -> list[tuple[str, type[BaseModel]]]:

@@ -57,7 +57,7 @@ class CircuitBreaker:
         self,
         name: str,
         failure_threshold: int = 5,
-        recovery_timeout: float = 30.0,
+        recovery_timeout: float = 5.0,
         half_open_max: int = 1,
     ) -> None:
         self.name = name
@@ -167,7 +167,7 @@ class CircuitBreakerRegistry:
 
     Usage::
 
-        registry = CircuitBreakerRegistry(threshold=5, recovery=30.0)
+        registry = CircuitBreakerRegistry(threshold=5, recovery=5.0)
         cb = registry.get("semantic-search")
         await cb.pre_check()
         # ... dispatch ...
@@ -177,7 +177,7 @@ class CircuitBreakerRegistry:
     def __init__(
         self,
         failure_threshold: int = 5,
-        recovery_timeout: float = 30.0,
+        recovery_timeout: float = 5.0,
         half_open_max: int = 1,
     ) -> None:
         self._threshold = failure_threshold

@@ -2,205 +2,229 @@
 # Defines all platform tools with metadata for MCP protocol registration.
 # ai-agents A2A tools bridge MCP → A2A → Temporal for durable agent execution.
 # Reference: Strategy §4.1, §6.3 (Dynamic Tool Listing), AC-8.4
+#
+# TIERS:  gold   = primary tool, full feature set, preferred path
+#         silver = secondary tool, specific use case, or audit/analysis
+#         bronze = utility / facade / lower-complexity tool
+#         internal = do not expose to LLMs directly; for platform debugging only
+#
+# DEPRECATION: tools tagged [deprecated] are shell stubs pointing to replacements.
+# PENDING:     tools tagged [pending] are pre-wired for future service endpoints.
+
 tools:
+
+  # ── KB Search — INTERNAL (facade tools below are the LLM-facing path) ──────
   - name: semantic_search
-    description: "Search across code, documentation, and textbooks using semantic similarity"
-    when_to_use: "Low-level vector search. Use when you need exact collection targeting and threshold control with no fusion."
+    description: "[INTERNAL] Raw Qdrant semantic vector search without taxonomy expansion or collection routing. Path changes at unified-search-rs cutover (/v1/search → /search). Use ask or knowledge_search instead."
+    when_to_use: "INTERNAL ONLY. Do not call from skills or LLM workflows. Use ask for general queries, knowledge_search for broad KB retrieval."
     tier: bronze
-    tags: [search, rag]
+    tags: [search, rag, internal]
 
   - name: hybrid_search
-    description: "Combines semantic search with keyword matching for better precision"
-    when_to_use: "Expert use only — use ask/search_in/find_code_pattern instead. Call directly only when you need to tune semantic_weight, bloom_tier_boost, or other routing internals."
+    description: "[INTERNAL] Raw hybrid semantic+keyword search. All facade tools (knowledge_search, knowledge_refine, pattern_search, diagram_search) already dispatch to this endpoint internally. Calling it directly bypasses taxonomy expansion and collection routing."
+    when_to_use: "INTERNAL ONLY. Do not call from skills or LLM workflows. Use knowledge_search or knowledge_refine instead."
     tier: bronze
-    tags: [search, rag]
+    tags: [search, rag, internal]
+
+  # ── KB Search Facade — Graph Tools (Python USS :8081 · pending Rust :8089) ──
+  - name: graph_query
+    description: "Query the Neo4j knowledge graph using read-only Cypher. Returns nodes, edges, and relationship properties. Use for precise topology lookups: service dependencies, concept links, pattern membership. Requires unified-search (:8081). NOTE: no standalone graph API in unified-search-rs — see uss_graph_query [pending]."
+    when_to_use: "Use when the question is relational: 'what services depend on X?', 'show all concepts linked to Y'. Pairs with graph_traverse for neighborhood expansion. Part of W-6 (Graph-Grounded KB Research)."
+    tier: gold
+    tags: [graph, query, neo4j]
 
   - name: graph_traverse
-    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes"
+    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes. BFS explores depth-first; MMR maximizes result diversity. Requires unified-search (:8081). NOTE: no standalone graph API in unified-search-rs — see uss_graph_traverse [pending]."
+    when_to_use: "Use when a start node is known and you need the full neighborhood. Follow with knowledge_refine to hydrate KB chunks for the nodes found. Part of W-6 (Graph-Grounded KB Research)."
     tier: silver
-    tags: [graph, traversal, rag]
+    tags: [graph, traversal, neo4j]
 
-  # Issue #6: consolidated KB tools (knowledge_search / knowledge_refine / pattern_search)
+  # ── KB Search Facade — Direct Tools ─────────────────────────────────────────
   - name: knowledge_search
-    description: "Batteries-included KB search across all collections (chapters, code, patterns) with taxonomy expansion ON by default. Use for broad knowledge retrieval."
-    when_to_use: "Expert use only — exposes expand_taxonomy, mmr_rerank, bloom_tier_filter. Use ask facade instead for general questions."
+    description: "Broad KB search across all collections (chapters, code_chunks, passages, pattern_instances, code_good_patterns, code_bad_patterns, ascii_diagrams, repo_concepts) with taxonomy expansion ON by default. Hybrid semantic+keyword fusion. Requires unified-search (:8081)."
+    when_to_use: "Use for broad knowledge retrieval when you don't know which collection has the answer. First-pass research. Prefer ask facade for single natural-language questions. Part of W-1, W-2, W-9."
     tier: bronze
     tags: [search, rag, knowledge]
 
   - name: knowledge_refine
-    description: "Targeted single-collection KB search with optional Bloom or CRE tier filters. Use when you know which collection has the relevant content."
-    when_to_use: "Expert use only — collection-scoped with mmr controls. Use search_in facade for standard shelf queries."
+    description: "Targeted single-collection KB search with optional Bloom tier or CRE tier filter. Bypasses taxonomy expansion for precision. Requires unified-search (:8081)."
+    when_to_use: "Use after knowledge_search or graph_traverse has identified the right collection and you need depth not breadth. Part of W-1 (step 2), W-6 (step 3)."
     tier: bronze
     tags: [search, rag, knowledge]
 
   - name: pattern_search
-    description: "Code pattern and anti-pattern retrieval. Searches code_good_patterns, pattern_instances, or all collections. Use to find design patterns, code smells, or best-practice examples."
-    when_to_use: "Use find_code_pattern facade for standard code example queries. Use pattern_search directly only when you need pattern_type control beyond good/bad/both."
+    description: "Code pattern and anti-pattern retrieval across pattern_instances, code_good_patterns, and code_bad_patterns collections. Broader than find_code_pattern — returns all pattern types. Requires unified-search (:8081)."
+    when_to_use: "Use when discovering all pattern references across the corpus, including partial matches. Use find_code_pattern for targeted good/bad example retrieval. Part of W-7."
     tier: bronze
     tags: [search, rag, patterns, code]
 
   - name: diagram_search
-    description: "Semantic search over KB architecture diagrams (ASCII art, sequence diagrams, flow charts) using CLIP cross-modal encoding. Use to find visual representations of architectural concepts, design patterns, or system interactions."
-    when_to_use: "Architecture diagram search. Use directly — no facade equivalent needed."
+    description: "Semantic search over the ascii_diagrams collection using CLIP cross-modal encoding (512-dim). Finds ASCII art, sequence diagrams, flow charts, and architecture diagrams by concept. Requires unified-search (:8081) with CLIP encoder enabled."
+    when_to_use: "Use to find visual representations of architectural concepts, design patterns, or system interactions. Part of W-8 (Diagram-First Architecture Research)."
     tier: bronze
-    tags: [search, rag, diagrams, architecture]
+    tags: [search, rag, diagrams, architecture, clip]
 
+  - name: foundation_search
+    description: "Search the scientific foundation layer for mathematical, statistical, or theoretical underpinnings of software concepts. Requires unified-search (:8081). WARNING: path renames to /v1/search/scientific at unified-search-rs cutover — see uss_scientific_search [pending]."
+    when_to_use: "Use when a question requires first-principles reasoning, formal proofs, convergence analysis, or theoretical grounding beyond what the software KB provides. Part of W-6."
+    tier: bronze
+    tags: [search, foundation, scientific]
+
+  # ── KB Search — Facade Entry Points ─────────────────────────────────────────
+  - name: ask
+    description: >
+      General software-engineering question answered from the KB.
+      Default entry point — automatically selects collections and query strategy.
+      Supports optional difficulty hint ("beginner", "intermediate", "advanced")
+      to constrain Bloom taxonomy tier. Requires unified-search (:8081).
+    when_to_use: "Default starting point for any general or cross-cutting question. Start here, narrow with search_in or knowledge_refine if needed. Part of W-1, W-9."
+    tier: bronze
+    tags: [search, rag, facade]
+
+  - name: search_in
+    description: >
+      Targeted search within a specific knowledge shelf.
+      Shelf options: "textbooks" (concept explanations from chapters/passages),
+      "code" (implementation examples from code_chunks/textbook_code),
+      "patterns" (design patterns from pattern_instances/code_good_patterns/code_bad_patterns),
+      "diagrams" (architecture diagrams from ascii_diagrams).
+      Requires unified-search (:8081).
+    when_to_use: "Use when the content type is known but the exact collection is not. More precise than ask, broader than knowledge_refine. Part of W-1 (step 1.5)."
+    tier: bronze
+    tags: [search, rag, facade]
+
+  - name: find_code_pattern
+    description: >
+      Find concrete code examples for a software practice or pattern.
+      examples="good" returns correct implementations from code_good_patterns;
+      "bad" returns anti-patterns from code_bad_patterns; "both" returns both for comparison.
+      Requires unified-search (:8081).
+    when_to_use: "Use when you need concrete code, not conceptual explanation. Pairs with code_pattern_audit (find the problem, find the fix). Part of W-7, W-9."
+    tier: bronze
+    tags: [search, rag, facade, code, patterns]
+
+  # ── Code Analysis (audit-service :8084) ─────────────────────────────────────
   - name: code_analyze
-    description: "Analyze code for patterns, complexity, dependencies, and quality metrics"
+    description: "Analyze a code file or snippet for patterns, complexity, dependencies, and quality metrics using audit-service pattern detection. Lighter than audit_codebase_scan — scoped to specific files. Requires audit-service (:8084)."
+    when_to_use: "Quick analysis of a specific file or function. Use audit_codebase_scan for full-repo analysis. Part of W-7 (lightweight), W-9 (analysis phase)."
     tier: silver
-    tags: [code, analysis]
+    tags: [code, analysis, audit]
 
   - name: code_pattern_audit
-    description: "Detect code anti-patterns using dual-net detection with confidence scoring"
+    description: "Detect code anti-patterns using dual-net detection with confidence scoring. Returns anti-pattern classifications with evidence and confidence. Requires audit-service (:8084)."
+    when_to_use: "Identify code smells and anti-patterns in a snippet or file. Pair with find_code_pattern(examples=good) to immediately surface correct alternatives. Part of W-7 (step 2)."
     tier: silver
-    tags: [code, audit]
+    tags: [code, audit, antipatterns]
 
-  - name: graph_query
-    description: "Query the Neo4j knowledge graph using Cypher (read-only)"
-    tier: gold
-    tags: [graph, query]
-
+  # ── LLM & Agent Tools ────────────────────────────────────────────────────────
   - name: llm_complete
-    description: "Generate LLM completion with tiered fallback (local → cloud)"
+    description: "Generate an LLM completion with tiered fallback: local model (inference-service-cpp :8085) → cloud model (llm-gateway :8080). Accepts messages array, temperature, max_tokens. Used when a tool chain needs an LLM reasoning step."
+    when_to_use: "Use for direct LLM calls from within a tool chain. Prefer a2a_send_message for complex multi-agent workflows. Local tier is fully offline-capable."
     tier: gold
-    tags: [llm, completion]
+    tags: [llm, completion, inference]
 
-  # ── A2A Protocol Tools (MCP ↔ A2A ↔ Temporal bridge) ──────────────
-
+  # ── A2A Protocol Tools (MCP ↔ A2A ↔ Temporal bridge) ────────────────────────
   - name: a2a_send_message
-    description: "Send a message to an AI agent via A2A protocol. Creates a durable task routed through Temporal workflows when available."
+    description: "Send a message to an AI agent via A2A protocol. Creates a durable task routed through Temporal workflows when available. Supported protocols: PIPELINE_PROTOCOL, TROUBLESHOOTING_LOOP, ARCHITECTURE_RECONCILIATION, DEBATE_PROTOCOL, ROUNDTABLE_DISCUSSION, FIVE_LLM_DISCUSSION, WBS_GENERATION, RENAME_NORMALIZATION. Requires ai-agents (:8082)."
+    when_to_use: "Use to spawn multi-LLM collaborative workflows. Returns a task_id — poll with a2a_get_task. Part of W-12 (Platform-Wide Audit)."
     tier: gold
     tags: [a2a, agent, temporal]
 
   - name: a2a_get_task
-    description: "Get the status and results of an A2A agent task by its ID"
+    description: "Get the status and results of an A2A agent task by its ID. Returns task state (pending/running/completed/failed), partial results, and completion data. Requires ai-agents (:8082)."
+    when_to_use: "Poll after a2a_send_message. Retry with backoff — tasks can take minutes for multi-LLM protocols."
     tier: bronze
     tags: [a2a, agent, status]
 
   - name: a2a_cancel_task
-    description: "Cancel a running A2A agent task by its ID"
+    description: "Cancel a running A2A agent task by its ID. Terminates the Temporal workflow if active. Requires ai-agents (:8082)."
+    when_to_use: "Emergency stop for a runaway or stale agent workflow."
     tier: silver
     tags: [a2a, agent, cancel]
 
-  # ── Workflow tools (WBS-WF6) ──────────────────────────────────────
-  - name: convert_pdf_to_json
-    description: "Convert a PDF file to structured JSON. Extracts text per page with optional OCR fallback and detects chapters. Requires code-orchestrator (:8083)."
+  # ── PDF & Data Pipeline Workflows (code-orchestrator :8083) ─────────────────
+  - name: convert_pdf
+    description: "Convert a PDF file to structured JSON. Extracts text per page with optional OCR fallback, detects chapter boundaries. Timeout 900s. Requires code-orchestrator (:8083). Step 1 of the book ingestion pipeline."
+    when_to_use: "Use before extract_book_metadata. Input: local PDF path. Output: per-page JSON with chapter detection. Part of /pdf2json and /github-pdf skills."
     tier: gold
     tags: [workflow, pdf, conversion]
 
   - name: extract_book_metadata
-    description: "Extract metadata, keywords, concepts, and code blocks from a book JSON file. Requires code-orchestrator (:8083)."
+    description: "Extract metadata, keywords, concepts, and code blocks from a book JSON file produced by convert_pdf. Requires code-orchestrator (:8083). Step 2 of book ingestion pipeline."
+    when_to_use: "Use after convert_pdf. Transforms raw page JSON into structured book metadata. Feeds enrich_book_metadata. Part of /metadata-extract skill."
     tier: gold
     tags: [workflow, extraction, metadata]
 
   - name: batch_extract_metadata
-    description: "Extract metadata from all books in a directory with live progress reporting. Processes each book sequentially through CO, reporting book-by-book progress. Requires code-orchestrator (:8083)."
+    description: "Extract metadata from all books in a directory with live progress reporting. Processes each book sequentially through code-orchestrator, reporting book-by-book progress. Requires code-orchestrator (:8083)."
+    when_to_use: "Use for bulk ingestion of an entire PDF library in one call. Handles sequencing automatically."
     tier: gold
     tags: [workflow, extraction, metadata, batch]
 
   - name: generate_taxonomy
-    description: "Build full taxonomy from enriched corpus (*_enriched.json files). Aggregates keywords/concepts per book, applies quality gates, infers Bloom tiers, and writes uber_taxonomy format (metadata + concept_categories + tiers). Pass enriched_dir and optional output_path. Requires code-orchestrator (:8083)."
+    description: "Build full taxonomy from enriched corpus (*_enriched.json files). Aggregates keywords/concepts per book, applies quality gates, infers Bloom tiers, writes uber_taxonomy format (metadata + concept_categories + tiers). Requires code-orchestrator (:8083). Step 4 of ingestion pipeline."
+    when_to_use: "Use after batch_enrich_metadata to build or refresh the platform taxonomy. Part of /taxonomy skill."
     tier: gold
     tags: [workflow, taxonomy, concepts, enriched]
 
   - name: enrich_book_metadata
-    description: "Enrich a single book's extracted metadata to DMA-§2.3 format via CO pipeline (keywords/concepts/classify/similarity/topics). No ai-agents dependency. Requires code-orchestrator (:8083)."
+    description: "Enrich a single book's extracted metadata to DMA-§2.3 format: keywords, concepts, classify, similarity, topics. No ai-agents dependency (direct CO pipeline). Requires code-orchestrator (:8083). Step 3 of ingestion pipeline."
+    when_to_use: "Use after extract_book_metadata. Transforms raw metadata into enriched, taxonomy-aligned form. Part of /metadata-enrich skill."
     tier: gold
     tags: [workflow, enrichment, dma, direct_co]
 
   - name: batch_enrich_metadata
-    description: "Batch-enrich all *_metadata.json files in a directory to DMA-§2.3 format. Accepts metadata_dir, output_dir, taxonomy_path, resume, limit, book filter. Requires code-orchestrator (:8083)."
+    description: "Batch-enrich all *_metadata.json files in a directory to DMA-§2.3 format. Accepts metadata_dir, output_dir, taxonomy_path, resume, limit, book filter. No timeout — can take 90+ min for 554 books. Requires code-orchestrator (:8083)."
+    when_to_use: "Use for full-library enrichment. Set resume=true to continue interrupted runs."
     tier: gold
     tags: [workflow, enrichment, batch, dma, direct_co]
 
   - name: enhance_guideline
-    description: "Enhance a guideline's chapters via LLM with cross-book context. Requires ai-agents (:8082)."
+    description: "Enhance a guideline's chapters via LLM with cross-book context injection. Requires ai-agents (:8082). NOTE: belongs to the AI metadata pipeline — not a platform status or search tool."
+    when_to_use: "Use to improve guideline quality by enriching chapters with relevant KB context. Part of /metadata-enrich skill."
     tier: gold
-    tags: [workflow, enhancement, llm]
+    tags: [workflow, enhancement, llm, ai-agents]
 
   - name: push_to_github
-    description: "Upload one or more local files to a GitHub repository. Routing is automatic by file size: <30MB uses the GitHub Git Data API (pure HTTPS, no git), 30-100MB also uses the Git Data API, >100MB uses git-lfs push. Accepts a list of absolute file paths, a target repo (owner/name), and a destination directory inside the repo. Launches a Terminal.app window for live progress. Monitor: tail -f /tmp/push_github_latest.log"
+    description: "Upload one or more local files to a GitHub repository. Auto-routes by file size: <30MB uses GitHub Git Data API (pure HTTPS, no git), 30–100MB also uses Git Data API, >100MB uses git-lfs push. Accepts file paths[], target repo (owner/name), and destination directory. Launches Terminal.app window for live progress. Monitor: tail -f /tmp/push_github_latest.log"
+    when_to_use: "Use to push PDFs, enriched JSON, or large binary assets to CRE GitHub repo without a local git client. Last step in the ingestion pipeline."
     tier: gold
     tags: [workflow, github, upload, pdf, git]
 
-  # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────
+  # ── Taxonomy Analysis (WBS-TAP9) ─────────────────────────────────────────────
   - name: analyze_taxonomy_coverage
-    description: "Analyze taxonomy coverage against the knowledge base. Runs full INGEST→GENERATE→SEARCH→SCORE→REPORT pipeline. Requires code-orchestrator (:8083)."
+    description: "Analyze taxonomy coverage against the knowledge base. Runs full INGEST→GENERATE→SEARCH→SCORE→REPORT pipeline. Audits whether seeded KB collections cover taxonomy concepts. Requires code-orchestrator (:8083)."
+    when_to_use: "Use after generate_taxonomy to validate KB coverage. Produces a gap analysis report. Part of /taxonomy and /taxonomy-impact skills."
     tier: gold
     tags: [workflow, taxonomy, analysis, coverage]
 
-  # ── AMVE Architecture Analysis (AEI-7) ────────────────────────────────
-  - name: amve_detect_patterns
-    description: "Detect architecture patterns in source code via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, patterns, analysis]
-
-  - name: amve_detect_boundaries
-    description: "Detect service boundaries in source code via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, boundaries, analysis]
-
-  - name: amve_detect_communication
-    description: "Detect event-driven and message bus patterns with scope routing via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, communication, events, messaging]
-
-  - name: amve_build_call_graph
-    description: "Build call graph from source code via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, call-graph, analysis]
-
-  - name: amve_evaluate_fitness
-    description: "Evaluate architecture fitness functions against a snapshot via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, fitness, evaluation]
-
-  - name: amve_generate_architecture_log
-    description: "Generate architecture log via batch scan with optional baseline comparison via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, batch-scan, baseline]
-
-  # AEI-17: Dead Code Detection
-  - name: amve_detect_dead_code
-    description: "Detect dead code (unused functions + unused imports) in a source tree via AMVE. Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, dead-code, unused-imports]
-
-  # Phase 2: Content-Addressed Snapshot Store (flag: SNAPSHOT_STORE_ENABLED)
-  - name: amve_extract_architecture
-    description: "Extract architecture snapshot from source code and compute a content-addressed SHA-256 fingerprint. Returns snapshot_sha, record_count, source_path, extraction_time_ms. Requires AMVE service (:8088) and SNAPSHOT_STORE_ENABLED=true."
-    tier: gold
-    tags: [amve, architecture, snapshot, sha, content-addressed]
-
-  - name: amve_detect_drift
-    description: "Detect architectural drift between two snapshots. Accepts SHA-pair mode (snapshot_a_sha + snapshot_b_sha retrieved from Redis stream) or raw-dict passthrough mode (snapshot_a + snapshot_b dicts). Requires AMVE service (:8088)."
-    tier: gold
-    tags: [amve, architecture, drift, snapshot, comparison]
-
-  # ── Audit Service Tools (WBS-AEI13) ─────────────────────────────────────
+  # ── Audit Service Tools (audit-service :8084) ─────────────────────────────────
   - name: audit_security_scan
-    description: "Scan source code for security vulnerabilities using regex, AST, and semantic detection. Requires audit-service (:8084)."
+    description: "Scan source code for security vulnerabilities using regex, AST pattern matching, and semantic detection. Returns findings with severity, location, and CWE mapping. Requires audit-service (:8084)."
+    when_to_use: "Security review before deployment or PR merge. Pair with audit_search_cves to enrich findings. Part of W-2 (step 5), W-10 (step 1)."
     tier: silver
     tags: [audit, security, code]
 
   - name: audit_code_metrics
-    description: "Compute structural, architectural, and eloquence pillar scores for source code. Requires audit-service (:8084)."
+    description: "Compute structural metrics (cyclomatic complexity, coupling, cohesion), architectural metrics, and eloquence pillar scores for source code. Requires audit-service (:8084)."
+    when_to_use: "Use for baseline quality measurement, tech debt tracking, and compliance reporting. Part of W-2 (step 5), W-5 (quality gate)."
     tier: silver
     tags: [audit, metrics, code]
 
   - name: audit_corpus_search
-    description: "Search the code corpus and textbook chapters using Qdrant vector similarity. Requires audit-service (:8084)."
+    description: "Search the code corpus and textbook chapters using Qdrant vector similarity from within audit-service. Returns semantically similar code and explanations. Requires audit-service (:8084)."
+    when_to_use: "Use to find prior art for a pattern under review, or cross-reference audit findings against textbook examples. Part of W-7 (step 3)."
     tier: gold
     tags: [audit, search, rag]
 
-
   - name: audit_dependency_assess
     description: >
-      Analyse declared dependencies for health violations including DEP_DEAD,
-      DEP_HEAVY, DEP_PASSTHROUGH, DEP_LOW_RATIO, DEP_UNSTABLE, and
-      DEP_FACADE_CANDIDATE. Returns dependency_health_score in [0,100],
-      zone classification (healthy/tolerable/questionable/bloated), and
-      Martin metrics per package. Requires audit-service (:8084).
+      Analyse declared dependencies for health violations: DEP_DEAD, DEP_HEAVY,
+      DEP_PASSTHROUGH, DEP_LOW_RATIO, DEP_UNSTABLE, DEP_FACADE_CANDIDATE.
+      Returns dependency_health_score [0–100], zone classification
+      (healthy/tolerable/questionable/bloated), and Martin metrics per package.
+      Requires audit-service (:8084).
+    when_to_use: "Use for dependency hygiene review and license/CVE compliance. Part of W-10 (step 3)."
     tier: bronze
     tags: [audit, dependency, metrics]
 
@@ -208,27 +232,24 @@ tools:
     description: >
       Look up the full resolution evidence chain for a violation type.
       Searches the resolution knowledge base (Qdrant :6335) and returns:
-      the matched violation type, the governing principle, the resolution
-      pattern (technique + effort estimate), documentation references
-      (source book + chapter), and optional code examples from the corpus.
-      Works across all 5 pillars: structural, architectural, eloquence,
-      security, dependency. Requires audit-service (:8084) and
-      qdrant-resolution (:6335).
+      matched violation type, governing principle, resolution pattern
+      (technique + effort estimate), documentation references (source book + chapter),
+      and optional code examples. Works across all 5 pillars: structural,
+      architectural, eloquence, security, dependency. Requires audit-service (:8084).
+    when_to_use: "Use after any audit scan to translate raw findings into actionable fixes with KB backing. Part of W-9 (step 4), W-10 (step 4)."
     tier: gold
     tags: [audit, resolve, compliance, evidence-chain]
 
-
-  # AEI-23: VRE Quarantine Infrastructure
   - name: audit_search_exploits
     description: >
       Search the vulnerability quarantine knowledge base (Qdrant :6336) for
-      exploit vectors matching a natural-language query. Uses CodeBERT
-      (768-dim) embeddings via code-orchestrator (:8083) to embed the query
-      and performs vector similarity search on the vuln_exploits collection.
-      Optional CWE ID filter restricts results to specific vulnerability
-      classes. Returns ranked ExploitMatch objects with CVE ID, CWE IDs,
-      CVSS score, severity, and exploit code. Requires audit-service (:8084)
-      and qdrant-quarantine (:6336).
+      exploit vectors matching a natural-language query. Uses CodeBERT (768-dim)
+      embeddings to embed the query and performs vector similarity search on the
+      vuln_exploits collection. Optional CWE ID filter restricts to specific
+      vulnerability classes. Returns ranked ExploitMatch objects with CVE ID,
+      CWE IDs, CVSS score, severity, and exploit code.
+      Requires audit-service (:8084) and qdrant-quarantine (:6336).
+    when_to_use: "Use to confirm exploitability of a detected vulnerability and enrich severity. Part of W-10 (step 2)."
     tier: silver
     tags: [audit, security, exploit, cve, vre]
 
@@ -237,60 +258,273 @@ tools:
       Query the CVE structured database (PostgreSQL :5432) for CVE records
       filtered by CWE identifier, severity level, and/or affected ecosystem.
       Returns structured CVERecord objects with CVSS scores, publication date,
-      and reference URLs. All filters are optional — omitting them returns up
-      to 'limit' records. Requires audit-service (:8084) and PostgreSQL (:5432).
+      and reference URLs. All filters optional — omitting them returns up to
+      'limit' records. Requires audit-service (:8084) and PostgreSQL (:5432).
+    when_to_use: "CVE-specific lookup during security review. Pair with audit_security_scan findings. Part of W-10 (step 2 alternative)."
     tier: silver
     tags: [audit, security, cve, cwe, vulnerability]
 
   - name: audit_quality_scan
     description: >
-      Audit source code for coding pattern violations and structural
-      anti-patterns. Runs CP001-CP011 (function design, naming, idioms),
-      SA001-SA008 (test smells, dead abstractions, framework leakage), and
-      SEC001-SEC008 (wildcard imports, unsafe yaml, disabled SSL, etc.) plus
-      structural anti-pattern detection (Blob/God Class, Lava Flow, Boat Anchor,
-      Redundant Wrapper, Premature Abstraction) using stdlib AST — no external
-      dependencies required. Requires audit-service (:8084).
+      Audit source code for coding pattern violations and structural anti-patterns.
+      Runs CP001–CP011 (function design, naming, idioms), SA001–SA008 (test smells,
+      dead abstractions, framework leakage), and SEC001–SEC008 (wildcard imports,
+      unsafe yaml, disabled SSL) plus structural anti-pattern detection (Blob/God Class,
+      Lava Flow, Boat Anchor, Redundant Wrapper, Premature Abstraction) using stdlib AST.
+      Requires audit-service (:8084).
+    when_to_use: "Code quality gate for CI/CD. Identify CRE pattern violations before merge. Part of W-2 (step 5), W-7 (step 2)."
     tier: bronze
     tags: [audit, quality, patterns, antipatterns, static-analysis]
 
-  - name: ask
-    description: >
-      General software-engineering question answered from the KB.
-      Use this as the default starting point — it automatically selects the
-      right collections and query strategy. Supports optional difficulty hint
-      ("beginner", "intermediate", "advanced") to constrain Bloom taxonomy tier.
-    when_to_use: "Default. Start here for any general or cross-cutting question."
-    tier: bronze
-    tags: [search, rag, facade]
+  - name: audit_codebase_scan
+    description: "Full codebase scan with VRE enrichment. Combines security, quality, and pattern detection across an entire repository. Long-running — timeout 600s. Requires audit-service (:8084)."
+    when_to_use: "Comprehensive pre-release audit or scheduled hygiene run. Use audit_security_scan + audit_quality_scan for targeted scans. Part of W-12 (step 3)."
+    tier: gold
+    tags: [audit, security, quality, codebase, vre]
 
-  - name: search_in
-    description: >
-      Targeted search within a specific knowledge shelf.
-      Use when you know the content type: "textbooks" (concept explanations),
-      "code" (implementation examples), "patterns" (design patterns / anti-patterns),
-      or "diagrams" (architecture diagrams). More precise than ask for shelf-specific lookups.
-    when_to_use: "Use when you know the type of content you need: textbooks, code, patterns, or diagrams."
-    tier: bronze
-    tags: [search, rag, facade]
+  # ── Struct-Analyzer — Go :8088 (replaces AMVE Python) ────────────────────────
+  # All sa_* tools dispatch to struct-analyzer at :8088 (same port as former AMVE).
+  # Snapshot-based tools (sa_extract_architecture, sa_detect_drift) require
+  # SNAPSHOT_STORE_ENABLED=true in struct-analyzer config.
+  # Synergy workflows: W-2, W-3, W-4, W-5, W-11, W-12
 
-  - name: find_code_pattern
-    description: >
-      Find code examples for a software practice.
-      Use when you need concrete code, not conceptual explanation.
-      examples="good" returns correct implementations; "bad" returns anti-patterns; "both" returns both.
-    when_to_use: "Use when you need concrete code examples, not conceptual explanation."
-    tier: bronze
-    tags: [search, rag, facade, code, patterns]
+  - name: sa_detect_patterns
+    description: "Detect architecture patterns in source code: microservices, monolith, layered, event-driven, CQRS, saga, etc. Returns pattern names, confidence scores, and evidence. Accepts source_path, language, exclude[]. Requires struct-analyzer (:8088)."
+    when_to_use: "First step in architecture review — classify the architectural style before deeper analysis. Part of W-2 (step 1), W-9. Replaces amve_detect_patterns."
+    tier: gold
+    tags: [struct-analyzer, architecture, patterns, analysis]
 
-  - name: foundation_search
-    description: >
-      Search the scientific foundation layer for mathematical, statistical, or theoretical
-      underpinnings of software concepts. Use when a user asks WHY something works, asks
-      about formal proofs or convergence, or when software KB results are
-      insufficient for understanding first-principles reasoning.
-    when_to_use: >
-      Use when the question requires first-principles reasoning, formal proofs, or
-      convergence analysis beyond what the software KB provides.
+  - name: sa_detect_boundaries
+    description: "Detect service and module boundaries: domain boundaries, coupling points, shared data, and cross-boundary dependencies. Returns boundary clarity scores and layer violation findings. Accepts source_path, language. Requires struct-analyzer (:8088)."
+    when_to_use: "Service decomposition analysis. Identify where a monolith can be split or where boundaries are leaking. Part of W-2 (step 2), W-5. Replaces amve_detect_boundaries."
+    tier: gold
+    tags: [struct-analyzer, architecture, boundaries, analysis]
+
+  - name: sa_detect_events
+    description: "Detect event-driven patterns: pub/sub contracts, domain events, event sourcing, CQRS event flows, event schema definitions. Isolated from messaging transport concerns. Accepts source_path, language. Requires struct-analyzer (:8088)."
+    when_to_use: "Audit event contract coverage. Identify orphaned event publishers or unhandled event types. Use together with sa_detect_messaging for full async-comms topology. Part of W-3 (step 1). Net-new — no AMVE equivalent."
+    tier: gold
+    tags: [struct-analyzer, architecture, events, async, cqrs]
+
+  - name: sa_detect_messaging
+    description: "Detect message bus patterns: queue declarations, broker configurations, topic definitions, channel bindings. Transport-layer focus separate from event semantics. Accepts source_path, language. Requires struct-analyzer (:8088)."
+    when_to_use: "Map async transport topology. Identify dead queues, undeclared channels, or missing consumer registrations. Use together with sa_detect_events for full async picture. Part of W-3 (step 2). Net-new — no AMVE equivalent."
+    tier: gold
+    tags: [struct-analyzer, architecture, messaging, async, broker]
+
+  - name: sa_build_call_graph
+    description: "Build a call graph from source files. Returns nodes (functions/methods) and edges (call relationships) with fan-in/fan-out metrics. Accepts source_paths[], include_external, repo_id. Requires struct-analyzer (:8088)."
+    when_to_use: "Trace execution paths. Required prerequisite for sa_detect_dead_code — provides reachability context. Reveals coupling hotspots. Part of W-2 (step 3), W-3, W-4 (step 1). Replaces amve_build_call_graph."
+    tier: gold
+    tags: [struct-analyzer, architecture, call-graph, analysis]
+
+  - name: sa_detect_dead_code
+    description: "Detect dead code: unused functions and unused imports. Uses call graph cross-reference for precision when call_graph_paths[] is provided — without the call graph, detection is conservative and produces more false positives. Accepts source_path, call_graph_paths[]. Requires struct-analyzer (:8088)."
+    when_to_use: "Codebase cleanup before refactor or migration. Always run sa_build_call_graph first for accurate results. Part of W-2 (step 4), W-4 (step 2). Replaces amve_detect_dead_code."
+    tier: gold
+    tags: [struct-analyzer, architecture, dead-code, unused-imports]
+
+  - name: sa_extract_architecture
+    description: "Extract a full architecture snapshot from source code and compute a content-addressed SHA-256 fingerprint. Returns snapshot_sha, record_count, source_path, extraction_time_ms. REQUIRES SNAPSHOT_STORE_ENABLED=true in struct-analyzer config. Accepts source_path, root_path, language, workers, snapshot_id, repo_id. Requires struct-analyzer (:8088)."
+    when_to_use: "Capture a dated baseline for drift detection. Must be called before sa_detect_drift in SHA-pair mode. Part of W-5 (step 1), W-11 (step 1). Replaces amve_extract_architecture."
+    tier: gold
+    tags: [struct-analyzer, architecture, snapshot, sha, content-addressed]
+
+  - name: sa_detect_drift
+    description: "Detect architectural drift between two snapshots. SHA-pair mode: snapshot_a_sha + snapshot_b_sha retrieved from Redis stream. Raw-dict mode: pass snapshot dicts directly. Returns added/removed components, new/removed dependencies, layer regressions. SNAPSHOT_STORE_ENABLED=true required for SHA-pair mode. Requires struct-analyzer (:8088)."
+    when_to_use: "Continuous architecture governance. Detect unauthorized changes between releases. Run after sa_extract_architecture captures the current snapshot. Part of W-5 (step 3), W-11 (step 3). Replaces amve_detect_drift."
+    tier: gold
+    tags: [struct-analyzer, architecture, drift, snapshot, comparison]
+
+  - name: sa_architecture_mapping_log
+    description: "Generate a human-readable architecture mapping log for one or more source paths. Produces a narrative artifact describing current architecture state. Accepts source_path (string) or source_paths[] (array). Requires struct-analyzer (:8088)."
+    when_to_use: "Produce a narrative report before capturing a baseline. Use as a readable companion to sa_extract_architecture. Part of W-5 (step 2), W-11 (documentation leg). Net-new — no AMVE equivalent."
+    tier: silver
+    tags: [struct-analyzer, architecture, mapping, log, report]
+
+  - name: sa_platform_scan
+    description: "Multi-repo platform-level scan. Aggregates architectural analysis across an entire platform by scanning multiple repos in parallel. Accepts repo_paths[], workers. Requires struct-analyzer (:8088)."
+    when_to_use: "Platform-wide architecture audit. Pre-migration assessment across all services. Feeds compliance evidence chains. The highest-scale SA operation. Part of W-12 (step 1). Net-new — no AMVE equivalent."
+    tier: gold
+    tags: [struct-analyzer, architecture, platform, multi-repo, scan]
+
+  - name: sa_batch_scan
+    description: "Architecture log generation via batch scan with optional baseline comparison. Accepts source_paths[], violations[], patterns[], baseline_json. Returns per-path results. Requires struct-analyzer (:8088)."
+    when_to_use: "Batch architecture compliance check against a known-good baseline. Use with baseline_json for diff-style output. Part of W-5 (step 2 alternative), W-12 (step 2). Replaces amve_generate_architecture_log."
+    tier: gold
+    tags: [struct-analyzer, architecture, batch-scan, baseline]
+
+  - name: sa_evaluate_fitness
+    description: "Evaluate architecture fitness functions against a snapshot. Verifies that architectural constraints (coupling limits, layer violations, boundary rules) are met. Accepts function_id, optional function definition, and snapshot. Requires struct-analyzer (:8088)."
+    when_to_use: "Verify architectural constraints are met. Use sa_get_fitness_functions first to enumerate available function IDs. Part of W-5 (step 4), W-11 (gate check). Replaces amve_evaluate_fitness."
+    tier: gold
+    tags: [struct-analyzer, architecture, fitness, evaluation]
+
+  - name: sa_get_fitness_functions
+    description: "List all registered architecture fitness functions. Returns function IDs and metadata. No input parameters required. Requires struct-analyzer (:8088)."
+    when_to_use: "Discovery step before sa_evaluate_fitness when function IDs are unknown. Part of W-5 (step 0), W-11 (step 0). Net-new — no AMVE equivalent."
     tier: bronze
-    tags: [search, foundation, scientific]
+    tags: [struct-analyzer, architecture, fitness, functions, discovery]
+
+  # ── AMVE Deprecated Stubs (→ sa_* replacements) ───────────────────────────────
+  # These stubs exist for backward compatibility. All amve_* routes point to
+  # struct-analyzer (:8088) which is the live service at that port.
+  # amve_detect_communication is BROKEN — no /v1/analysis/communication endpoint exists.
+
+  - name: amve_detect_patterns
+    description: "[DEPRECATED] Use sa_detect_patterns. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint — behavior is identical to sa_detect_patterns."
+    tier: bronze
+    tags: [amve, deprecated, architecture, patterns]
+
+  - name: amve_detect_boundaries
+    description: "[DEPRECATED] Use sa_detect_boundaries. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint."
+    tier: bronze
+    tags: [amve, deprecated, architecture, boundaries]
+
+  - name: amve_detect_communication
+    description: "[DEPRECATED — BROKEN ⛔] Routes to /v1/analysis/communication which does NOT exist in struct-analyzer Go. Python AMVE's unified 'communication' concept was split into two endpoints: use sa_detect_events for event-driven patterns and sa_detect_messaging for message bus patterns."
+    tier: bronze
+    tags: [amve, deprecated, broken, communication]
+
+  - name: amve_build_call_graph
+    description: "[DEPRECATED] Use sa_build_call_graph. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint."
+    tier: bronze
+    tags: [amve, deprecated, architecture, call-graph]
+
+  - name: amve_evaluate_fitness
+    description: "[DEPRECATED] Use sa_evaluate_fitness. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint. SNAPSHOT_STORE_ENABLED=true required."
+    tier: bronze
+    tags: [amve, deprecated, architecture, fitness]
+
+  - name: amve_generate_architecture_log
+    description: "[DEPRECATED] Use sa_batch_scan. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to /v1/architecture/batch-scan."
+    tier: bronze
+    tags: [amve, deprecated, architecture, batch-scan]
+
+  - name: amve_detect_dead_code
+    description: "[DEPRECATED] Use sa_detect_dead_code. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint."
+    tier: bronze
+    tags: [amve, deprecated, architecture, dead-code]
+
+  - name: amve_extract_architecture
+    description: "[DEPRECATED] Use sa_extract_architecture. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint. SNAPSHOT_STORE_ENABLED=true required."
+    tier: bronze
+    tags: [amve, deprecated, architecture, snapshot]
+
+  - name: amve_detect_drift
+    description: "[DEPRECATED] Use sa_detect_drift. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint. SNAPSHOT_STORE_ENABLED=true required for SHA-pair mode."
+    tier: bronze
+    tags: [amve, deprecated, architecture, drift]
+
+  # ── Context Management Service — CMS :8086 ────────────────────────────────────
+  # Bifurcated processing pipeline: TextSegment / CodeBlock routing,
+  # token optimization, skeleton client → struct-analyzer skeletonize.
+  # Synergy workflow: W-13
+
+  - name: cms_warmup
+    description: "Pre-warm the Context Management Service and verify struct-analyzer skeletonize connectivity. Returns readiness status. Requires context-management-service (:8086)."
+    when_to_use: "Run at session start when CMS is cold. Confirms :8086 → :8088 skeletonize link before any cms_process call."
+    tier: silver
+    tags: [cms, warmup, health]
+
+  - name: cms_validate
+    description: "Validate a context payload against CMS schema before committing to processing. Returns validation errors and warnings. Requires context-management-service (:8086)."
+    when_to_use: "Pre-flight check before cms_chunk or cms_process. Catch schema issues early without spending tokens on a failed pipeline run. Part of W-13 (step 0)."
+    tier: bronze
+    tags: [cms, validate, schema]
+
+  - name: cms_chunk
+    description: "Bifurcate input into typed segments: TextSegment (prose, markdown) and CodeBlock (fenced code blocks with language detection, inline code spans). Returns a structured segment list. Requires context-management-service (:8086)."
+    when_to_use: "When downstream tools need to process text and code separately. First processing step after cms_validate. Part of W-13 (step 1)."
+    tier: silver
+    tags: [cms, chunk, bifurcation, segmentation]
+
+  - name: cms_optimize
+    description: "Optimize a context window using token budget analysis and segment routing. Text segments routed through TokenOptimizer; code segments routed through SkeletonClient → struct-analyzer /v1/analyze/skeletonize. Returns compressed, semantically equivalent context. Requires context-management-service (:8086) and struct-analyzer (:8088)."
+    when_to_use: "Reduce token usage while preserving semantic meaning. Critical before long-context LLM calls. Part of W-13 (step 2)."
+    tier: gold
+    tags: [cms, optimize, tokens, skeleton]
+
+  - name: cms_process
+    description: "Full bifurcated processing pipeline in one call: validate → chunk → optimize → glossary injection. Orchestrates the complete CMS flow. Returns optimized context ready for LLM consumption. Requires context-management-service (:8086) and struct-analyzer (:8088)."
+    when_to_use: "End-to-end context preparation in one call. Use when full pipeline is needed without step-by-step control. Equivalent to cms_validate → cms_chunk → cms_optimize → cms_get_glossary in sequence. Part of W-13 (shortcut)."
+    tier: gold
+    tags: [cms, process, pipeline, orchestration]
+
+  - name: cms_get_metrics
+    description: "Retrieve context window metrics and token utilization statistics for the current or a past processing run. Returns per-segment token counts, optimization ratios, and skeleton compression stats. Requires context-management-service (:8086)."
+    when_to_use: "Monitor token efficiency after cms_process or cms_optimize. Identify high-cost segments for targeted optimization."
+    tier: bronze
+    tags: [cms, metrics, tokens, observability]
+
+  - name: cms_glossary_define
+    description: "Add a term-definition pair to the active conversation's glossary context. Terms accumulate across calls within the same conversation_id. Requires context-management-service (:8086)."
+    when_to_use: "Build up domain vocabulary for the current conversation to reduce repetitive token re-explanation. Part of W-13 (step 3, optional)."
+    tier: silver
+    tags: [cms, glossary, vocabulary, context]
+
+  - name: cms_get_glossary
+    description: "Retrieve the accumulated glossary for a conversation_id. Returns all defined terms with definitions in order of insertion. Requires context-management-service (:8086)."
+    when_to_use: "Audit established vocabulary before injecting context into a new LLM call. Part of W-13 (step 4)."
+    tier: bronze
+    tags: [cms, glossary, retrieval, context]
+
+  # ── Inference (inference-service-cpp :8085) ───────────────────────────────────
+  - name: inference
+    description: "Run inference against locally hosted models via the C++ inference service (llama.cpp). Endpoint /v1/models. Supports 3-model demo configuration with Qwen3.5 9B Q4_K_M primary. Fully offline-capable. Requires inference-service-cpp (:8085)."
+    when_to_use: "On-device LLM inference without cloud dependency. Demo-safe (works fully offline). Low-latency for structured completion tasks. Feeds llm_complete as the local tier."
+    tier: gold
+    tags: [inference, llm, local, metal, gpu]
+
+  # ── Pending: unified-search-rs (Rust :8089) ───────────────────────────────────
+  # These tools are pre-wired for the Rust USS service.
+  # Create entries now — activate by updating SEMANTIC_SEARCH_URL to :8089 at cutover.
+  # Routes exist in tool_dispatcher.py keyed to UNIFIED_SEARCH_RS_URL.
+
+  - name: uss_ring_search
+    description: "[PENDING: unified-search-rs :8089] 6-ring concentric search pipeline: Ring 0 (ANN primary hit) → Rings 1–5 (KF envelope, sibling, domain bridge, cross-collection, suggestion expansion) → RRF fusion → cascade enrichment → MMR re-rank → budget trim. Returns RingSearchResponse with per-ring provenance chains and cascade metadata. Higher recall than flat hybrid search."
+    when_to_use: "PENDING. Will replace knowledge_search as the preferred high-recall KB retrieval path at Rust USS cutover. Use when knowledge_search returns insufficient depth. Part of W-1 (future), W-6 (future)."
+    tier: gold
+    tags: [search, rag, uss-rs, ring, pending]
+
+  - name: uss_scientific_search
+    description: "[PENDING: unified-search-rs :8089] Scientific and theoretical grounding search using the Rust USS /v1/search/scientific handler. Replaces foundation_search at Rust USS cutover (path rename: /v1/search/foundation → /v1/search/scientific)."
+    when_to_use: "PENDING. Will replace foundation_search at Rust USS cutover. Same use case: first-principles reasoning, formal proofs, theoretical grounding."
+    tier: bronze
+    tags: [search, foundation, scientific, uss-rs, pending]
+
+  - name: uss_embed
+    description: "[PENDING: unified-search-rs :8089] Embed text into a 384-dim MiniLM vector without a search round-trip. Returns the raw embedding vector for downstream use in custom Qdrant queries or similarity calculations."
+    when_to_use: "PENDING. Use when downstream code needs a raw embedding for a custom Qdrant query outside the search pipeline."
+    tier: silver
+    tags: [embed, vector, uss-rs, pending]
+
+  - name: uss_hydrate
+    description: "[PENDING: unified-search-rs :8089] Retrieve full chunk content by vector ID (P10-style chunk retrieval). Expands truncated search result stubs into full payloads. Useful when ring search returns result IDs that need full content hydration."
+    when_to_use: "PENDING. Use after uss_ring_search when results return IDs with truncated content and full payloads are needed."
+    tier: silver
+    tags: [hydrate, retrieval, uss-rs, pending]
+
+  - name: uss_fitness_evaluate
+    description: "[PENDING: unified-search-rs :8089] Evaluate architecture fitness functions from the Rust USS service. Same interface as sa_evaluate_fitness but runs at :8089 without requiring a local code checkout — evaluates against search results."
+    when_to_use: "PENDING. Use when sa_evaluate_fitness is unavailable or when fitness evaluation should run against search-derived artifacts rather than a local source tree."
+    tier: gold
+    tags: [fitness, architecture, uss-rs, pending]
+
+  - name: uss_fitness_batch
+    description: "[PENDING: unified-search-rs :8089] Batch evaluate multiple architecture fitness functions in a single request. No struct-analyzer equivalent — unique to Rust USS."
+    when_to_use: "PENDING. Use for CI/CD fitness gate checking multiple constraints in one call."
+    tier: gold
+    tags: [fitness, architecture, batch, uss-rs, pending]
+
+  - name: uss_graph_query
+    description: "[PENDING: unified-search-rs :8089 — requires new graph API endpoint] Read-only Cypher query against Neo4j knowledge graph. Same interface as graph_query. Will replace graph_query at Rust USS cutover once /v1/graph/query endpoint is added to uss-server."
+    when_to_use: "PENDING. Will replace graph_query. Same use case: topology lookups, concept links, service dependency queries."
+    tier: gold
+    tags: [graph, query, neo4j, uss-rs, pending]
+
+  - name: uss_graph_traverse
+    description: "[PENDING: unified-search-rs :8089 — requires new graph API endpoint] BFS or MMR-diversity traversal from Neo4j start nodes. Same interface as graph_traverse. Will replace graph_traverse at Rust USS cutover once /v1/graph/traverse endpoint is added to uss-server."
+    when_to_use: "PENDING. Will replace graph_traverse. Same use case: neighborhood expansion, diversity-aware graph exploration."
+    tier: silver
+    tags: [graph, traversal, neo4j, uss-rs, pending]

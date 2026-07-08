@@ -1,8 +1,7 @@
 """generate_taxonomy tool handler — WBS-WF6.
 
-Routes to CO /generate-taxonomy-from-enriched, which reads *_enriched.json
-files and builds the full uber_taxonomy format (metadata + concept_categories
-+ tiers).  This is the correct taxonomy generation path.
+Dispatches to Code-Orchestrator POST /api/v1/workflows/generate-taxonomy.
+Builds full taxonomy from a tiered book corpus.
 """
 
 from src.models.schemas import GenerateTaxonomyInput
@@ -16,19 +15,28 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
     """Return an async handler with a typed signature for FastMCP schema generation."""
 
     async def generate_taxonomy(
-        enriched_dir: str = "/Users/kevintoles/POC/ai-platform-data/books/enriched",
+        tier_books: dict,
         output_path: str | None = None,
+        concepts: list[str] | None = None,
+        domain: str = "auto",
     ) -> dict:
-        """Build full taxonomy from enriched corpus.
+        """Build full taxonomy from a tiered book corpus.
 
-        Reads all *_enriched.json files in enriched_dir, aggregates keywords
-        and concepts per book, applies vocabulary quality gates, infers Bloom
-        tiers, and writes the full uber_taxonomy JSON (metadata +
-        concept_categories + tiers).
+        Aggregates keywords and concepts per book, applies vocabulary quality
+        gates, infers Bloom tiers, and writes the full uber_taxonomy format
+        (metadata + concept_categories + tiers).
+
+        Args:
+            tier_books: Mapping of tier name to list of enriched book JSON paths.
+            output_path: Output taxonomy JSON path (auto-generated if omitted).
+            concepts: Seed concept list (optional).
+            domain: Knowledge domain — python, architecture, data_science, or auto.
         """
         validated = GenerateTaxonomyInput(
-            enriched_dir=enriched_dir,
+            tier_books=tier_books,
             output_path=output_path,
+            concepts=concepts,
+            domain=domain,
         )
         result = await dispatcher.dispatch(TOOL_NAME, validated.model_dump())
         return sanitizer.sanitize(result.body)

@@ -54,7 +54,7 @@ class TestSearchInDefaultDispatch:
         handler = create_handler(dispatcher)
         await handler(query="design patterns", source="textbooks")
 
-        assert captured.get("collection") == "chapters"
+        assert captured.get("collection") == "chunks"
 
     @pytest.mark.asyncio
     async def test_mmr_rerank_is_true(self, dispatcher: ToolDispatcher) -> None:

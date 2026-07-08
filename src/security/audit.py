@@ -23,9 +23,7 @@ from typing import Any
 
 import aiofiles
 import httpx
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from urllib.parse import parse_qs
 
 _security_logger = logging.getLogger("mcp_gateway.security")
 _audit_logger = logging.getLogger("mcp_gateway.audit")
@@ -142,6 +140,10 @@ def create_audit_entry(
     error_code: str | None = None,
     tokens_consumed: int = 0,
     context: AuditContext | None = None,
+    request_id: str | None = None,
+    parent_request_id: str | None = None,
+    agent_depth: int | None = None,
+    security_flags: list[str] | None = None,
 ) -> AuditEntry:
     """Factory for ``AuditEntry`` with auto-hashing and timestamp."""
     ctx = context or AuditContext()
@@ -159,10 +161,10 @@ def create_audit_entry(
         status_code=status_code,
         error_code=error_code,
         tokens_consumed=tokens_consumed,
-        request_id=ctx.request_id,
-        parent_request_id=ctx.parent_request_id,
-        agent_depth=ctx.agent_depth,
-        security_flags=ctx.security_flags,
+        request_id=request_id if request_id is not None else ctx.request_id,
+        parent_request_id=parent_request_id if parent_request_id is not None else ctx.parent_request_id,
+        agent_depth=agent_depth if agent_depth is not None else ctx.agent_depth,
+        security_flags=security_flags if security_flags is not None else ctx.security_flags,
     )
 
 
@@ -225,42 +227,65 @@ class AuditServiceForwarder:
 # ── AuditMiddleware ─────────────────────────────────────────────────────
 
 
-class AuditMiddleware(BaseHTTPMiddleware):
-    """Logs every non-health request as a JSONL audit entry (AC-7.1, AC-7.2)."""
+class AuditMiddleware:
+    """Logs every non-health request as a JSONL audit entry (AC-7.1, AC-7.2).
+
+    Raw ASGI implementation avoids BaseHTTPMiddleware anyio buffer wrapping
+    that breaks SSE streams under Starlette 0.52+.
+    """
 
     def __init__(self, app: Any, log_path: str = "logs/audit.jsonl") -> None:
-        super().__init__(app)
+        self.app = app
         self.log_path = log_path
 
-    async def dispatch(self, request: Request, call_next: Any) -> Response:
-        if request.url.path in _EXCLUDED_PATHS or request.url.path.startswith(_SSE_PREFIX):
-            return await call_next(request)
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path in _EXCLUDED_PATHS or path.startswith(_SSE_PREFIX):
+            await self.app(scope, receive, send)
+            return
 
         start = time.monotonic()
-        response = await call_next(request)
+        status_code = 500
+        request_id = ""
+
+        async def send_wrapper(message: Any) -> None:
+            nonlocal status_code, request_id
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 500)
+                for name, value in message.get("headers", []):
+                    if name.lower() == b"x-request-id":
+                        request_id = value.decode()
+                        break
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
         latency_ms = (time.monotonic() - start) * 1000
 
-        # Extract request context
-        request_id = response.headers.get("x-request-id", "")
-        source_ip = request.client.host if request.client else "unknown"
+        header_dict = {name.lower(): value for name, value in scope.get("headers", [])}
+        client = scope.get("client")
+        source_ip = client[0] if client else "unknown"
+        query_string = scope.get("query_string", b"").decode()
+        query_params = {k: v[0] for k, v in parse_qs(query_string).items()}
+        auth = getattr(scope.get("state"), "auth", None)
 
         entry = create_audit_entry(
-            tenant_id=request.headers.get("X-Tenant-ID", "anonymous"),
-            actor_sub=getattr(getattr(request.state, "auth", None), "sub", "anonymous"),
-            tier=getattr(getattr(request.state, "auth", None), "tier", "unknown"),
+            tenant_id=header_dict.get(b"x-tenant-id", b"anonymous").decode(),
+            actor_sub=getattr(auth, "sub", "anonymous"),
+            tier=getattr(auth, "tier", "unknown"),
             source_ip=source_ip,
-            tool=request.url.path,
-            input_data=dict(request.query_params),
-            status="success" if response.status_code < 400 else "error",
-            status_code=response.status_code,
+            tool=path,
+            input_data=query_params,
+            status="success" if status_code < 400 else "error",
+            status_code=status_code,
             latency_ms=round(latency_ms, 2),
             context=AuditContext(request_id=request_id),
         )
 
-        # Write to JSONL
-        path = Path(self.log_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(path, "a") as f:
+        log_path = Path(self.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(log_path, "a") as f:
             await f.write(entry.to_json() + "\n")
-
-        return response

@@ -9,12 +9,28 @@ Reference: Strategy §4.1, §8.1 (Encryption.IN_TRANSIT), §10.1 (Week 1-2)
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NewType
 
 from pydantic_settings import BaseSettings
 
 
 HEALTH_ENDPOINT = "/health"
 READY_ENDPOINT = "/ready"
+
+# ── SLA & Service Identity ─────────────────────────────────────────────
+SLA_TIMEOUT: float = 30.0
+ServiceKey = NewType("ServiceKey", str)
+
+
+def normalize_service_key(name: str) -> str:
+    """
+    Normalize a service name to canonical hyphen form.
+
+    Converts underscores to hyphens and lowercases.
+
+    Example: "semantic_search" → "semantic-search"
+    """
+    return name.replace("_", "-").lower()
 
 
 class Settings(BaseSettings):
@@ -39,6 +55,9 @@ class Settings(BaseSettings):
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
     AUDIT_SERVICE_URL: str = "http://localhost:8084"
     AMVE_SERVICE_URL: str = "http://localhost:8088"
+    STRUCT_ANALYZER_URL: str = "http://localhost:8088"
+    CONTEXT_MANAGEMENT_URL: str = "http://localhost:8086"
+    INFERENCE_SERVICE_URL: str = "http://localhost:8085"
 
     # ── Code-Orchestrator lifecycle policy (hot/warm/cold) ──────────
     # Central source of truth for CO startup behavior used by gateway restarts.
@@ -75,12 +94,27 @@ class Settings(BaseSettings):
 
     # ── Resilience (C-5: Circuit Breakers) ───────────────────────
     CIRCUIT_BREAKER_THRESHOLD: int = 5  # Consecutive failures before OPEN
-    CIRCUIT_BREAKER_RECOVERY_SECONDS: float = 30.0  # Seconds before HALF_OPEN probe
+    CIRCUIT_BREAKER_RECOVERY_SECONDS: float = 5.0   # Seconds before HALF_OPEN probe (reduced from 30s for SLA)
     DISPATCH_MAX_RETRIES: int = 2  # Max retry attempts for transient failures
     DISPATCH_RETRY_BASE_DELAY: float = 0.5  # Base delay in seconds (exponential backoff)
 
     # ── Audit ───────────────────────────────────────────────────────
     AUDIT_LOG_PATH: str = "logs/audit.jsonl"
+
+    # ── Service shutdown / restart commands ──────────────────────────
+    SERVICE_SHUTDOWN_COMMANDS: dict[str, str] = {
+        "unified-search-service": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true",
+        "code-orchestrator": "lsof -ti:8083 | xargs kill -9 2>/dev/null || true",
+        "llm-gateway": "lsof -ti:8080 | xargs kill -9 2>/dev/null || true",
+        "ai-agents": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true",
+        "audit-service": "lsof -ti:8084 | xargs kill -9 2>/dev/null || true",
+        "context-management-service": "lsof -ti:8086 | xargs kill -9 2>/dev/null || true",
+        "amve": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true",
+        "struct-analyzer-service": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true",
+        "unified-search-rs": "lsof -ti:8089 | xargs kill -9 2>/dev/null || true",
+        "inference-service-cpp": "pkill -f inference-service 2>/dev/null || true",
+        "mcp-gateway": "lsof -ti:8087 | xargs kill -9 2>/dev/null || true",
+    }
 
     model_config = {
         "env_prefix": "MCP_GATEWAY_",
@@ -113,91 +147,115 @@ class Settings(BaseSettings):
         base URL, readiness/liveness endpoint, restart command, and timeout.
         """
         return {
-            "semantic_search": {
+            "semantic-search": {
                 "name": "unified-search-service",
                 "url": self.UNIFIED_SEARCH_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/unified-search-service && /Users/kevintoles/POC/unified-search-service/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081",
                 "timeout": 45.0,
+                "sla_timeout": 2.0,
             },
-            "code_analyze": {
+            "code-analyze": {
                 "name": "code-orchestrator",
                 "url": self.CODE_ORCHESTRATOR_URL,
                 "health_endpoint": READY_ENDPOINT,
                 "restart_command": self.CO_RESTART_COMMAND,
                 "timeout": self.CO_READY_TIMEOUT_SECONDS,
+                "sla_timeout": 8.0,
             },
-            "code_orchestrator": {
+            "code-orchestrator": {
                 "name": "code-orchestrator",
                 "url": self.CODE_ORCHESTRATOR_URL,
                 "health_endpoint": READY_ENDPOINT,
                 "restart_command": self.CO_RESTART_COMMAND,
                 "timeout": self.CO_READY_TIMEOUT_SECONDS,
+                "sla_timeout": 8.0,
             },
-            "llm_complete": {
+            "llm-complete": {
                 "name": "llm-gateway",
                 "url": self.LLM_GATEWAY_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "lsof -ti:8080 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/llm-gateway && /Users/kevintoles/POC/llm-gateway/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080",
                 "timeout": 5.0,
+                "sla_timeout": 2.0,
             },
-            "run_agent_function": {
+            "run-agent-function": {
                 "name": "ai-agents",
                 "url": self.AI_AGENTS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/ai-agents && /Users/kevintoles/POC/ai-agents/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082",
                 "timeout": 8.0,
+                "sla_timeout": 8.0,
             },
-            "ai_agents": {
+            "ai-agents": {
                 "name": "ai-agents",
                 "url": self.AI_AGENTS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/ai-agents && /Users/kevintoles/POC/ai-agents/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082",
                 "timeout": 8.0,
+                "sla_timeout": 8.0,
             },
-            "audit_quality_scan": {
+            "audit-quality-scan": {
                 "name": "audit-service",
                 "url": self.AUDIT_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "lsof -ti:8084 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/audit-service && /Users/kevintoles/POC/audit-service/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084",
                 "timeout": 8.0,
+                "sla_timeout": 8.0,
             },
-            "audit_service": {
+            "audit-service": {
                 "name": "audit-service",
                 "url": self.AUDIT_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "lsof -ti:8084 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/audit-service && /Users/kevintoles/POC/audit-service/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084",
                 "timeout": 8.0,
+                "sla_timeout": 8.0,
             },
-            "context_management": {
+            "context-management": {
                 "name": "context-management-service",
-                "url": "http://localhost:8086",
+                "url": self.CONTEXT_MANAGEMENT_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "cd /Users/kevintoles/POC/context-management-service && source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8086",
                 "timeout": 2.0,
+                "sla_timeout": 15.0,
             },
-            "amve_evaluate_fitness": {
+            "amve-evaluate-fitness": {
                 "name": "amve",
                 "url": self.AMVE_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "cd /Users/kevintoles/POC/architecture-mapping-validation-engine && source .venv/bin/activate && python -m src.main",
                 "timeout": 2.0,
+                "sla_timeout": 8.0,
             },
-            "foundation_search": {
+            "struct-analyzer": {
+                "name": "struct-analyzer-service",
+                "url": self.STRUCT_ANALYZER_URL,
+                "health_endpoint": HEALTH_ENDPOINT,
+                "restart_command": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/struct-analyzer-service && go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && /tmp/struct-analyzer",
+                "timeout": 2.0,
+                "sla_timeout": 15.0,
+            },
+            "foundation-search": {
                 "name": "unified-search-rs",
                 "url": self.UNIFIED_SEARCH_RS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "cd /Users/kevintoles/POC/unified-search-rs && cargo run --release",
                 "timeout": 2.0,
+                "sla_timeout": 2.0,
             },
             "inference": {
                 "name": "inference-service-cpp",
-                "url": "http://localhost:8085",
+                "url": self.INFERENCE_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
                 "restart_command": "cd /Users/kevintoles/POC/inference-service-cpp && ./build/inference-service",
                 "timeout": 2.0,
+                "sla_timeout": 15.0,
             },
         }
+
+
+# Module-level singleton — imported by idle_timeout and other subsystems.
+settings = Settings()
 
 
 def get_ssl_config(settings: Settings) -> dict | None:

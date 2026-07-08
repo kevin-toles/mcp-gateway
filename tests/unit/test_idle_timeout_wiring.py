@@ -64,7 +64,7 @@ class TestRecordRequestCalled:
                 except Exception:
                     pass  # may fail on real client; we only check record_request
 
-        mock_tracker.record_request.assert_called_once_with("code-orchestrator")
+        mock_tracker.record_request.assert_called_once_with("audit-service")
 
     @patch("src.tool_dispatcher.get_tracker")
     async def test_record_request_passthrough_for_unknown_tool(self, mock_get_tracker, dispatcher):
@@ -152,5 +152,5 @@ class TestIntegration:
                     pass
 
         state = get_tracker()._service_states
-        assert "code-orchestrator" in state
-        assert state["code-orchestrator"]["total_requests"] >= 1
+        assert "audit-service" in state
+        assert state["audit-service"]["total_requests"] >= 1

@@ -67,27 +67,27 @@ class TestHealthDetection:
     async def test_is_service_dead_returns_true_when_unreachable(self, proxy):
         """Service should be detected as dead when health check fails."""
         with patch('httpx.AsyncClient.get', side_effect=Exception("Connection refused")):
-            is_dead = await proxy._is_service_dead("semantic_search")
+            is_dead = await proxy._is_service_dead("semantic-search")
             assert is_dead is True
-    
+
     @pytest.mark.asyncio
     async def test_is_service_dead_returns_false_when_healthy(self, proxy):
         """Service should be detected as alive when health check succeeds."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        
+
         with patch('httpx.AsyncClient.get', return_value=mock_response):
-            is_dead = await proxy._is_service_dead("semantic_search")
+            is_dead = await proxy._is_service_dead("semantic-search")
             assert is_dead is False
-    
+
     @pytest.mark.asyncio
     async def test_is_service_dead_returns_true_on_503(self, proxy):
         """Service should be detected as dead when returning 503."""
         mock_response = MagicMock()
         mock_response.status_code = 503
-        
+
         with patch('httpx.AsyncClient.get', return_value=mock_response):
-            is_dead = await proxy._is_service_dead("semantic_search")
+            is_dead = await proxy._is_service_dead("semantic-search")
             assert is_dead is True
     
     @pytest.mark.asyncio
@@ -109,51 +109,51 @@ class TestAutoRestart:
         """Restart should start the service process."""
         mock_process = AsyncMock()
         mock_process.returncode = None  # Process is running
-        
+
         with patch('asyncio.create_subprocess_shell', return_value=mock_process) as mock_shell:
             with patch.object(proxy, '_wait_for_service', new_callable=AsyncMock):
-                await proxy._restart_service("semantic_search")
-                
+                await proxy._restart_service("semantic-search")
+
                 # Verify command was executed
                 mock_shell.assert_called_once()
                 assert "unified-search-service" in mock_shell.call_args[0][0]
-    
+
     @pytest.mark.asyncio
     async def test_restart_service_raises_on_immediate_exit(self, proxy):
         """Restart should fail if process exits immediately."""
         mock_process = AsyncMock()
         mock_process.returncode = 1  # Process failed
-        
+
         with patch('asyncio.create_subprocess_shell', return_value=mock_process):
             with pytest.raises(ServiceRestartError):
-                await proxy._restart_service("semantic_search")
-    
+                await proxy._restart_service("semantic-search")
+
     @pytest.mark.asyncio
     async def test_restart_service_prevents_concurrent_restarts(self, proxy):
         """Concurrent restarts should be prevented."""
-        proxy._restarting.add("semantic_search")
-        
+        proxy._restarting.add("semantic-search")
+
         # Should wait instead of starting another restart
         with patch.object(proxy, '_wait_for_service', new_callable=AsyncMock) as mock_wait:
-            await proxy._restart_service("semantic_search")
+            await proxy._restart_service("semantic-search")
             mock_wait.assert_called_once()
-    
+
     @pytest.mark.asyncio
     async def test_wait_for_service_succeeds_when_healthy(self, proxy):
         """Wait should succeed when service becomes healthy."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        
+
         with patch('httpx.AsyncClient.get', return_value=mock_response):
             # Should return immediately
-            await proxy._wait_for_service("semantic_search", timeout=1.0)
-    
+            await proxy._wait_for_service("semantic-search", timeout=1.0)
+
     @pytest.mark.asyncio
     async def test_wait_for_service_times_out(self, proxy):
         """Wait should timeout if service doesn't become healthy."""
         with patch('httpx.AsyncClient.get', side_effect=Exception("Connection refused")):
             with pytest.raises(ServiceRestartError, match="did not become healthy"):
-                await proxy._wait_for_service("semantic_search", timeout=0.5)
+                await proxy._wait_for_service("semantic-search", timeout=0.5)
 
 
 # =============================================================================
@@ -201,8 +201,8 @@ class TestToolCallIntegration:
                         "http://localhost:8081/v1/search",
                     )
                     
-                    # Verify restart was called with timeout
-                    mock_restart.assert_called_once_with("semantic_search", timeout=2.0)
+                    # Verify restart was called with timeout (uses restart budget, not sla_timeout)
+                    mock_restart.assert_called_once_with("semantic-search", timeout=45.0)
     
     @pytest.mark.asyncio
     async def test_call_tool_retries_on_connect_error(self, proxy):
@@ -317,40 +317,40 @@ class TestImplementationVerification:
     def test_service_config_has_all_services(self):
         """Health proxy should have all services configured."""
         proxy = HealthAwareProxy()
-        
+
         expected_services = [
-            "semantic_search",
-            "code_analyze",
-            "llm_complete",
-            "run_agent_function",
-            "audit_quality_scan",
-            "context_management",
-            "amve_evaluate_fitness",
+            "semantic-search",
+            "code-analyze",
+            "llm-complete",
+            "run-agent-function",
+            "audit-quality-scan",
+            "context-management",
+            "amve-evaluate-fitness",
         ]
-        
+
         for service in expected_services:
             assert service in proxy.SERVICE_CONFIG, f"Missing service: {service}"
     
     def test_tool_to_service_mapping(self):
         """Tool names should map to service keys."""
         proxy = HealthAwareProxy()
-        
+
         mappings = {
-            "semantic_search": "semantic_search",
-            "code_analyze": "code_analyze",
-            "llm_complete": "llm_complete",
-            "audit_quality_scan": "audit_quality_scan",
+            "semantic_search": "semantic-search",
+            "code_analyze": "code-analyze",
+            "llm_complete": "llm-complete",
+            "audit_quality_scan": "audit-service",
         }
-        
+
         for tool_name, expected_service in mappings.items():
             assert proxy._tool_to_service(tool_name) == expected_service
     
     def test_get_service_status(self):
         """Should return complete service status."""
         proxy = HealthAwareProxy()
-        
-        status = proxy.get_service_status("semantic_search")
-        
+
+        status = proxy.get_service_status("semantic-search")
+
         assert "name" in status
         assert "url" in status
         assert "is_restarting" in status

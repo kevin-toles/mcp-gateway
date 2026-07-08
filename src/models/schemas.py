@@ -308,8 +308,8 @@ class A2ACancelTaskInput(BaseModel):
 # ── Workflow tool schemas (WBS-WF6) ─────────────────────────────────────
 
 
-class ConvertPDFToJsonInput(BaseModel):
-    """Input for convert_pdf_to_json tool — convert PDF to structured JSON."""
+class ConvertPDFInput(BaseModel):
+    """Input for convert_pdf tool — convert PDF to structured JSON."""
 
     input_path: str = Field(..., min_length=1, max_length=1000, description="Path to PDF file")
     output_path: str | None = Field(
@@ -321,6 +321,10 @@ class ConvertPDFToJsonInput(BaseModel):
     @classmethod
     def sanitize_input_path(cls, v: str) -> str:
         return _sanitize_str_field(v)
+
+
+# Backwards-compatible alias — kept until all callers migrate to ConvertPDFInput
+ConvertPDFToJsonInput = ConvertPDFInput
 
 
 class ExtractBookMetadataInput(BaseModel):
@@ -347,9 +351,9 @@ class BatchExtractMetadataInput(BaseModel):
         default=None, max_length=1000, description="Output directory for metadata (defaults to sibling 'metadata' dir)"
     )
     file_pattern: str = Field(
-        default="**/*.json",
+        default="*.json",
         max_length=100,
-        description="Glob pattern for book files (supports ** recursive)",
+        description="Glob pattern for book files",
     )
     skip_existing: bool = Field(default=True, description="Skip books that already have metadata output files")
 
@@ -359,27 +363,38 @@ class BatchExtractMetadataInput(BaseModel):
         return _sanitize_str_field(v)
 
 
+_VALID_TAXONOMY_DOMAINS = frozenset({"python", "architecture", "data_science", "auto"})
+
+
 class GenerateTaxonomyInput(BaseModel):
-    """Input for generate_taxonomy tool — build full taxonomy from enriched corpus.
+    """Input for generate_taxonomy tool — build taxonomy from tiered book corpus."""
 
-    Reads all *_enriched.json files in enriched_dir, aggregates keywords/concepts,
-    applies quality gates, and writes the full uber_taxonomy format.
-    """
-
-    enriched_dir: str = Field(
-        default="/Users/kevintoles/POC/ai-platform-data/collections/software-engineering/enriched",
-        min_length=1,
-        max_length=1000,
-        description="Directory containing *_enriched.json files",
+    tier_books: dict[str, list[str]] = Field(
+        ...,
+        description="Mapping of tier name to list of enriched book JSON paths",
     )
     output_path: str | None = Field(
         default=None, max_length=1000, description="Output taxonomy JSON path (auto-generated if omitted)"
     )
+    concepts: list[str] | None = Field(default=None, description="Seed concept list (optional)")
+    domain: str = Field(
+        default="auto",
+        description="Knowledge domain: python, architecture, data_science, auto",
+    )
 
-    @field_validator("enriched_dir", mode="before")
+    @field_validator("tier_books", mode="before")
     @classmethod
-    def sanitize_enriched_dir(cls, v: str) -> str:
-        return _sanitize_str_field(v)
+    def tier_books_not_empty(cls, v: dict) -> dict:
+        if not v:
+            raise ValueError("tier_books must not be empty")
+        return v
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        if v not in _VALID_TAXONOMY_DOMAINS:
+            raise ValueError(f"domain must be one of {sorted(_VALID_TAXONOMY_DOMAINS)}")
+        return v
 
 
 class EnrichBookMetadataInput(BaseModel):
@@ -390,7 +405,7 @@ class EnrichBookMetadataInput(BaseModel):
         default=None, max_length=1000, description="Path to write enriched output (auto-generated if omitted)"
     )
     taxonomy_path: str | None = Field(default=None, max_length=1000, description="Path to taxonomy JSON file")
-    mode: str = Field(default="direct_co", description="Enrichment mode (informational)")
+    mode: str = Field(default="msep", description="Enrichment mode (informational)")
 
     @field_validator("input_path", mode="before")
     @classmethod
@@ -1449,3 +1464,215 @@ class FoundationSearchInput(BaseModel):
             raise ValueError(_ERR_TOPK_LIMIT)
         self.top_k = None
         return self
+
+
+# ── Struct-Analyzer Input Models (Go :8088) ────────────────────────────
+
+
+class SAAnalysisInput(BaseModel):
+    """Input for sa_detect_patterns, sa_detect_boundaries, sa_detect_events, sa_detect_messaging."""
+
+    source_path: str = Field(..., min_length=1, max_length=5000)
+    language: str = Field(default="", description="Source language hint (go, python, etc.)")
+    exclude: list[str] | None = Field(default=None, description="Glob patterns to exclude.")
+
+
+class SADeadCodeInput(BaseModel):
+    """Input for sa_detect_dead_code."""
+
+    source_path: str = Field(..., min_length=1, max_length=5000)
+    call_graph_paths: list[str] | None = Field(default=None)
+
+
+class SACallGraphInput(BaseModel):
+    """Input for sa_build_call_graph."""
+
+    source_paths: list[str] = Field(..., min_length=1)
+    include_external: bool = Field(default=False)
+    repo_id: str = Field(default="")
+
+
+class SAExtractArchitectureInput(BaseModel):
+    """Input for sa_extract_architecture."""
+
+    source_path: str = Field(..., min_length=1, max_length=5000)
+    language: str = Field(default="")
+    workers: int = Field(default=0, ge=0)
+    snapshot_id: str = Field(default="")
+    repo_id: str = Field(default="")
+
+
+class SADriftInput(BaseModel):
+    """Input for sa_detect_drift — supply either snapshot dicts or SHA strings."""
+
+    snapshot_a: dict | None = Field(default=None)
+    snapshot_b: dict | None = Field(default=None)
+    snapshot_a_sha: str = Field(default="")
+    snapshot_b_sha: str = Field(default="")
+
+
+class SAMappingLogInput(BaseModel):
+    """Input for sa_architecture_mapping_log — single or multiple paths."""
+
+    source_path: str = Field(default="")
+    source_paths: list[str] | None = Field(default=None)
+    language: str = Field(default="")
+
+
+class SAPlatformScanInput(BaseModel):
+    """Input for sa_platform_scan — scan multiple repos in one pass."""
+
+    repo_paths: list[str] = Field(..., min_length=1)
+    workers: int = Field(default=0, ge=0)
+
+
+class SABatchScanInput(BaseModel):
+    """Input for sa_batch_scan — run pattern + boundary + drift in one call."""
+
+    source_paths: list[str] = Field(..., min_length=1)
+    violations: list[dict] | None = Field(default=None)
+    patterns: list[dict] | None = Field(default=None)
+    baseline_json: dict | None = Field(default=None)
+
+
+class SAFitnessEvalInput(BaseModel):
+    """Input for sa_evaluate_fitness."""
+
+    function_id: str = Field(default="")
+    function: dict | None = Field(default=None)
+    snapshot: dict | None = Field(default=None)
+
+
+class SAGetFitnessFunctionsInput(BaseModel):
+    """Input for sa_get_fitness_functions — no parameters (GET)."""
+
+
+# ── Context Management Service Input Models (CMS :8086) ────────────────
+
+
+class CMSWarmupInput(BaseModel):
+    """Input for cms_warmup — no parameters."""
+
+
+class CMSValidateInput(BaseModel):
+    """Input for cms_validate — check if content fits within context budget."""
+
+    content: str = Field(..., min_length=1)
+    conversation_id: str = Field(default="")
+
+
+class CMSChunkInput(BaseModel):
+    """Input for cms_chunk — split content into context-aware segments."""
+
+    content: str = Field(..., min_length=1)
+    conversation_id: str = Field(default="")
+
+
+class CMSOptimizeInput(BaseModel):
+    """Input for cms_optimize — compress/skeletonize content to fit token budget."""
+
+    content: str = Field(..., min_length=1)
+    conversation_id: str = Field(default="")
+    token_budget: int = Field(default=0, ge=0)
+
+
+class CMSProcessInput(BaseModel):
+    """Input for cms_process — full CMS pipeline: validate → chunk → optimize."""
+
+    content: str = Field(..., min_length=1)
+    conversation_id: str = Field(default="")
+    token_budget: int = Field(default=0, ge=0)
+
+
+class CMSGetMetricsInput(BaseModel):
+    """Input for cms_get_metrics — retrieve token usage stats for a conversation."""
+
+    conversation_id: str = Field(default="")
+
+
+class CMSGlossaryDefineInput(BaseModel):
+    """Input for cms_glossary_define — add or update a term in the CMS glossary."""
+
+    term: str = Field(..., min_length=1, max_length=500)
+    definition: str = Field(..., min_length=1, max_length=5000)
+    conversation_id: str = Field(default="")
+
+
+class CMSGetGlossaryInput(BaseModel):
+    """Input for cms_get_glossary — retrieve all glossary terms for a conversation."""
+
+    conversation_id: str = Field(..., min_length=1)
+
+
+# ── Inference Service Input Models (:8085) ─────────────────────────────
+
+
+class InferenceInput(BaseModel):
+    """Input for the inference tool — local LLM via inference-service-cpp."""
+
+    model: str = Field(default="")
+    prompt: str = Field(default="")
+    messages: list[dict] | None = Field(default=None)
+    max_tokens: int = Field(default=512, ge=1, le=32768)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+
+
+# ── Unified-Search-RS Pending Input Models (Rust :8089) ────────────────
+
+
+class USSRingSearchInput(BaseModel):
+    """Input for uss_ring_search — 6-ring concentric ANN search with MMR fusion."""
+
+    q: str = Field(..., min_length=1, max_length=2000)
+    collection: str = Field(default="")
+    mmr_strategy: str = Field(default="")
+
+
+class USSScientificSearchInput(BaseModel):
+    """Input for uss_scientific_search — first-principles / theoretical retrieval."""
+
+    query: str = Field(..., min_length=1, max_length=2000)
+    top_k: int = Field(default=10, ge=1, le=50)
+
+
+class USSEmbedInput(BaseModel):
+    """Input for uss_embed — generate vector embedding for text."""
+
+    text: str = Field(..., min_length=1, max_length=10000)
+
+
+class USSHydrateInput(BaseModel):
+    """Input for uss_hydrate — fetch full document payloads by vector IDs."""
+
+    ids: list[str] = Field(..., min_length=1)
+    collection: str = Field(default="")
+
+
+class USSFitnessEvaluateInput(BaseModel):
+    """Input for uss_fitness_evaluate — evaluate a single fitness function."""
+
+    function_id: str = Field(default="")
+    function: dict | None = Field(default=None)
+    snapshot: dict | None = Field(default=None)
+
+
+class USSFitnessBatchInput(BaseModel):
+    """Input for uss_fitness_batch — evaluate multiple fitness functions in one call."""
+
+    requests: list[dict] = Field(..., min_length=1)
+
+
+class USSGraphQueryInput(BaseModel):
+    """Input for uss_graph_query — read-only Cypher query against the knowledge graph."""
+
+    cypher: str = Field(..., min_length=1)
+    params: dict | None = Field(default=None)
+
+
+class USSGraphTraverseInput(BaseModel):
+    """Input for uss_graph_traverse — BFS or MMR traversal from a starting node."""
+
+    start_node: str = Field(..., min_length=1)
+    strategy: str = Field(default="bfs")
+    max_depth: int = Field(default=3, ge=1, le=10)
+    top_k: int = Field(default=10, ge=1, le=50)

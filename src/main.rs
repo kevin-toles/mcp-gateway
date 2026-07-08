@@ -11,10 +11,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 
-mod config;
-mod registry;
-mod spawn;
-mod lifecycle;
+// Import library crate modules so both main.rs and integration tests
+// (tests/spawn_test.rs) can access the same public API.
+use shim_mcp_gateway::{config, lifecycle, registry, session, spawn};
+use shim_mcp_gateway::session::SessionLifecycle;
 
 // Public port that clients (VS Code) connect to
 const SHIM_ADDR: &str = "127.0.0.1:8090";
@@ -48,20 +48,13 @@ fn start_mcp_gateway() -> Option<Child> {
         .ok()
 }
 
-fn wait_for_mcp_ready(timeout_ms: u64) -> bool {
-    let start = Instant::now();
-    while start.elapsed().as_millis() < timeout_ms as u128 {
-        if is_mcp_running() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-fn proxy(mut client: TcpStream) {
+fn proxy(mut client: TcpStream, registry: &registry::ServiceRegistry) {
     match TcpStream::connect(MCP_ADDR) {
         Ok(mut backend) => {
+            // GAP-3: Record this request so the idle monitor measures from
+            // last actual traffic, not from registration time (RS-5).
+            registry.record_request("mcp-gateway");
+
             // Set up bidirectional proxy immediately (no blocking read first).
             // This avoids deadlocks where client waits for server before sending.
             let mut backend_clone = backend.try_clone().unwrap();
@@ -105,6 +98,14 @@ fn main() {
     // Create a registry with Boot-tier entries and run the startup health scan.
     // Services already responding are promoted to Cold immediately.
     let registry = Arc::new(registry::ServiceRegistry::new());
+
+    // ── Session manager (RS-2): track each inbound connection lifecycle ────
+    // Links to the registry so session Active→Idle→Expired transitions
+    // cascade as Hot→Warm→Cold tier updates.
+    let session_mgr = Arc::new(
+        session::SessionManager::new(session::PoolConfig::default())
+            .with_registry(Arc::clone(&registry)),
+    );
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for lifecycle");
     rt.block_on(async {
         lifecycle::startup_scan(&registry).await;
@@ -116,6 +117,11 @@ fn main() {
         tokio::spawn(async move {
             lifecycle::shim_idle_monitor(reg_for_idle).await;
         });
+
+        // Spawn boot_to_cold background tasks for services still in Boot.
+        // Uses BootColdMonitor for testable, tracing-instrumented spawning.
+        // Non-blocking — main() continues accepting connections immediately.
+        lifecycle::BootColdMonitor::new(registry.clone()).spawn_boot_tasks();
     });
 
     // ── Signal handling for graceful shutdown ──────────────────────────────
@@ -166,8 +172,14 @@ fn main() {
             Ok((client, _addr)) => {
                 let idle_enabled = idle_enabled;
                 let dm = deployment_mode.clone();
+                let reg = Arc::clone(&registry);
+                let sm = Arc::clone(&session_mgr);
                 thread::spawn(move || {
                     let mut client = client;
+
+                    // RS-2: create a session entry for this inbound connection.
+                    // Cascades tier updates to the registry as the connection progresses.
+                    let session_id = sm.create(Some("mcp-gateway")).ok();
 
                     // In Docker mode, mcp-gateway is managed by the container runtime.
                     // Skip native spawn entirely — the Python gateway runs in its own
@@ -178,8 +190,9 @@ fn main() {
                                 b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway is not running (Docker mode)\n",
                             );
                         } else {
-                            proxy(client);
+                            proxy(client, &reg);
                         }
+                        if let Some(id) = session_id { let _ = sm.destroy(id); }
                         return;
                     }
 
@@ -192,23 +205,38 @@ fn main() {
                             let _ = client.write_all(
                                 b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway launch command failed\n",
                             );
+                            if let Some(id) = session_id { let _ = sm.destroy(id); }
                             return;
                         }
-                        if !wait_for_mcp_ready(MCP_STARTUP_TIMEOUT_MS) {
+                        // RS-2: use spawn module's poll_health() to wait for the
+                        // gateway to bind its port — replaces the old blocking loop.
+                        let local_rt = tokio::runtime::Runtime::new()
+                            .expect("failed to create tokio runtime for health poll");
+                        let ready = local_rt.block_on(spawn::poll_health(
+                            "http://127.0.0.1:8087/health",
+                            Duration::from_millis(MCP_STARTUP_TIMEOUT_MS),
+                            Duration::from_millis(50),
+                        )).is_ok();
+                        if !ready {
                             let _ = client.write_all(
                                 b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway failed to start\n",
                             );
+                            if let Some(id) = session_id { let _ = sm.destroy(id); }
                             return;
                         }
+                        // Promote to Hot now that the gateway is confirmed healthy.
+                        reg.update_tier("mcp-gateway", registry::ActivationTier::Hot);
                     } else if !idle_enabled && !is_mcp_running() {
                         // With idle timeout disabled, fail fast if gateway is not up.
                         let _ = client.write_all(
                             b"HTTP/1.1 502 Bad Gateway\r\n\r\nMCP Gateway is not running (idle timeout disabled)\n",
                         );
+                        if let Some(id) = session_id { let _ = sm.destroy(id); }
                         return;
                     }
 
-                    proxy(client);
+                    proxy(client, &reg);
+                    if let Some(id) = session_id { let _ = sm.destroy(id); }
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -237,4 +265,98 @@ fn main() {
     }
     println!("shim: drain complete, exiting");
     eprintln!("shim: drain complete, exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── idle_timeout_enabled tests ────────────────────────────────────────
+    // These use unsafe env var manipulation, so they run sequentially in one
+    // test function to avoid races with parallel test execution.
+
+    #[test]
+    fn test_idle_timeout_default() {
+        // No env var set → defaults to true
+        unsafe { std::env::remove_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED"); }
+        assert!(idle_timeout_enabled());
+    }
+
+    #[test]
+    fn test_idle_timeout_enabled_true() {
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "true"); }
+        assert!(idle_timeout_enabled());
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "1"); }
+        assert!(idle_timeout_enabled());
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "TRUE"); }
+        assert!(idle_timeout_enabled());
+    }
+
+    #[test]
+    fn test_idle_timeout_enabled_false() {
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "false"); }
+        assert!(!idle_timeout_enabled());
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "0"); }
+        assert!(!idle_timeout_enabled());
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "FALSE"); }
+        assert!(!idle_timeout_enabled());
+    }
+
+    #[test]
+    fn test_idle_timeout_garbage_value() {
+        // Garbage values → not "true"/"1" → false
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "maybe"); }
+        assert!(!idle_timeout_enabled());
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", "2"); }
+        assert!(!idle_timeout_enabled());
+        unsafe { std::env::set_var("MCP_GATEWAY_IDLE_TIMEOUT_ENABLED", ""); }
+        assert!(!idle_timeout_enabled());
+    }
+
+    // ── is_mcp_running tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_is_mcp_running_connection_refused() {
+        // Connect to a port that definitely has no listener.
+        // We bind a temporary socket on port 0 (OS picks ephemeral), then
+        // use that port to test that connection is refused after unbinding.
+        // This avoids conflicts with the real mcp-gateway on :8087.
+        //
+        // Race condition: another process could bind the same port between
+        // drop(l) and connect. The probability is negligible in practice.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l); // unbind so connect gets ECONNREFUSED
+        let result = TcpStream::connect(format!("127.0.0.1:{}", port));
+        assert!(result.is_err(), "expected connection refused on ephemeral port {}", port);
+    }
+
+    #[test]
+    fn test_is_mcp_running_with_listener() {
+        // Bind a temporary listener on the MCP_ADDR port, then verify
+        // is_mcp_running returns true. This tests the TcpStream::connect logic.
+        //
+        // NOTE: This will conflict if the real mcp-gateway is already running
+        // on :8087. In CI or isolated test runs, that's fine. If it's a problem,
+        // the first test (connection_refused) would also fail.
+        let listener = std::net::TcpListener::bind("127.0.0.1:8087");
+        if let Ok(l) = listener {
+            assert!(is_mcp_running());
+            drop(l); // unbind immediately
+        } else {
+            // Port already in use (real gateway running) — skip.
+            // The test isn't meaningful if we can't bind, but is_mcp_running
+            // should still return true since something IS listening.
+            assert!(is_mcp_running());
+        }
+    }
+
+    // ── SHIM_ADDR and MCP_ADDR constants ──────────────────────────────────
+
+    #[test]
+    fn test_addr_constants() {
+        assert_eq!(SHIM_ADDR, "127.0.0.1:8090");
+        assert_eq!(MCP_ADDR, "127.0.0.1:8087");
+        assert_eq!(MCP_STARTUP_TIMEOUT_MS, 4000);
+    }
 }

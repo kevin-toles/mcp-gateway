@@ -152,7 +152,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
     async def batch_extract_metadata(
         input_dir: str,
         output_dir: str | None = None,
-        file_pattern: str = "**/*.json",
+        file_pattern: str = "*.json",
         skip_existing: bool = True,
         enable_summary: bool = False,
         vtf_path: str | None = None,
@@ -184,24 +184,6 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             out_dir = os.path.join(os.path.dirname(validated.input_dir.rstrip("/")), "metadata")
 
         os.makedirs(out_dir, exist_ok=True)
-
-        # ── Pre-flight: health check code-orchestrator ──────────────────
-        co_url = getattr(dispatcher, "_settings", None)
-        co_url = co_url.CODE_ORCHESTRATOR_URL if co_url else "http://localhost:8083"
-        health_err = _check_co_health(co_url)
-        if health_err:
-            return {"status": "error", "message": health_err}
-
-        # ── Launch in a new Terminal.app window and return immediately ──
-        return _launch_terminal(
-            input_dir=validated.input_dir,
-            out_dir=out_dir,
-            file_pattern=validated.file_pattern,
-            skip_existing=validated.skip_existing,
-            enable_summary=enable_summary,
-            co_url=co_url,
-            vtf_path=vtf_path,
-        )
 
         # ── Discover books (mirrors original discover_books()) ──────────
         pattern = os.path.join(validated.input_dir, validated.file_pattern)

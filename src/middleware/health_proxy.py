@@ -29,7 +29,9 @@ from typing import Any, Optional
 import httpx
 
 from src.core.idle_timeout import get_tracker
-from src.core.config import Settings
+from src.core.config import normalize_service_key
+from src.config.health_config import auto_warm_service, health_timeout_for
+from src.core.config import SLA_TIMEOUT, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +45,18 @@ class HealthAwareProxy:
     """
     Health-aware proxy that auto-restarts dead backend services.
     
-    Strategy: Pre-warming + 2s strict timeout for ALL services.
+    Strategy: Per-service SLA timeouts based on tier classification.
+    
+    HOT services get 2s SLA — any backend call exceeding this is a
+    tier violation. WARM/COLD services receive proportionally larger
+    timeouts to accommodate cold-start latency.
     
     The user NEVER sees errors or "processing" status. The system:
     1. Detects dead service
     2. Starts it silently
     3. Polls health every 100ms
     4. Returns result when ready (~500ms for Python, ~150ms for Rust/C++)
-    5. If >2s: fails gracefully (but this should never happen in practice)
+    5. Uses per-service sla_timeout from config (not a single 30s default)
     
     This is the core of the agentic MCP gateway - it absorbs service
     downtime and makes it transparent to the user.
@@ -87,12 +93,16 @@ class HealthAwareProxy:
         """
         Call a tool with health-aware auto-restart.
         
-        ALL services use the same strategy:
+        Uses per-service sla_timeout from config (tier-respecting), not
+        a blanket 30s timeout.  HOT services get ~2s, WARM ~8-15s,
+        COLD ~30-60s.
+        
+        Strategy:
         1. Detect dead service
         2. Start it silently
         3. Poll health every 100ms
-        4. Return result when ready (~500ms Python, ~150ms Rust/C++)
-        5. If >2s: fail gracefully (safety net)
+        4. Return result with per-service timeout
+        5. On timeout: fail fast with clear error
         
         User NEVER sees errors or "processing" status.
         """
@@ -104,6 +114,10 @@ class HealthAwareProxy:
         
         # Record request for idle tracking
         self._tracker.record_request(service_key)
+        
+        # Auto-warm cold/warm services before first probe
+        # Hot services are skipped internally — this is a no-op for them.
+        await auto_warm_service(service_key)
         
         config = self.SERVICE_CONFIG.get(service_key, {})
         timeout = config.get("timeout", 2.0)
@@ -122,8 +136,8 @@ class HealthAwareProxy:
                     )
                     await self._restart_service(service_key, timeout=timeout)
                 
-                # Call the tool
-                result = await self._call_backend(original_url, arguments)
+                # Call the tool (with per-service sla_timeout)
+                result = await self._call_backend(original_url, arguments, service_key=service_key)
                 logger.debug("%s call succeeded", tool_name)
                 return result
                 
@@ -217,7 +231,7 @@ class HealthAwareProxy:
         finally:
             self._restarting.discard(service_key)
     
-    async def _wait_for_service(self, service_key: str, timeout: float = 2.0) -> None:
+    async def _wait_for_service(self, service_key: str, timeout: float | None = None) -> None:
         """
         Wait for service to become healthy.
         
@@ -237,14 +251,15 @@ class HealthAwareProxy:
         config = self.SERVICE_CONFIG[service_key]
         health_url = f"{config['url']}{config['health_endpoint']}"
         
+        effective_timeout = timeout if timeout is not None else health_timeout_for(service_key)
         start_time = datetime.now(timezone.utc)
         poll_interval = 0.1  # 100ms polling
         
         while True:
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-            if elapsed >= timeout:
+            if elapsed >= effective_timeout:
                 raise ServiceRestartError(
-                    f"Service {service_key} did not become healthy within {timeout}s"
+                    f"Service {service_key} did not become healthy within {effective_timeout}s"
                 )
             
             try:
@@ -261,13 +276,12 @@ class HealthAwareProxy:
                 pass
             
             await asyncio.sleep(poll_interval)
-            
-            await asyncio.sleep(poll_interval)
     
     async def _call_backend(
         self,
         url: str,
         arguments: dict[str, Any],
+        service_key: str | None = None,
     ) -> Any:
         """
         Call backend service directly.
@@ -275,11 +289,14 @@ class HealthAwareProxy:
         Args:
             url: Backend URL
             arguments: Tool arguments
+            service_key: Optional service key for per-service timeout.
+                         Falls back to SLA_TIMEOUT (30.0s) when None.
             
         Returns:
             Tool response
         """
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        timeout = self._resolve_timeout(service_key)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 url,
                 json=arguments,
@@ -288,18 +305,26 @@ class HealthAwareProxy:
             response.raise_for_status()
             return response.json()
     
-    async def _call_direct(self, url: str, arguments: dict[str, Any]) -> Any:
+    async def _call_direct(
+        self,
+        url: str,
+        arguments: dict[str, Any],
+        service_key: str | None = None,
+    ) -> Any:
         """
         Call backend without health-aware proxy.
         
         Args:
             url: Backend URL
             arguments: Tool arguments
+            service_key: Optional service key for per-service timeout.
+                         Falls back to SLA_TIMEOUT (30.0s) when None.
             
         Returns:
             Tool response
         """
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        timeout = self._resolve_timeout(service_key)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 url,
                 json=arguments,
@@ -307,6 +332,27 @@ class HealthAwareProxy:
             )
             response.raise_for_status()
             return response.json()
+
+    def _resolve_timeout(self, service_key: str | None) -> float:
+        """Resolve the effective timeout for a service.
+
+        Priority:
+        1. Per-service ``sla_timeout`` from config (if set)
+        2. Per-service ``timeout`` from config (restart-wait fallback)
+        3. Module-level ``SLA_TIMEOUT`` (30.0s)
+
+        The sla_timeout should be set to the SLA commitment for the
+        backend (e.g. 2.0s for hot services).  The plain timeout is
+        the restart-wait budget, which can be much larger.
+        """
+        if service_key and service_key in self.SERVICE_CONFIG:
+            cfg = self.SERVICE_CONFIG[service_key]
+            # Prefer sla_timeout if explicitly set; fall back to timeout
+            sla = cfg.get("sla_timeout")
+            if sla is not None:
+                return float(sla)
+            return float(cfg.get("timeout", SLA_TIMEOUT))
+        return SLA_TIMEOUT
     
     def _tool_to_service(self, tool_name: str) -> Optional[str]:
         """
@@ -319,45 +365,48 @@ class HealthAwareProxy:
             Service key or None if not managed
         """
         # Map tool names to service keys
+        # Normalise the lookup key so both "semantic_search" and "semantic-search" resolve
+        tool_name = normalize_service_key(tool_name)
         tool_to_service = {
-            "semantic_search": "semantic_search",
-            "hybrid_search": "semantic_search",
-            "knowledge_search": "semantic_search",
-            "knowledge_refine": "semantic_search",
-            "pattern_search": "semantic_search",
-            "diagram_search": "semantic_search",
-            "graph_query": "semantic_search",
-            "graph_traverse": "semantic_search",
-            "code_analyze": "code_analyze",
-            "code_pattern_audit": "code_analyze",
-            "llm_complete": "llm_complete",
-            "a2a_send_message": "ai_agents",
-            "a2a_get_task": "ai_agents",
-            "a2a_cancel_task": "ai_agents",
-            "enhance_guideline": "ai_agents",
-            "audit_security_scan": "audit_service",
-            "audit_code_metrics": "audit_service",
-            "audit_corpus_search": "audit_service",
-            "audit_dependency_assess": "audit_service",
-            "audit_resolve_lookup": "audit_service",
-            "audit_search_exploits": "audit_service",
-            "audit_search_cves": "audit_service",
-            "audit_quality_scan": "audit_service",
-            "generate_taxonomy": "code_orchestrator",
-            "extract_book_metadata": "code_orchestrator",
-            "enrich_book_metadata": "code_orchestrator",
-            "batch_extract_metadata": "code_orchestrator",
-            "batch_enrich_metadata": "code_orchestrator",
-            "analyze_taxonomy_coverage": "code_orchestrator",
-            "run_agent_function": "run_agent_function",
-            "run_discussion": "run_agent_function",
-            "agent_execute": "run_agent_function",
-            "context_management": "context_management",
-            "amve_evaluate_fitness": "amve",
-            "foundation_search": "foundation_search",
+            "semantic-search": "semantic-search",
+            "hybrid-search": "semantic-search",
+            "knowledge-search": "semantic-search",
+            "knowledge-refine": "semantic-search",
+            "pattern-search": "semantic-search",
+            "diagram-search": "semantic-search",
+            "graph-query": "semantic-search",
+            "graph-traverse": "semantic-search",
+            "code-analyze": "code-analyze",
+            "code-pattern-audit": "code-analyze",
+            "llm-complete": "llm-complete",
+            "a2a-send-message": "ai-agents",
+            "a2a-get-task": "ai-agents",
+            "a2a-cancel-task": "ai-agents",
+            "enhance-guideline": "ai-agents",
+            "audit-security-scan": "audit-service",
+            "audit-code-metrics": "audit-service",
+            "audit-corpus-search": "audit-service",
+            "audit-dependency-assess": "audit-service",
+            "audit-resolve-lookup": "audit-service",
+            "audit-search-exploits": "audit-service",
+            "audit-search-cves": "audit-service",
+            "audit-quality-scan": "audit-service",
+            "generate-taxonomy": "code-orchestrator",
+            "extract-book-metadata": "code-orchestrator",
+            "enrich-book-metadata": "code-orchestrator",
+            "batch-extract-metadata": "code-orchestrator",
+            "batch-enrich-metadata": "code-orchestrator",
+            "analyze-taxonomy-coverage": "code-orchestrator",
+            "run-agent-function": "run-agent-function",
+            "run-discussion": "run-agent-function",
+            "agent-execute": "run-agent-function",
+            "context-management": "context-management",
+            "amve-evaluate-fitness": "amve",
+            "foundation-search": "foundation-search",
         }
         
-        return tool_to_service.get(tool_name)
+        raw = tool_to_service.get(tool_name)
+        return normalize_service_key(raw) if raw else None
     
     def get_service_status(self, service_key: str) -> dict[str, Any]:
         """

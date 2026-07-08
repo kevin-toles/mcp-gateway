@@ -431,7 +431,7 @@ class TestResilienceSettings:
 
     def test_default_circuit_breaker_recovery(self):
         s = Settings()
-        assert s.CIRCUIT_BREAKER_RECOVERY_SECONDS == 30.0
+        assert s.CIRCUIT_BREAKER_RECOVERY_SECONDS == 5.0
 
     def test_default_retry_config(self):
         s = Settings()

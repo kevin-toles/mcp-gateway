@@ -229,7 +229,7 @@ class TestToolsList:
         ss = next(t for t in tools if t.name == "semantic_search")
         props = ss.inputSchema["properties"]
         assert "query" in props
-        assert "collection" in props
+        assert "source" in props
         assert "top_k" in props
         assert "threshold" in props
 
@@ -387,7 +387,7 @@ class TestToolsCallResponse:
         async with Client(mcp_server) as client:
             await client.call_tool(
                 "semantic_search",
-                {"query": "test", "collection": "code", "top_k": 5, "threshold": 0.8},
+                {"query": "test", "source": "code", "top_k": 5, "threshold": 0.8},
             )
         payload = mock_dispatcher.dispatch.call_args[0][1]
         assert payload["query"] == "test"
