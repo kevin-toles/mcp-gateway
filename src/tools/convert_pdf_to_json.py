@@ -23,17 +23,25 @@ PROGRESS_LOG = "/tmp/conversion_progress.log"  # noqa: S108
 _STANDALONE_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "batch_convert_pdfs_standalone.py")
 
 
-def _check_co_health(co_url: str = "http://localhost:8083") -> str | None:
-    """Return None if healthy, or an error string if unreachable."""
+def _check_co_health(co_url: str | None = None) -> str | None:
+    """Return None if healthy, or an error string if unreachable.
+
+    Resolution order: explicit `co_url` arg → `MCP_GATEWAY_CODE_ORCHESTRATOR_URL`
+    env → Settings default (`http://localhost:8083` in hybrid mode).
+    """
+    if co_url is None:
+        from src.core.config import Settings
+        co_url = Settings().CODE_ORCHESTRATOR_URL
     try:
         r = httpx.get(f"{co_url}/health", timeout=5.0)
         r.raise_for_status()
         return None
     except Exception as e:
         return (
-            f"code-orchestrator health check failed: {e}. "
-            "Start it first: cd /Users/kevintoles/POC/Code-Orchestrator-Service && "
-            "source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8083"
+            f"code-orchestrator health check failed at {co_url}: {e}. "
+            "Start it first (native hybrid mode): "
+            "cd Code-Orchestrator-Service && source .venv/bin/activate && "
+            "uvicorn src.main:app --host 0.0.0.0 --port 8083"
         )
 
 
@@ -131,9 +139,14 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             skip_existing: Skip PDFs that already have a JSON output file.
             enable_ocr: Enable OCR fallback for image-only pages.
         """
-        # Resolve CO URL from dispatcher settings
+        # Resolve CO URL: dispatcher settings > fresh Settings() (env-driven).
+        # Fresh Settings() picks up MCP_GATEWAY_CODE_ORCHESTRATOR_URL so Docker
+        # mode reaches code-orchestrator via container DNS.
         settings = getattr(dispatcher, "_settings", None)
-        co_url = settings.CODE_ORCHESTRATOR_URL if settings else "http://localhost:8083"
+        if settings is None:
+            from src.core.config import Settings
+            settings = Settings()
+        co_url = settings.CODE_ORCHESTRATOR_URL
 
         # No pre-flight health check — the Terminal.app launcher handles CO
         # startup with nohup+disown so it survives VS Code terminal signals.

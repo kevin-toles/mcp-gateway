@@ -15,7 +15,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 
-from src.core.config import Settings
+from src.core.config import Settings, validate_config
 from src.core.idle_timeout_checker import get_checker
 from src.models.schemas import HealthResponse
 from src.security.audit import AuditMiddleware
@@ -34,11 +34,12 @@ _start_time = time.monotonic()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle with idle timeout checker."""
+    validate_config(settings)
     # Startup: Start idle timeout checker
     checker = get_checker()
-    checker.start()
+    await checker.start()
     logger.info("Idle timeout checker started")
-    
+
     try:
         yield
     finally:

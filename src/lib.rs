@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod lifecycle;
+pub mod platform_services;
 pub mod registry;
 pub mod session;
 pub mod spawn;

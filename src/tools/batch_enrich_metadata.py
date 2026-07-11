@@ -19,8 +19,18 @@ from fastmcp import Context
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 
-CO_ENRICH_URL = "http://localhost:8083/api/v1/workflows/enrich-book"
+_CO_ENRICH_PATH = "/api/v1/workflows/enrich-book"
 LATEST_LINK = "/tmp/batch_enrich_latest.log"  # noqa: S108
+
+
+def _co_enrich_url() -> str:
+    """Resolve the CO enrich workflow URL from Settings at call time.
+
+    Reads `MCP_GATEWAY_CODE_ORCHESTRATOR_URL` (Pydantic env prefix) so Docker
+    mode reaches code-orchestrator via container DNS instead of localhost.
+    """
+    from src.core.config import Settings
+    return f"{Settings().CODE_ORCHESTRATOR_URL}{_CO_ENRICH_PATH}"
 
 
 def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
@@ -127,6 +137,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         classifier_flag = "true" if classifier_enabled else "false"
         graphcodebert_flag = "true" if graphcodebert_enabled else "false"
         raw_content_dir_arg = raw_content_dir or ""
+        co_enrich_url = _co_enrich_url()
 
         # Write the temp runner script (same pattern as seed.sh inner script)
         tmpscript_fd, tmpscript_path = tempfile.mkstemp(suffix=".sh", prefix="batch_enrich_run_")
@@ -147,7 +158,7 @@ LIMIT={limit_val}
 BOOK_FILTER='{book_filter}'
 LOG_FILE='{log_file}'
 LATEST_LINK='{LATEST_LINK}'
-CO_URL='{CO_ENRICH_URL}'
+CO_URL='{co_enrich_url}'
 
 printf '\\n\\033[1;36m══ Batch Enrich ══  Log: '"$LOG_FILE"'\\033[0m\\n\\n'
 exec > >(tee "$LOG_FILE") 2>&1

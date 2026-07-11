@@ -8,6 +8,8 @@ Reference: Strategy §4.1, §8.1 (Encryption.IN_TRANSIT), §10.1 (Week 1-2)
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import NewType
 
@@ -50,7 +52,7 @@ class Settings(BaseSettings):
     # ── Backend service URLs ────────────────────────────────────────
     LLM_GATEWAY_URL: str = "http://localhost:8080"
     UNIFIED_SEARCH_URL: str = "http://localhost:8081"
-    UNIFIED_SEARCH_RS_URL: str = "http://localhost:8089"
+    UNIFIED_SEARCH_RS_URL: str = "http://localhost:8093"
     AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
     AUDIT_SERVICE_URL: str = "http://localhost:8084"
@@ -283,3 +285,39 @@ def get_ssl_config(settings: Settings) -> dict | None:
         "ssl_certfile": str(cert_path),
         "ssl_keyfile": str(key_path),
     }
+
+
+_config_logger = logging.getLogger(__name__)
+
+
+def validate_config(settings: Settings) -> list[str]:
+    """Validate settings for the current deployment mode.
+
+    In Docker mode, all service-to-service URLs must use container DNS names,
+    not localhost. Misconfigured URLs silently fall through to Pydantic defaults
+    when the env-prefixed var is missing — this catches that.
+
+    Returns a list of warning strings (all are also logged at WARNING level).
+    """
+    mode = os.environ.get("DEPLOYMENT_MODE", "hybrid").lower()
+    _config_logger.info("deployment_mode=%s service=%s", mode, settings.SERVICE_NAME)
+
+    warnings: list[str] = []
+    if mode != "docker":
+        return warnings
+
+    prefix = str(settings.model_config.get("env_prefix", ""))
+    for field, value in settings.model_dump().items():
+        if not field.upper().endswith("_URL"):
+            continue
+        if not isinstance(value, str):
+            continue
+        if "localhost" in value or "127.0.0.1" in value:
+            warnings.append(
+                f"DOCKER MODE: {field}={value!r} uses localhost — "
+                f"set {prefix}{field.upper()} to a container DNS name"
+            )
+
+    for w in warnings:
+        _config_logger.warning(w)
+    return warnings

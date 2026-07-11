@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 // Import library crate modules so both main.rs and integration tests
 // (tests/spawn_test.rs) can access the same public API.
-use shim_mcp_gateway::{config, lifecycle, registry, session, spawn};
+use shim_mcp_gateway::{config, lifecycle, platform_services, registry, session, spawn};
 use shim_mcp_gateway::session::SessionLifecycle;
 
 // Public port that clients (VS Code) connect to
@@ -39,11 +39,36 @@ fn is_mcp_running() -> bool {
     }
 }
 
+/// Spawn the Python mcp-gateway in hybrid/native mode.
+///
+/// Skipped in Docker mode — the Python gateway runs in its own container there
+/// (see `if dm == DeploymentMode::Docker` guard on the caller side).
+///
+/// Paths are env-var-configurable so the shim is portable across dev machines
+/// and CI:
+///   * `MCP_GATEWAY_HOME` — project root (default: current working directory)
+///   * `MCP_GATEWAY_UVICORN_BIN` — uvicorn binary (default: `<home>/.venv/bin/uvicorn`)
 fn start_mcp_gateway() -> Option<Child> {
-    Command::new("/Users/kevintoles/POC/mcp-gateway/.venv/bin/uvicorn")
-        .args(&["src.main:app", "--host", "127.0.0.1", "--port", "8087"])
-        .current_dir("/Users/kevintoles/POC/mcp-gateway")
-        .env("PATH", "/Users/kevintoles/POC/mcp-gateway/.venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+    let home = std::env::var("MCP_GATEWAY_HOME").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+    let uvicorn_bin = std::env::var("MCP_GATEWAY_UVICORN_BIN")
+        .unwrap_or_else(|_| format!("{}/.venv/bin/uvicorn", home));
+    let venv_bin_dir = std::path::Path::new(&uvicorn_bin)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("{}/.venv/bin", home));
+    let path_env = format!(
+        "{}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        venv_bin_dir
+    );
+
+    Command::new(&uvicorn_bin)
+        .args(["src.main:app", "--host", "127.0.0.1", "--port", "8087"])
+        .current_dir(&home)
+        .env("PATH", &path_env)
         .spawn()
         .ok()
 }
@@ -98,6 +123,11 @@ fn main() {
     // Create a registry with Boot-tier entries and run the startup health scan.
     // Services already responding are promoted to Cold immediately.
     let registry = Arc::new(registry::ServiceRegistry::new());
+    platform_services::seed_platform_services(&registry);
+    println!(
+        "shim-mcp-gateway: seeded {} platform services into registry",
+        registry.len()
+    );
 
     // ── Session manager (RS-2): track each inbound connection lifecycle ────
     // Links to the registry so session Active→Idle→Expired transitions

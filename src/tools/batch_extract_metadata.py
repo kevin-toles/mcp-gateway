@@ -55,17 +55,25 @@ def _log_progress(msg: str) -> None:
         f.flush()
 
 
-def _check_co_health(co_url: str = "http://localhost:8083") -> str | None:
-    """Return None if healthy, or an error string if unreachable."""
+def _check_co_health(co_url: str | None = None) -> str | None:
+    """Return None if healthy, or an error string if unreachable.
+
+    Resolution order: explicit `co_url` arg → `MCP_GATEWAY_CODE_ORCHESTRATOR_URL`
+    env → Settings default (`http://localhost:8083` in hybrid mode).
+    """
+    if co_url is None:
+        from src.core.config import Settings
+        co_url = Settings().CODE_ORCHESTRATOR_URL
     try:
         r = httpx.get(f"{co_url}/health", timeout=5.0)
         r.raise_for_status()
         return None
     except Exception as e:
         return (
-            f"code-orchestrator health check failed: {e}. "
-            "Start it first: cd /Users/kevintoles/POC/Code-Orchestrator-Service && "
-            "source .venv/bin/activate && uvicorn src.main:app --host 0.0.0.0 --port 8083"
+            f"code-orchestrator health check failed at {co_url}: {e}. "
+            "Start it first (native hybrid mode): "
+            "cd Code-Orchestrator-Service && source .venv/bin/activate && "
+            "uvicorn src.main:app --host 0.0.0.0 --port 8083"
         )
 
 
