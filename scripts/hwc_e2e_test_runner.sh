@@ -174,7 +174,7 @@ echo "║           H/W/C E2E Startup Test Suite                        ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-python -m pytest "TESTS_DIR_PLACEHOLDER/TEST_FILE_PLACEHOLDER" \
+python3 -m pytest "TESTS_DIR_PLACEHOLDER/TEST_FILE_PLACEHOLDER" \
   -v --tb=short -m integration
 
 TEST_EXIT=$?
