@@ -64,8 +64,14 @@ run_tests() {
   echo "Log file: $LOG_FILE"
   echo ""
   
+  # Use venv Python to avoid system pytest plugin conflicts (libpq/psycopg issues)
+  VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+  if [ ! -f "$VENV_PYTHON" ]; then
+    VENV_PYTHON="python3"  # Fallback to system Python
+  fi
+
   # Run pytest with output to both screen and log
-  python -m pytest "$TESTS_DIR/$TEST_FILE" \
+  "$VENV_PYTHON" -m pytest "$TESTS_DIR/$TEST_FILE" \
     -v \
     --tb=short \
     -m integration \
@@ -174,7 +180,13 @@ echo "║           H/W/C E2E Startup Test Suite                        ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-python3 -m pytest "TESTS_DIR_PLACEHOLDER/TEST_FILE_PLACEHOLDER" \
+# Use venv Python to avoid pytest-postgresql plugin conflicts
+VENV_PYTHON="PROJECT_ROOT_PLACEHOLDER/.venv/bin/python"
+if [ ! -f "$VENV_PYTHON" ]; then
+  VENV_PYTHON="python3"
+fi
+
+"$VENV_PYTHON" -m pytest "TESTS_DIR_PLACEHOLDER/TEST_FILE_PLACEHOLDER" \
   -v --tb=short -m integration
 
 TEST_EXIT=$?
