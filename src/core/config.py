@@ -113,7 +113,7 @@ class Settings(BaseSettings):
         "context-management-service": "lsof -ti:8086 | xargs kill -9 2>/dev/null || true",
         "amve": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true",
         "struct-analyzer-service": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true",
-        "unified-search-rs": "lsof -ti:8089 | xargs kill -9 2>/dev/null || true",
+        "unified-search-rs": "lsof -ti:8093 | xargs kill -9 2>/dev/null || true",
         "inference-service-cpp": "pkill -f inference-service 2>/dev/null || true",
         "mcp-gateway": "lsof -ti:8087 | xargs kill -9 2>/dev/null || true",
     }
@@ -125,8 +125,8 @@ class Settings(BaseSettings):
     # ── Backward-compat aliases ────────────────────────────────────
     @property
     def SEMANTIC_SEARCH_URL(self) -> str:
-        """Alias: renamed to UNIFIED_SEARCH_URL in config, preserved for tool dispatcher."""
-        return self.UNIFIED_SEARCH_URL
+        """Primary search service — now unified-search-rs (Rust :8093)."""
+        return self.UNIFIED_SEARCH_RS_URL
 
     @property
     def CO_RESTART_COMMAND(self) -> str:
@@ -150,11 +150,11 @@ class Settings(BaseSettings):
         """
         return {
             "semantic-search": {
-                "name": "unified-search-service",
-                "url": self.UNIFIED_SEARCH_URL,
+                "name": "unified-search-rs",
+                "url": self.UNIFIED_SEARCH_RS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/unified-search-service && /Users/kevintoles/POC/unified-search-service/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081",
-                "timeout": 45.0,
+                "restart_command": "lsof -ti:8093 | xargs kill -9 2>/dev/null || true; sleep 3; cd /Users/kevintoles/POC/unified-search-rs && ./target/release/uss-server",
+                "timeout": 30.0,
                 "sla_timeout": 2.0,
             },
             "code-analyze": {

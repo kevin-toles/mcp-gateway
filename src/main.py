@@ -54,6 +54,26 @@ app = FastAPI(
 )
 
 
+# ── MCP Protocol Server (AC-8.1, AC-8.5) — MOUNTED BEFORE MIDDLEWARE ──────
+# SSE streams must not be wrapped by BaseHTTPMiddleware-based wrappers.
+# Mount MCP at the router level before add_middleware adds wrapping.
+
+_config_path = Path(__file__).parent.parent / "config" / "tools.yaml"
+
+if _config_path.exists():
+    from src.security.output_sanitizer import OutputSanitizer
+    from src.server import create_mcp_server
+    from src.tool_dispatcher import ToolDispatcher
+    from src.tool_registry import ToolRegistry
+
+    _registry = ToolRegistry(_config_path)
+    _dispatcher = ToolDispatcher(settings)
+    _sanitizer = OutputSanitizer()
+    mcp_server = create_mcp_server(_registry, _dispatcher, _sanitizer)
+    app.mount("/mcp", mcp_server.http_app(transport="sse"))
+    logger.info("MCP server mounted at /mcp with %d tools", _registry.tool_count)
+
+
 # ── Middleware chain (AC-8.5) ───────────────────────────────────────────
 # Order: RequestID → Auth → RateLimit → [handler] → Audit
 # Starlette add_middleware prepends, so LAST added = OUTERMOST.
@@ -109,28 +129,13 @@ async def idle_timeout_status() -> dict:
     }
 
 
-# ── MCP Protocol Server (AC-8.1, AC-8.5) ───────────────────────────────
-
-_config_path = Path(__file__).parent.parent / "config" / "tools.yaml"
-
-if _config_path.exists():
-    from src.security.output_sanitizer import OutputSanitizer
-    from src.server import create_mcp_server
-    from src.tool_dispatcher import ToolDispatcher
-    from src.tool_registry import ToolRegistry
-
-    _registry = ToolRegistry(_config_path)
-    _dispatcher = ToolDispatcher(settings)
-    _sanitizer = OutputSanitizer()
-    mcp_server = create_mcp_server(_registry, _dispatcher, _sanitizer)
-    app.mount("/mcp", mcp_server.http_app(transport="sse"))
-    logger.info("MCP server mounted at /mcp with %d tools", _registry.tool_count)
-
-    # ── REST Tools API (LLM-friendly) ─────────────────────────────
+# ── REST Tools API (LLM-friendly) ─────────────────────────────
+# Only mount if MCP was successfully initialized
+try:
     from src.tools_rest_api import create_tools_router
 
     tools_router = create_tools_router(_dispatcher)
     app.include_router(tools_router)
     logger.info("REST tools API mounted at /api/v1/tools")
-else:
-    logger.warning("config/tools.yaml not found — MCP server not mounted")
+except NameError:
+    logger.warning("_dispatcher not initialized — REST tools API not mounted")

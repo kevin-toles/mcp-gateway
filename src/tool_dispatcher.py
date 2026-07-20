@@ -73,6 +73,7 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "semantic_search": make_service_key("semantic-search"),
     "hybrid_search": make_service_key("semantic-search"),
     "graph_traverse": make_service_key("semantic-search"),
+    "diagram_search": make_service_key("semantic-search"),
     # Issue #6: consolidated KB tools
     "knowledge_search": make_service_key("semantic-search"),
     "knowledge_refine": make_service_key("semantic-search"),
@@ -117,8 +118,8 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     # AEI-23: VRE quarantine tools
     "audit_search_exploits": make_service_key("audit-service"),
     "audit_search_cves": make_service_key("audit-service"),
-    # WBS-F7: Foundation search (scientific / theoretical layer)
-    "foundation_search": make_service_key("unified-search-service"),
+    # WBS-F7: Foundation search (scientific / theoretical layer) — routes to Rust
+    "foundation_search": make_service_key("semantic-search"),
     # Item 36: inference-service-cpp (HWC F2, P0)
     "inference": make_service_key("inference-service-cpp"),
     # ── Context Management Service (CMS) — TBD ────────────────────────
@@ -155,9 +156,10 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     """
     _HYBRID = "/v1/search/hybrid"
     return {
+        # ── unified-search-rs (Rust :8093) ─────────────────────────────────────
         "semantic_search": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
-            path="/v1/search",
+            path=_HYBRID,
         ),
         "hybrid_search": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
@@ -179,19 +181,11 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
         ),
-        # diagram_search: routes to USS /v1/search/hybrid with collection=ascii_diagrams.
-        # USS detects the CLIP collection and uses CLIPEncoder.encode_text() instead of MiniLM.
+        # diagram_search: CLIP 512-dim encoder is wired in unified-search-rs; routes to
+        # /v1/search/hybrid with collection="ascii_diagrams" handled server-side.
         "diagram_search": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/hybrid",
-        ),
-        "code_analyze": DispatchRoute(
-            base_url=settings.AUDIT_SERVICE_URL,
-            path="/v1/patterns/detect",
-        ),
-        "code_pattern_audit": DispatchRoute(
-            base_url=settings.AUDIT_SERVICE_URL,
-            path="/v1/patterns/detect",
         ),
         "graph_query": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
@@ -200,6 +194,14 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
         "graph_traverse": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/graph/traverse",
+        ),
+        "code_analyze": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/patterns/detect",
+        ),
+        "code_pattern_audit": DispatchRoute(
+            base_url=settings.AUDIT_SERVICE_URL,
+            path="/v1/patterns/detect",
         ),
         "llm_complete": DispatchRoute(
             base_url=settings.LLM_GATEWAY_URL,
@@ -342,7 +344,8 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/v1/audit/scan",
             timeout=600.0,
         ),
-        # WBS-F7: Foundation search (scientific / theoretical layer)
+        # WBS-F7: Foundation search — Rust /v1/search/foundation degrades gracefully
+        # when foundation_bridge / foundation_<domain> collections are not yet seeded.
         "foundation_search": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
             path="/v1/search/foundation",
