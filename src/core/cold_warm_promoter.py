@@ -241,7 +241,7 @@ _SERVICE_URL_ATTRS: dict[str, str] = {
     "inference-service-cpp": "INFERENCE_SERVICE_URL",
     "context-management-service": "CONTEXT_MANAGEMENT_URL",
     "amve": "AMVE_SERVICE_URL",
-    "struct-analyzer-service": "STRUCT_ANALYZER_URL",
+    "struct-analyzer": "STRUCT_ANALYZER_URL",
 }
 
 

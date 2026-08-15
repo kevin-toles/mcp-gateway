@@ -262,12 +262,16 @@ impl SessionManager {
     }
 
     /// Cascade session state to the registry tier for a given service name.
+    /// Skips mcp-gateway — it is the gateway itself; its tier is managed by
+    /// the Rust shim connection handler, not by session lifecycle. Cascading
+    /// here would cause Hot↔Cold flapping on every session create/destroy.
     fn cascade_to_registry(&self, service_name: Option<&str>, session_state: SessionState) {
         if let Some(name) = service_name {
+            if name == "mcp-gateway" {
+                return;
+            }
             if let Some(ref reg) = self.registry {
                 reg.update_tier(name, session_state.to_activation_tier());
-                // GAP-3: Record a request timestamp alongside the tier update
-                // so the idle monitor measures from last actual traffic (RS-5).
                 reg.record_request(name);
             }
         }
@@ -431,8 +435,10 @@ impl SessionLifecycle for SessionManager {
 
     fn destroy(&self, id: SessionId) -> Result<(), PoolError> {
         let mut sessions = self.pool.sessions.write().unwrap();
-        sessions.remove(&id).ok_or(PoolError::SessionNotFound(id))?;
+        let removed = sessions.remove(&id).ok_or(PoolError::SessionNotFound(id))?;
         self.pool.untrack_completely(id);
+        drop(sessions);
+        self.cascade_to_registry(removed.service_name.as_deref(), SessionState::Expired);
         Ok(())
     }
 

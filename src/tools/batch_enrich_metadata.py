@@ -8,6 +8,7 @@ The tool:
 Monitor: tail -f /tmp/batch_enrich_latest.log
 """
 
+import httpx
 import os
 import subprocess
 import tempfile
@@ -137,7 +138,17 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         classifier_flag = "true" if classifier_enabled else "false"
         graphcodebert_flag = "true" if graphcodebert_enabled else "false"
         raw_content_dir_arg = raw_content_dir or ""
+
         co_enrich_url = _co_enrich_url()
+        co_base_url = co_enrich_url[: co_enrich_url.index(_CO_ENRICH_PATH)]
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as _c:
+                _health = await _c.get(f"{co_base_url}/health")
+        except Exception:
+            _health = None
+        if _health is None or _health.status_code != 200:
+            if not await dispatcher._try_auto_start("code-orchestrator", co_base_url):
+                return {"status": "error", "message": f"code-orchestrator did not become healthy at {co_base_url}"}
 
         # Write the temp runner script (same pattern as seed.sh inner script)
         tmpscript_fd, tmpscript_path = tempfile.mkstemp(suffix=".sh", prefix="batch_enrich_run_")

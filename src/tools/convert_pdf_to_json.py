@@ -23,28 +23,6 @@ PROGRESS_LOG = "/tmp/conversion_progress.log"  # noqa: S108
 _STANDALONE_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "batch_convert_pdfs_standalone.py")
 
 
-def _check_co_health(co_url: str | None = None) -> str | None:
-    """Return None if healthy, or an error string if unreachable.
-
-    Resolution order: explicit `co_url` arg → `MCP_GATEWAY_CODE_ORCHESTRATOR_URL`
-    env → Settings default (`http://localhost:8083` in hybrid mode).
-    """
-    if co_url is None:
-        from src.core.config import Settings
-        co_url = Settings().CODE_ORCHESTRATOR_URL
-    try:
-        r = httpx.get(f"{co_url}/health", timeout=5.0)
-        r.raise_for_status()
-        return None
-    except Exception as e:
-        return (
-            f"code-orchestrator health check failed at {co_url}: {e}. "
-            "Start it first (native hybrid mode): "
-            "cd Code-Orchestrator-Service && source .venv/bin/activate && "
-            "uvicorn src.main:app --host 0.0.0.0 --port 8083"
-        )
-
-
 def _launch_terminal(
     input_dir: str,
     out_dir: str,
@@ -148,8 +126,14 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             settings = Settings()
         co_url = settings.CODE_ORCHESTRATOR_URL
 
-        # No pre-flight health check — the Terminal.app launcher handles CO
-        # startup with nohup+disown so it survives VS Code terminal signals.
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as _c:
+                _health = await _c.get(f"{co_url}/health")
+        except Exception:
+            _health = None
+        if _health is None or _health.status_code != 200:
+            if not await dispatcher._try_auto_start("code-orchestrator", co_url):
+                return {"status": "error", "message": f"code-orchestrator did not become healthy at {co_url}"}
 
         if os.path.isdir(input_path):
             # ── Batch mode: directory ──────────────────────────────────────

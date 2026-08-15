@@ -68,7 +68,7 @@ class TestRouteTable:
         assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 72
+        assert len(dispatcher.routes) == 74
 
 
 class TestDispatchRouting:
@@ -709,3 +709,76 @@ class TestIdentityDegradationGuard:
         assert captured
         outgoing = captured[0]
         assert outgoing.get("x-tenant-id") == "anonymous", "X-Tenant-ID must be 'anonymous' when AUTH_ENABLED=false"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _try_auto_start: detect-before-spawn state machine
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestTryAutoStart:
+    """Tests for _try_auto_start detect-before-spawn logic."""
+
+    @pytest.fixture
+    def dispatcher(self):
+        from src.core.config import Settings
+        from src.tool_dispatcher import ToolDispatcher
+        return ToolDispatcher(Settings())
+
+    @pytest.mark.asyncio
+    async def test_returns_true_immediately_when_already_healthy(self, dispatcher, respx_mock):
+        """If the service is already healthy, skip spawn and return True."""
+        respx_mock.get("http://localhost:8082/health").mock(
+            return_value=httpx.Response(200)
+        )
+        result = await dispatcher._try_auto_start("ai-agents", "http://localhost:8082")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_port_bound_but_unhealthy(self, dispatcher, respx_mock):
+        """Port bound, service sick → conflict warning, return False without spawning."""
+        respx_mock.get("http://localhost:8082/health").mock(
+            return_value=httpx.Response(503)
+        )
+        result = await dispatcher._try_auto_start("ai-agents", "http://localhost:8082")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_startup_command(self, dispatcher, respx_mock):
+        """Unknown service key (no entry in SERVICE_STARTUP_COMMANDS) → False."""
+        respx_mock.get("http://localhost:9999/health").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        result = await dispatcher._try_auto_start("unknown-service-xyz", "http://localhost:9999")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_uses_custom_health_endpoint_for_amve(self, dispatcher, respx_mock):
+        """AMVE uses /v1/health — pre-spawn probe must use the correct path."""
+        respx_mock.get("http://localhost:8092/v1/health").mock(
+            return_value=httpx.Response(200)
+        )
+        result = await dispatcher._try_auto_start("amve", "http://localhost:8092")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_hot_service_times_out_after_2s(self, dispatcher, respx_mock, monkeypatch):
+        """HOT-tier startup budget is 2s — poll loop must exit at that ceiling."""
+        import time as time_mod
+        respx_mock.get("http://localhost:8080/health").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        # Patch asyncio.create_subprocess_shell so no real process is spawned.
+        import asyncio
+        async def _noop_spawn(*args, **kwargs):
+            class _FakeProc:
+                returncode = None
+            return _FakeProc()
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", _noop_spawn)
+
+        start = time_mod.monotonic()
+        result = await dispatcher._try_auto_start("llm-gateway", "http://localhost:8080")
+        elapsed = time_mod.monotonic() - start
+
+        assert result is False
+        # Should give up close to the 2s HOT budget, not the old 30s cap.
+        assert elapsed < 5.0, f"HOT service timed out too slowly: {elapsed:.1f}s"

@@ -1676,3 +1676,41 @@ class USSGraphTraverseInput(BaseModel):
     strategy: str = Field(default="bfs")
     max_depth: int = Field(default=3, ge=1, le=10)
     top_k: int = Field(default=10, ge=1, le=50)
+
+
+# ── Validation Service (ASCP.VS7) ─────────────────────────────────────────────
+
+
+class ValidateWBSInput(BaseModel):
+    """Input for validate_wbs — validate a WBS document against the ASCP-1.0 rule set."""
+
+    content: str = Field(..., min_length=1, description="Raw WBS markdown content to validate")
+
+
+class ValidateDesignDocInput(BaseModel):
+    """Input for validate_design_doc — validate a design document."""
+
+    content: str = Field(..., min_length=1, description="Raw design document markdown content")
+    phase: str = Field(default="", description="Optional SDLC phase hint (e.g. ARCHITECT)")
+
+
+class SDLCExecuteInput(BaseModel):
+    """Input for sdlc_execute — run the full COMP-07→08→09→10 pipeline."""
+
+    wbs_content: str = Field(
+        ...,
+        min_length=1,
+        description="Raw WBS markdown content to execute through the SDLC pipeline",
+    )
+    config: dict = Field(
+        default_factory=dict,
+        description="Optional execution config (feature_path, ghk_specs, timeout_s)",
+    )
+    model_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "BEH-04.01 BYOK override: role → model_id mapping. "
+            "When non-empty, ModelResolver tier 3 wins and all pipeline LLM calls "
+            "route to the user-configured provider (CAP-04 / AC-ASCP.18)."
+        ),
+    )

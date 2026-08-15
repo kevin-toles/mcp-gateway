@@ -1,4 +1,4 @@
-use crate::registry::{ServiceRegistry, ActivationTier};
+use crate::registry::{ActivationTier, HealthState, ServiceRegistry};
 use crate::spawn::poll_health;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +25,19 @@ pub const WARM_IDLE_TIMEOUT_SECS: u64 = 600;  // 10 minutes
 // Env var overrides: COLD_PROMOTION_REQUESTS, COLD_PROMOTION_WINDOW_SECS
 
 pub const COLD_PROMOTION_WINDOW_SECS: u64 = 600; // 10 minutes
+
+// ── Health-Failure Respawn ───────────────────────────────────────────────────
+// Background loop that polls all registry services and respawns any that have
+// accumulated consecutive health-check failures, regardless of how they were
+// killed (direct kill -9, abrupt shutdown, crashed process, etc.).
+//
+// This closes the H/W/C gap where a service killed outside the shim proxy path
+// (direct call, external trigger) had no auto-restart path — the idle monitor
+// only demotes tiers, and the shim connection handler only respawns mcp-gateway.
+// All other services now get the same auto-restart guarantee.
+
+pub const HEALTH_CHECK_INTERVAL_SECS: u64 = 15;
+pub const HEALTH_FAILURE_RESPAWN_THRESHOLD: u32 = 2;
 
 // ── GAP-3 RED sentinel ──────────────────────────────────────────────────────
 // Compile-time constant used by test_proxy_path_missing_record_request.
@@ -61,7 +74,15 @@ pub async fn boot_to_cold(
         service: service_name.to_string()
     })?;
 
-    registry.update_tier(service_name, ActivationTier::Cold);
+    // Re-check current tier before overwriting — another path (e.g.
+    // spawn_service_and_promote from health_failure_monitor) may have
+    // already promoted the service past Boot while we were polling.
+    if let Some(current) = registry.get(service_name) {
+        if current.tier == ActivationTier::Boot {
+            registry.update_tier(service_name, ActivationTier::Cold);
+            registry.record_request(service_name);
+        }
+    }
     Ok(())
 }
 
@@ -100,10 +121,15 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
 
             // RS-5: Hot→Warm check
             if entry.tier == ActivationTier::Hot {
-                let idle_secs = entry
+                // If last_request is None the service was just promoted and has
+                // no traffic yet — skip demotion rather than treating it as
+                // infinitely idle.
+                let Some(idle_secs) = entry
                     .last_request_elapsed_secs()
                     .map(|s| s as u64)
-                    .unwrap_or(u64::MAX);
+                else {
+                    continue;
+                };
 
                 let effective_hot_timeout = entry.hot_idle_timeout_secs.min(hot_timeout);
                 if idle_secs >= effective_hot_timeout {
@@ -126,10 +152,12 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
             // Re-fetch the entry to pick up any Hot→Warm transition above
             if let Some(current) = registry.get(&entry.name) {
                 if current.tier == ActivationTier::Warm {
-                    let idle_secs = current
+                    let Some(idle_secs) = current
                         .last_request_elapsed_secs()
                         .map(|s| s as u64)
-                        .unwrap_or(u64::MAX);
+                    else {
+                        continue;
+                    };
 
                     let effective_warm_timeout = current.warm_idle_timeout_secs.min(warm_timeout);
                     if idle_secs >= effective_warm_timeout {
@@ -155,19 +183,106 @@ pub async fn startup_scan(registry: &ServiceRegistry) {
     for entry in registry.all() {
         if entry.tier == ActivationTier::Boot {
             // Non-blocking check — if already responding, promote immediately
+            let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
             let health_url = format!(
                 "http://localhost:{}{}",
-                entry.port, entry.health_path
+                health_port, entry.health_path
             );
             if reqwest::get(&health_url).await
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
             {
                 registry.update_tier(&entry.name, ActivationTier::Cold);
+                registry.record_request(&entry.name);
                 tracing::info!(
                     service = %entry.name,
                     "startup scan: service already healthy, promoted Boot→Cold"
                 );
+            }
+        }
+    }
+}
+
+/// Health-failure respawn monitor — spawned as a background task at shim startup.
+///
+/// Every `HEALTH_CHECK_INTERVAL_SECS`, polls the `/health` endpoint of every
+/// non-Boot registry entry. On failure it calls `registry.update_health()` to
+/// increment `failure_count` (and demote Hot→Warm at threshold per registry.rs).
+/// When `failure_count >= HEALTH_FAILURE_RESPAWN_THRESHOLD`, it calls
+/// `spawn_service_and_promote()` to bring the service back up and promote it
+/// to Hot — exactly as if the shim connection handler had detected the outage.
+///
+/// `deployment_mode` is the string expected by `spawn::resolve_runtime`
+/// (`"hybrid"`, `"native"`, or `"docker"`).
+pub async fn health_failure_monitor(
+    registry: Arc<ServiceRegistry>,
+    deployment_mode: String,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS));
+    loop {
+        interval.tick().await;
+
+        for entry in registry.all() {
+
+            let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
+            let health_url = format!(
+                "http://localhost:{}{}",
+                health_port, entry.health_path
+            );
+            let is_healthy = reqwest::get(&health_url)
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+
+            if is_healthy {
+                if entry.failure_count > 0 {
+                    // Reset failure count without spamming logs on every tick.
+                    registry.update_health(&entry.name, HealthState::Healthy);
+                }
+                continue;
+            }
+
+            registry.update_health(&entry.name, HealthState::Unreachable);
+
+            // Re-fetch to get updated failure_count after the update_health call.
+            let Some(current) = registry.get(&entry.name) else {
+                continue;
+            };
+            if current.failure_count < HEALTH_FAILURE_RESPAWN_THRESHOLD {
+                continue;
+            }
+
+            tracing::warn!(
+                service = %current.name,
+                port = current.port,
+                failure_count = current.failure_count,
+                tier = ?current.tier,
+                "health_failure_monitor: consecutive failures exceeded threshold — respawning"
+            );
+
+            match crate::spawn::spawn_service_and_promote(
+                &current,
+                &deployment_mode,
+                &registry,
+            )
+            .await
+            {
+                Ok(pid) => {
+                    tracing::info!(
+                        service = %current.name,
+                        pid = pid,
+                        "health_failure_monitor: service respawned and promoted to Hot"
+                    );
+                    // Reset failure count so the next tick doesn't re-trigger.
+                    registry.update_health(&current.name, HealthState::Healthy);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        service = %current.name,
+                        error = %e,
+                        "health_failure_monitor: respawn failed — will retry next interval"
+                    );
+                }
             }
         }
     }

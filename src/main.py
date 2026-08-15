@@ -16,6 +16,14 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response
 
 from src.core.config import Settings
+from src.security.credential_masking import CredentialMaskingFilter as _CredentialMaskingFilter
+
+# ASCP.KS.2: Install masking filter on root logger before any log output.
+# Filter on the Logger (not per-handler) intercepts records from all children
+# regardless of which handlers are attached later by uvicorn or middleware.
+_credential_masking_filter = _CredentialMaskingFilter()
+logging.getLogger().addFilter(_credential_masking_filter)
+
 from src.core.idle_timeout_checker import get_checker
 from src.models.schemas import HealthResponse
 from src.security.audit import AuditMiddleware

@@ -326,7 +326,7 @@ class IdleTimeoutTracker:
         "audit-service": "AUDIT_SERVICE_IDLE_TIMEOUT",
         "context-management-service": "CMS_IDLE_TIMEOUT",
         "amve": "AMVE_IDLE_TIMEOUT",
-        "struct-analyzer-service": "STRUCT_ANALYZER_IDLE_TIMEOUT",
+        "struct-analyzer": "STRUCT_ANALYZER_IDLE_TIMEOUT",
     }
     
     def __init__(self, default_timeout_seconds: int | None = None):

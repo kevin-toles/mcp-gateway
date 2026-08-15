@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod lifecycle;
+pub mod llm_router;
 pub mod platform_services;
 pub mod registry;
 pub mod session;

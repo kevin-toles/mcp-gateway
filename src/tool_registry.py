@@ -84,6 +84,9 @@ from src.models.schemas import (
     USSHydrateInput,
     USSRingSearchInput,
     USSScientificSearchInput,
+    SDLCExecuteInput,
+    ValidateDesignDocInput,
+    ValidateWBSInput,
 )
 
 # ── Input model mapping ────────────────────────────────────────────────
@@ -183,6 +186,11 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "uss_fitness_batch": USSFitnessBatchInput,
     "uss_graph_query": USSGraphQueryInput,
     "uss_graph_traverse": USSGraphTraverseInput,
+    # Validation Service (ASCP.VS7)
+    "validate_wbs": ValidateWBSInput,
+    "validate_design_doc": ValidateDesignDocInput,
+    # SDLC pipeline (ASCP.INT.3 / CAP-01)
+    "sdlc_execute": SDLCExecuteInput,
 }
 
 

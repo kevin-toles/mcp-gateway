@@ -24,6 +24,7 @@ import httpx
 
 from src.ai_platform_metrics import TOOL_CALLS_TOTAL
 from src.core.config import SLA_TIMEOUT, Settings
+from src.core.keys import normalize_service_key
 from src.core.service_key import make_service_key
 from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeoutError
 from src.core.idle_timeout import get_tracker, record_dispatch_for_promotion
@@ -118,8 +119,21 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     # AEI-23: VRE quarantine tools
     "audit_search_exploits": make_service_key("audit-service"),
     "audit_search_cves": make_service_key("audit-service"),
+    # Additional audit-service tools (AEI phase 7 + VRE)
+    "audit_quality_scan": make_service_key("audit-service"),
+    "audit_codebase_scan": make_service_key("audit-service"),
     # WBS-F7: Foundation search (scientific / theoretical layer) — routes to Rust
     "foundation_search": make_service_key("semantic-search"),
+    "find_code_pattern": make_service_key("semantic-search"),
+    # unified-search-rs native tools
+    "uss_ring_search": make_service_key("semantic-search"),
+    "uss_scientific_search": make_service_key("semantic-search"),
+    "uss_embed": make_service_key("semantic-search"),
+    "uss_hydrate": make_service_key("semantic-search"),
+    "uss_fitness_evaluate": make_service_key("semantic-search"),
+    "uss_fitness_batch": make_service_key("semantic-search"),
+    "uss_graph_query": make_service_key("semantic-search"),
+    "uss_graph_traverse": make_service_key("semantic-search"),
     # Item 36: inference-service-cpp (HWC F2, P0)
     "inference": make_service_key("inference-service-cpp"),
     # ── Context Management Service (CMS) — TBD ────────────────────────
@@ -132,19 +146,23 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "cms_get_glossary": make_service_key("context-management-service"),
     "cms_warmup": make_service_key("context-management-service"),
     # ── Struct Analyzer (SA) — drop-in replacement for AMVE ───────────
-    "sa_detect_patterns": make_service_key("struct-analyzer-service"),
-    "sa_detect_boundaries": make_service_key("struct-analyzer-service"),
-    "sa_detect_events": make_service_key("struct-analyzer-service"),
-    "sa_detect_messaging": make_service_key("struct-analyzer-service"),
-    "sa_build_call_graph": make_service_key("struct-analyzer-service"),
-    "sa_detect_dead_code": make_service_key("struct-analyzer-service"),
-    "sa_extract_architecture": make_service_key("struct-analyzer-service"),
-    "sa_detect_drift": make_service_key("struct-analyzer-service"),
-    "sa_architecture_mapping_log": make_service_key("struct-analyzer-service"),
-    "sa_platform_scan": make_service_key("struct-analyzer-service"),
-    "sa_batch_scan": make_service_key("struct-analyzer-service"),
-    "sa_evaluate_fitness": make_service_key("struct-analyzer-service"),
-    "sa_get_fitness_functions": make_service_key("struct-analyzer-service"),
+    "sa_detect_patterns": make_service_key("struct-analyzer"),
+    "sa_detect_boundaries": make_service_key("struct-analyzer"),
+    "sa_detect_events": make_service_key("struct-analyzer"),
+    "sa_detect_messaging": make_service_key("struct-analyzer"),
+    "sa_build_call_graph": make_service_key("struct-analyzer"),
+    "sa_detect_dead_code": make_service_key("struct-analyzer"),
+    "sa_extract_architecture": make_service_key("struct-analyzer"),
+    "sa_detect_drift": make_service_key("struct-analyzer"),
+    "sa_architecture_mapping_log": make_service_key("struct-analyzer"),
+    "sa_platform_scan": make_service_key("struct-analyzer"),
+    "sa_batch_scan": make_service_key("struct-analyzer"),
+    "sa_evaluate_fitness": make_service_key("struct-analyzer"),
+    "sa_get_fitness_functions": make_service_key("struct-analyzer"),
+    # Validation Service (ASCP.VS7)
+    "validate_wbs": make_service_key("validation-service"),
+    "validate_design_doc": make_service_key("validation-service"),
+    "sdlc_execute": make_service_key("ai-agents"),
 }
 
 
@@ -474,6 +492,21 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             base_url=settings.UNIFIED_SEARCH_RS_URL,
             path="/v1/graph/traverse",
         ),
+        # Validation Service (ASCP.VS7)
+        "validate_wbs": DispatchRoute(
+            base_url=settings.VALIDATION_SERVICE_URL,
+            path="/validate/wbs",
+        ),
+        "validate_design_doc": DispatchRoute(
+            base_url=settings.VALIDATION_SERVICE_URL,
+            path="/validate/design_document",
+        ),
+        # SDLC Execution (ASCP.INT.3 / CAP-01)
+        "sdlc_execute": DispatchRoute(
+            base_url=settings.AI_AGENTS_URL,
+            path="/v1/workflows/sdlc-execute",
+            timeout=300.0,
+        ),
     }
 
 
@@ -642,6 +675,84 @@ class ToolDispatcher:
         )
         await asyncio.sleep(delay)
 
+    async def _try_auto_start(self, service_name: str, base_url: str) -> bool:
+        """Detect service state, spawn if absent, and poll until healthy.
+
+        State machine:
+          healthy already  → return True immediately (skip spawn)
+          port bound, sick → log conflict; return False (Rust supervisor handles respawn)
+          port not bound   → spawn via SERVICE_STARTUP_COMMANDS, then poll
+
+        Startup polling uses the tier-specific budget from health_timeout_for():
+        HOT=2s, WARM=15s, COLD=60s, BOOT=120s.
+        """
+        from src.config.health_config import SERVICE_STARTUP_COMMANDS, health_timeout_for
+
+        key = normalize_service_key(str(service_name))
+
+        hp_config = self._settings.HEALTH_PROXY_SERVICE_CONFIG
+        health_endpoint = str(hp_config.get(key, {}).get("health_endpoint", "/health"))
+        health_url = f"{base_url}{health_endpoint}"
+
+        # Probe current state before deciding whether to spawn.
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as probe:
+                r = await probe.get(health_url)
+                if r.status_code == 200:
+                    logger.info("%s is already healthy — skipping spawn", key)
+                    return True
+                # Port is bound but service is unhealthy — stale or mid-restart.
+                # Spawning another copy would cause a port conflict.
+                # The Rust health_failure_monitor will respawn on next cycle.
+                logger.warning(
+                    "%s port is bound but health returned %s — "
+                    "possible stale process; Rust supervisor will respawn",
+                    key,
+                    r.status_code,
+                )
+                return False
+        except httpx.ConnectError:
+            pass  # Port not bound — proceed to spawn.
+        except Exception:
+            pass  # Unknown probe error — attempt spawn.
+
+        command = SERVICE_STARTUP_COMMANDS.get(key)
+        if not command:
+            logger.warning(
+                "No startup command for %s — cannot auto-start (add entry to SERVICE_STARTUP_COMMANDS)",
+                key,
+            )
+            return False
+
+        logger.info("Auto-starting %s", key)
+        log_path = f"/tmp/autostart-{key}.log"  # noqa: S108
+        try:
+            log_fd = open(log_path, "a")  # noqa: SIM115
+            await asyncio.create_subprocess_shell(
+                command,
+                stdout=log_fd,
+                stderr=log_fd,
+            )
+        except Exception as exc:
+            logger.warning("Failed to spawn %s: %s", key, exc)
+            return False
+
+        timeout = health_timeout_for(key)
+        start = time.monotonic()
+        while (time.monotonic() - start) < timeout:
+            try:
+                async with httpx.AsyncClient(timeout=1.0) as probe:
+                    r = await probe.get(health_url)
+                    if r.status_code == 200:
+                        logger.info("%s ready in %.1fs", key, time.monotonic() - start)
+                        return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.2)
+
+        logger.warning("%s not healthy after %.1fs", key, timeout)
+        return False
+
     def _parse_body(self, response: httpx.Response) -> dict:
         """Safely parse a JSON response body."""
         try:
@@ -742,8 +853,6 @@ class ToolDispatcher:
                     TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status=_status).inc()
                     return result
 
-            # P1-06: Increment tool calls counter on exhausted retries
-            TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
             if last_exc is not None:
                 raise last_exc
             raise BackendUnavailableError(str(service_name), _CONN_FAILED)
@@ -752,6 +861,31 @@ class ToolDispatcher:
             # P1-06: Circuit-open = request filtered before reaching backend
             TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="filtered").inc()
             raise
+
+        except BackendUnavailableError as auto_start_exc:
+            # HWC auto-start: service is down — try to spawn it, then retry once.
+            if not await self._try_auto_start(service_name, route.base_url):
+                TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
+                raise
+
+            logger.info("Auto-started %s, retrying dispatch for %s", service_name, tool_name)
+            try:
+                result = await self._attempt_dispatch(
+                    client, cb, method, url, payload, route,
+                    tool_name, service_name, 0, 1,
+                    extra_headers=extra_headers,
+                )
+            except (BackendUnavailableError, ToolTimeoutError):
+                TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
+                raise auto_start_exc from None
+
+            if result is not None:
+                _status = "success" if result.status_code < 400 else "error"
+                TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status=_status).inc()
+                return result
+
+            TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
+            raise auto_start_exc
 
     async def _attempt_dispatch(
         self,
@@ -875,7 +1009,22 @@ class ToolDispatcher:
                     yield line
         except (httpx.ConnectError, httpx.ConnectTimeout) as err:
             await cb.on_failure()
-            raise BackendUnavailableError(str(service_name), "Connection failed") from err
+            if not await self._try_auto_start(service_name, route.base_url):
+                raise BackendUnavailableError(str(service_name), "Connection failed") from err
+            logger.info("Auto-started %s, retrying stream for %s", service_name, tool_name)
+            try:
+                async with client.stream(
+                    method,
+                    url,
+                    json=payload,
+                    params=params,
+                    timeout=route.timeout,
+                ) as response:
+                    await cb.on_success()
+                    async for line in response.aiter_lines():
+                        yield line
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                raise BackendUnavailableError(str(service_name), "Connection failed after auto-start") from err
         except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as err:
             await cb.on_failure()
             raise ToolTimeoutError(tool_name, route.timeout or 0.0) from err

@@ -26,15 +26,15 @@ tools:
     tier: bronze
     tags: [search, rag, internal]
 
-  # ── KB Search Facade — Graph Tools (still on Python USS :8081 — no graph API in unified-search-rs yet) ──
+  # ── KB Search Facade — Graph Tools (routed to unified-search-rs :8093) ──
   - name: graph_query
-    description: "Query the Neo4j knowledge graph using read-only Cypher. Returns nodes, edges, and relationship properties. Use for precise topology lookups: service dependencies, concept links, pattern membership. Still routes to unified-search-service (:8081) — see uss_graph_query for the future Rust replacement."
+    description: "Query the Neo4j knowledge graph using read-only Cypher. Returns nodes, edges, and relationship properties. Use for precise topology lookups: service dependencies, concept links, pattern membership. Routes to unified-search-rs (:8093) /v1/graph/query. See uss_graph_query for the native Rust equivalent."
     when_to_use: "Use when the question is relational: 'what services depend on X?', 'show all concepts linked to Y'. Pairs with graph_traverse for neighborhood expansion. Part of W-6 (Graph-Grounded KB Research)."
     tier: gold
     tags: [graph, query, neo4j]
 
   - name: graph_traverse
-    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes. BFS explores depth-first; MMR maximizes result diversity. Still routes to unified-search-service (:8081) — see uss_graph_traverse for the future Rust replacement."
+    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes. BFS explores depth-first; MMR maximizes result diversity. Routes to unified-search-rs (:8093) /v1/graph/traverse. See uss_graph_traverse for the native Rust equivalent."
     when_to_use: "Use when a start node is known and you need the full neighborhood. Follow with knowledge_refine to hydrate KB chunks for the nodes found. Part of W-6 (Graph-Grounded KB Research)."
     tier: silver
     tags: [graph, traversal, neo4j]
@@ -59,13 +59,13 @@ tools:
     tags: [search, rag, patterns, code]
 
   - name: diagram_search
-    description: "Semantic search over the ascii_diagrams collection using CLIP cross-modal encoding (512-dim). Finds ASCII art, sequence diagrams, flow charts, and architecture diagrams by concept. Still routes to unified-search-service (:8081) — CLIP encoder not yet in unified-search-rs."
+    description: "Semantic search over the ascii_diagrams collection using CLIP cross-modal encoding (512-dim). Finds ASCII art, sequence diagrams, flow charts, and architecture diagrams by concept. Routes to unified-search-rs (:8093) /v1/search/hybrid with collection=ascii_diagrams."
     when_to_use: "Use to find visual representations of architectural concepts, design patterns, or system interactions. Part of W-8 (Diagram-First Architecture Research)."
     tier: bronze
     tags: [search, rag, diagrams, architecture, clip]
 
   - name: foundation_search
-    description: "Search the scientific foundation layer for mathematical, statistical, or theoretical underpinnings of software concepts. Still routes to unified-search-service (:8081). Use uss_scientific_search for the equivalent on unified-search-rs (:8093)."
+    description: "Search the scientific foundation layer for mathematical, statistical, or theoretical underpinnings of software concepts. Routes to unified-search-rs (:8093) /v1/search/foundation. See also uss_scientific_search for the native Rust equivalent."
     when_to_use: "Use when a question requires first-principles reasoning, formal proofs, convergence analysis, or theoretical grounding beyond what the software KB provides. Part of W-6."
     tier: bronze
     tags: [search, foundation, scientific]
@@ -372,12 +372,12 @@ tools:
   # amve_detect_communication is BROKEN — no /v1/analysis/communication endpoint exists.
 
   - name: amve_detect_patterns
-    description: "[DEPRECATED] Use sa_detect_patterns. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint — behavior is identical to sa_detect_patterns."
+    description: "[DEPRECATED] Use sa_detect_patterns. Dispatches to AMVE (:8092) /v1/analysis/patterns. The struct-analyzer (Go :8088) sa_detect_patterns is the preferred replacement."
     tier: bronze
     tags: [amve, deprecated, architecture, patterns]
 
   - name: amve_detect_boundaries
-    description: "[DEPRECATED] Use sa_detect_boundaries. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint."
+    description: "[DEPRECATED] Use sa_detect_boundaries. Dispatches to AMVE (:8092) /v1/analysis/boundaries. The struct-analyzer (Go :8088) sa_detect_boundaries is the preferred replacement."
     tier: bronze
     tags: [amve, deprecated, architecture, boundaries]
 
@@ -387,32 +387,32 @@ tools:
     tags: [amve, deprecated, broken, communication]
 
   - name: amve_build_call_graph
-    description: "[DEPRECATED] Use sa_build_call_graph. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint."
+    description: "[DEPRECATED] Use sa_build_call_graph. Dispatches to AMVE (:8092) /v1/analysis/call-graph. The struct-analyzer (Go :8088) sa_build_call_graph is the preferred replacement."
     tier: bronze
     tags: [amve, deprecated, architecture, call-graph]
 
   - name: amve_evaluate_fitness
-    description: "[DEPRECATED] Use sa_evaluate_fitness. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint. SNAPSHOT_STORE_ENABLED=true required."
+    description: "[DEPRECATED] Use sa_evaluate_fitness. Dispatches to AMVE (:8092) /v1/fitness/evaluate. The struct-analyzer (Go :8088) sa_evaluate_fitness is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required."
     tier: bronze
     tags: [amve, deprecated, architecture, fitness]
 
   - name: amve_generate_architecture_log
-    description: "[DEPRECATED] Use sa_batch_scan. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to /v1/architecture/batch-scan."
+    description: "[DEPRECATED] Use sa_batch_scan. Dispatches to AMVE (:8092) /v1/architecture/batch-scan. The struct-analyzer (Go :8088) sa_batch_scan is the preferred replacement."
     tier: bronze
     tags: [amve, deprecated, architecture, batch-scan]
 
   - name: amve_detect_dead_code
-    description: "[DEPRECATED] Use sa_detect_dead_code. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint."
+    description: "[DEPRECATED] Use sa_detect_dead_code. Dispatches to AMVE (:8092) /v1/analysis/dead-code. The struct-analyzer (Go :8088) sa_detect_dead_code is the preferred replacement."
     tier: bronze
     tags: [amve, deprecated, architecture, dead-code]
 
   - name: amve_extract_architecture
-    description: "[DEPRECATED] Use sa_extract_architecture. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint. SNAPSHOT_STORE_ENABLED=true required."
+    description: "[DEPRECATED] Use sa_extract_architecture. Dispatches to AMVE (:8092) /v1/architecture/extract. The struct-analyzer (Go :8088) sa_extract_architecture is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required."
     tier: bronze
     tags: [amve, deprecated, architecture, snapshot]
 
   - name: amve_detect_drift
-    description: "[DEPRECATED] Use sa_detect_drift. Struct-analyzer (Go :8088) replaced Python AMVE. This stub still dispatches to the same port and endpoint. SNAPSHOT_STORE_ENABLED=true required for SHA-pair mode."
+    description: "[DEPRECATED] Use sa_detect_drift. Dispatches to AMVE (:8092) /v1/architecture/drift. The struct-analyzer (Go :8088) sa_detect_drift is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required for SHA-pair mode."
     tier: bronze
     tags: [amve, deprecated, architecture, drift]
 
@@ -527,3 +527,23 @@ tools:
     when_to_use: "PENDING. Use graph_traverse in the meantime. Same use case: neighborhood expansion, diversity-aware graph exploration."
     tier: silver
     tags: [graph, traversal, neo4j, uss-rs, pending]
+
+  # ── Validation Service (ASCP.VS7) ────────────────────────────────────────────
+
+  - name: validate_wbs
+    description: "Validate a WBS document against the ASCP-1.0 rule set. Returns a ValidationResult with verdict (PASS/FAIL), score, and structured failures list. Dispatches to validation-service (${VALIDATION_SERVICE_URL}) POST /validate/wbs."
+    when_to_use: "Use before accepting a WBS document for implementation. Validates structure, TDD task ordering, AC coverage, AAF zone compliance, and Perry methodology fields. Part of the ASCP-1.0 SDLC gate."
+    tier: gold
+    tags: [validation, wbs, ascp, sdlc]
+
+  - name: validate_design_doc
+    description: "Validate a design document against the ASCP-1.0 rule set. Returns a ValidationResult with verdict (PASS/FAIL), score, and structured failures list. Accepts optional phase hint. Dispatches to validation-service (${VALIDATION_SERVICE_URL}) POST /validate/design_document."
+    when_to_use: "Use before accepting a design document for WBS generation. Validates BDD traceability, GHK IDs, acceptance criteria, and phase-specific completeness. Part of the ASCP-1.0 SDLC gate."
+    tier: gold
+    tags: [validation, design-doc, ascp, sdlc]
+
+  - name: sdlc_execute
+    description: "Execute the full SDLC pipeline for a WBS document. Submits wbs_content through the COMP-07 → COMP-08 → COMP-09 → COMP-10 orchestration chain (WorkflowOrchestrator → PlanningAgent → ImplementationAgent → ValidationAgent) and returns a ValidationReport with verdict (PASS/FAIL) and failures. Dispatches to ai-agents (:8082) POST /v1/workflows/sdlc-execute."
+    when_to_use: "Use to run end-to-end SDLC execution on a validated WBS document. The WBS must have already passed validate_wbs before calling this tool. Returns ValidationReport.verdict == PASS when all pipeline stages complete without failures."
+    tier: gold
+    tags: [orchestration, sdlc, ascp, cap-01, e2e]

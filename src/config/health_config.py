@@ -43,23 +43,28 @@ SERVICE_TIERS: dict[str, str] = {
     "llm-gateway": "hot",
     "semantic-search": "hot",
     "unified-search-service": "hot",
+    "unified-search-rs": "hot",
     "mcp-gateway": "hot",
     # WARM — frequently used but may need a moment
     "ai-agents": "warm",
     "audit-service": "warm",
     "code-orchestrator": "warm",
+    "validation-service": "warm",
     "amve": "warm",
     # COLD — on-demand / infrequently used
     "inference-service-cpp": "cold",
-    "unified-search-rs": "hot",
     "context-management-service": "cold",
+    "struct-analyzer": "cold",
 }
 
 # ── Service startup commands ────────────────────────────────────────────
 # Shell commands to start each service when auto-warming a cold or warm
 # service on demand.  Keys match SERVICE_TIERS.
-# NOTE: These overlap with restart_command in HEALTH_PROXY_SERVICE_CONFIG
-# but are duplicated here so health_config.py remains self-contained.
+# Keys match SERVICE_TIERS.
+
+_VENV_BOOTSTRAP = (
+    "test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)"
+)
 
 SERVICE_STARTUP_COMMANDS: dict[str, str] = {
     "unified-search-service": (
@@ -67,10 +72,11 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081"
     ),
     "code-orchestrator": (
+        "cd /Users/kevintoles/POC/Code-Orchestrator-Service && "
+        f"{_VENV_BOOTSTRAP} && "
         "COS_CODEBERT_START_MODE=warm "
         "COS_GRAPHCODEBERT_START_MODE=cold "
         "COS_CODET5_START_MODE=cold "
-        "cd /Users/kevintoles/POC/Code-Orchestrator-Service && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8083"
     ),
     "llm-gateway": (
@@ -79,27 +85,31 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
     ),
     "ai-agents": (
         "cd /Users/kevintoles/POC/ai-agents && "
+        f"{_VENV_BOOTSTRAP} && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082"
     ),
     "audit-service": (
         "cd /Users/kevintoles/POC/audit-service && "
+        f"{_VENV_BOOTSTRAP} && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084"
     ),
     "context-management-service": (
         "cd /Users/kevintoles/POC/context-management-service && "
+        f"{_VENV_BOOTSTRAP} && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8086"
     ),
     "amve": (
         "cd /Users/kevintoles/POC/architecture-mapping-validation-engine && "
-        ".venv/bin/python -m src.main"
+        f"{_VENV_BOOTSTRAP} && "
+        "PORT=8092 .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8092"
     ),
     "unified-search-rs": (
         "cd /Users/kevintoles/POC/unified-search-rs && "
-        "cargo run --release"
+        "PORT=8093 cargo run --release"
     ),
     "inference-service-cpp": (
         "cd /Users/kevintoles/POC/inference-service-cpp && "
-        "./build/inference-service"
+        "./run_native.sh"
     ),
     "mcp-gateway": (
         "lsof -ti:8087 | xargs kill -9 2>/dev/null || true; sleep 1; "
@@ -107,8 +117,17 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8087"
     ),
     "semantic-search": (
-        "cd /Users/kevintoles/POC/unified-search-service && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081"
+        "cd /Users/kevintoles/POC/unified-search-rs && "
+        "PORT=8093 cargo run --release"
+    ),
+    "struct-analyzer": (
+        "cd /Users/kevintoles/POC/struct-analyzer-service && "
+        "go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && "
+        "/tmp/struct-analyzer serve"
+    ),
+    "validation-service": (
+        "cd /Users/kevintoles/POC/validation-service/python && "
+        "PORT=8091 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8091"
     ),
 }
 

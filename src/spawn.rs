@@ -123,20 +123,11 @@ pub async fn spawn_service_and_promote(
     deployment_mode: &str,
     registry: &Arc<ServiceRegistry>,
 ) -> Result<u32, SpawnError> {
+    // spawn_service_inner already polls health until 200 — no second poll needed.
     let pid = spawn_service_inner(entry, deployment_mode).await?;
 
-    let health_port = if entry.health_port > 0 {
-        entry.health_port
-    } else {
-        entry.port
-    };
-    poll_health(
-        &format!("http://127.0.0.1:{}{}", health_port, entry.health_path),
-        Duration::from_secs(15),
-        Duration::from_millis(500),
-    ).await?;
-
     registry.update_tier(&entry.name, ActivationTier::Hot);
+    registry.record_request(&entry.name);
 
     tracing::info!(
         service = %entry.name,
@@ -240,10 +231,16 @@ fn spawn_native_process(spawn_cmd: &str) -> Result<Child, SpawnError> {
     let program = &parts[0];
     let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
+    let log_dir = std::path::Path::new("/tmp");
+    let stdout_file = std::fs::File::create(log_dir.join(format!("spawn-{}.log", program.replace('/', "_"))))
+        .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+    let stderr_file = stdout_file.try_clone()
+        .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+
     Command::new(program)
         .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(SpawnError::ProcessFailed)
 }

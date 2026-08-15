@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 // Import library crate modules so both main.rs and integration tests
 // (tests/spawn_test.rs) can access the same public API.
-use shim_mcp_gateway::{config, lifecycle, platform_services, registry, session, spawn};
+use shim_mcp_gateway::{config, lifecycle, llm_router, platform_services, registry, session, spawn};
 use shim_mcp_gateway::session::SessionLifecycle;
 
 // Public port that clients (VS Code) connect to
@@ -152,6 +152,25 @@ fn main() {
         // Uses BootColdMonitor for testable, tracing-instrumented spawning.
         // Non-blocking — main() continues accepting connections immediately.
         lifecycle::BootColdMonitor::new(registry.clone()).spawn_boot_tasks();
+
+        // Spawn health-failure respawn monitor.
+        // Polls all non-Boot, non-mcp-gateway services every HEALTH_CHECK_INTERVAL_SECS
+        // and respawns any that accumulate HEALTH_FAILURE_RESPAWN_THRESHOLD consecutive
+        // failures — closing the H/W/C gap where an abrupt kill had no recovery path
+        // for services that aren't reached through the shim proxy.
+        let reg_for_health = Arc::clone(&registry);
+        let dm_str = deployment_mode.as_deployment_str().to_string();
+        tokio::spawn(async move {
+            lifecycle::health_failure_monitor(reg_for_health, dm_str).await;
+        });
+
+        // Spawn LLM router — always-on mesh layer between VSCode and llm-gateway.
+        // Listens on :8079; proxies to llm-gateway when healthy, Anthropic direct
+        // when not (CMS-style graceful degradation). Set ANTHROPIC_BASE_URL=http://localhost:8079.
+        let reg_for_llm = Arc::clone(&registry);
+        tokio::spawn(async move {
+            llm_router::run(reg_for_llm).await;
+        });
     });
 
     // ── Signal handling for graceful shutdown ──────────────────────────────

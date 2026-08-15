@@ -94,6 +94,9 @@ from src.tools import (
     uss_hydrate,
     uss_ring_search,
     uss_scientific_search,
+    validate_design_doc,
+    validate_wbs,
+    sdlc_execute,
 )
 
 # ── Handler factory mapping ────────────────────────────────────────────
@@ -193,6 +196,11 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "uss_fitness_batch": uss_fitness_batch.create_handler,
     "uss_graph_query": uss_graph_query.create_handler,
     "uss_graph_traverse": uss_graph_traverse.create_handler,
+    # Validation Service (ASCP.VS7)
+    "validate_wbs": validate_wbs.create_handler,
+    "validate_design_doc": validate_design_doc.create_handler,
+    # SDLC Execution (ASCP.INT.3 / CAP-01)
+    "sdlc_execute": sdlc_execute.create_handler,
 }
 
 
