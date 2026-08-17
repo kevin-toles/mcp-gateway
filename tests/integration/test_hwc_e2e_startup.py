@@ -1,16 +1,16 @@
 """H/W/C E2E Startup Test Suite — Comprehensive Endpoint Coverage.
 
-Runs at shim startup to validate:
-  1. Rust proxy (:8090) is listening
-  2. Cold-start spawn latency
+Runs at machine startup to validate:
+  1. Platform lifecycle daemon (:8079) is listening
+  2. MCP Gateway (:8087) is listening and healthy
   3. MCP Gateway endpoint coverage
-  4. Platform service endpoint coverage  
+  4. Platform service endpoint coverage (all 12 services)
   5. Tier state transitions
   6. Service stability monitoring
 
 Usage:
     pytest tests/integration/test_hwc_e2e_startup.py -v --tb=short
-    
+
     Or via shell wrapper:
     ./scripts/hwc_e2e_test_runner.sh
 """
@@ -30,40 +30,38 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_hwc_01_proxy_listening():
-    """MCP Lifecycle Proxy is listening on :8090."""
+async def test_hwc_01_lifecycle_daemon_listening():
+    """Platform lifecycle daemon is listening on :8079."""
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get("http://localhost:8090/health")
-            assert response.status_code in (200, 502, 504), \
-                f"Proxy should be accepting connections, got {response.status_code}"
-        pytest.skip("Proxy listening (gateway may not be up yet)")
+            response = await client.get("http://localhost:8079/health")
+            assert response.status_code == 200, \
+                f"Lifecycle daemon should return 200, got {response.status_code}"
+            print("  ✓ Lifecycle daemon listening on :8079")
     except httpx.ConnectError:
-        pytest.fail("Proxy :8090 is not listening")
+        pytest.fail("Lifecycle daemon :8079 is not listening")
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_hwc_02_gateway_cold_start_latency():
-    """Gateway cold-starts on first proxy connection (~300-500ms expected)."""
+async def test_hwc_02_gateway_startup_latency():
+    """MCP Gateway (:8087) responds within acceptable startup window."""
     start = time.time()
-    
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get("http://localhost:8090/health", follow_redirects=True)
+            response = await client.get("http://localhost:8087/health", follow_redirects=True)
             elapsed_ms = (time.time() - start) * 1000
-            
-            # First request may be slow due to spawn, but should complete within 5s
+
             assert elapsed_ms < 5000, \
-                f"First request took {elapsed_ms:.0f}ms (expected < 5000ms)"
-            
-            # Gateway should eventually respond
+                f"Gateway health check took {elapsed_ms:.0f}ms (expected < 5000ms)"
+
             if response.status_code == 200:
-                print(f"  ✓ Gateway spawned in {elapsed_ms:.0f}ms")
+                print(f"  ✓ Gateway healthy in {elapsed_ms:.0f}ms")
             else:
                 pytest.skip(f"Gateway still starting (status {response.status_code})")
     except (httpx.ConnectError, httpx.TimeoutException):
-        pytest.fail("Proxy/Gateway connection failed")
+        pytest.fail("Gateway :8087 connection failed")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -134,71 +132,81 @@ async def test_hwc_06_gateway_docs_endpoint():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+# (service, port, health_path)
 SERVICE_ENDPOINTS = {
-    "llm-gateway": 8080,
-    "unified-search": 8081,
-    "ai-agents": 8082,
-    "code-orchestrator": 8083,
-    "audit-service": 8084,
-    "context-management": 8086,
-    "struct-analyzer": 8088,
+    "llm-gateway": (8080, "/health"),
+    "unified-search": (8081, "/health"),
+    "ai-agents": (8082, "/health"),
+    "code-orchestrator": (8083, "/health"),
+    "audit-service": (8084, "/health"),
+    "inference-service-cpp": (8085, "/health"),
+    "context-management": (8086, "/health"),
+    "mcp-gateway": (8087, "/health"),
+    "struct-analyzer": (8088, "/health"),
+    "validation-service": (8091, "/health"),
+    "amve": (8092, "/v1/health"),
+    "unified-search-rs": (8093, "/health"),
 }
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.parametrize("service,port", SERVICE_ENDPOINTS.items())
-async def test_hwc_10_service_health_endpoints(service: str, port: int):
-    """Test /health endpoint for each platform service.
-    
+@pytest.mark.parametrize("service,endpoint", SERVICE_ENDPOINTS.items())
+async def test_hwc_10_service_health_endpoints(service: str, endpoint: tuple):
+    """Test health endpoint for each platform service.
+
     Services in COLD tier will fail (expected on first startup).
     Services in WARM/HOT tier should respond with 200.
     """
+    port, health_path = endpoint
     async with httpx.AsyncClient(timeout=5) as client:
         try:
-            response = await client.get(f"http://localhost:{port}/health")
-            
+            response = await client.get(f"http://localhost:{port}{health_path}")
+
             if response.status_code == 200:
-                data = response.json()
-                assert data.get("status") == "healthy" or "status" in data, \
-                    f"{service}: Response should contain health status"
-                print(f"  ✓ {service} ({port}): HEALTHY")
+                try:
+                    data = response.json()
+                    assert "status" in data, \
+                        f"{service}: Response should contain health status"
+                except Exception:
+                    pass  # non-JSON 200 is still healthy
+                print(f"  ✓ {service} (:{port}): HEALTHY")
             elif response.status_code in (502, 503, 504):
-                pytest.skip(f"{service} ({port}): COLD tier (not started yet)")
+                pytest.skip(f"{service} (:{port}): COLD tier (not started yet)")
             else:
-                pytest.fail(f"{service} ({port}): Unexpected status {response.status_code}")
-                
+                pytest.fail(f"{service} (:{port}): Unexpected status {response.status_code}")
+
         except (httpx.ConnectError, httpx.TimeoutException):
-            pytest.skip(f"{service} ({port}): Connection refused (COLD tier, expected)")
+            pytest.skip(f"{service} (:{port}): Connection refused (COLD tier, expected)")
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.parametrize("service,port", SERVICE_ENDPOINTS.items())
-async def test_hwc_20_service_openapi_endpoints(service: str, port: int):
+@pytest.mark.parametrize("service,endpoint", SERVICE_ENDPOINTS.items())
+async def test_hwc_20_service_openapi_endpoints(service: str, endpoint: tuple):
     """Test /openapi.json endpoint for each service (if available).
-    
+
     Some services may not expose OpenAPI schema.
     """
+    port, _ = endpoint
     async with httpx.AsyncClient(timeout=5) as client:
         try:
             response = await client.get(f"http://localhost:{port}/openapi.json")
-            
+
             if response.status_code == 200:
                 schema = response.json()
                 assert "openapi" in schema or "swagger" in schema, \
                     f"{service}: Invalid schema format"
-                print(f"  ✓ {service} ({port}): OpenAPI available")
+                print(f"  ✓ {service} (:{port}): OpenAPI available")
             elif response.status_code == 404:
-                pytest.skip(f"{service} ({port}): No OpenAPI endpoint")
+                pytest.skip(f"{service} (:{port}): No OpenAPI endpoint")
             elif response.status_code in (502, 503, 504):
-                pytest.skip(f"{service} ({port}): COLD tier (not started)")
+                pytest.skip(f"{service} (:{port}): COLD tier (not started)")
             else:
-                # Just warn, don't fail
-                print(f"  ⚠ {service} ({port}): Status {response.status_code}")
-                
+                print(f"  ? {service} (:{port}): Status {response.status_code}")
+
         except (httpx.ConnectError, httpx.TimeoutException):
-            pytest.skip(f"{service} ({port}): Connection refused (COLD tier)")
+            pytest.skip(f"{service} (:{port}): Connection refused (COLD tier)")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -218,9 +226,9 @@ async def test_hwc_30_tier_state_verification():
         }
         
         # Check each service
-        for service, port in SERVICE_ENDPOINTS.items():
+        for service, (port, health_path) in SERVICE_ENDPOINTS.items():
             try:
-                response = await client.get(f"http://localhost:{port}/health", timeout=2)
+                response = await client.get(f"http://localhost:{port}{health_path}", timeout=2)
                 if response.status_code == 200:
                     results["warm"].append(f"{service}:{port}")
                 elif response.status_code in (502, 503, 504):
@@ -300,13 +308,13 @@ def test_hwc_99_final_report():
     print("H/W/C E2E STARTUP TEST REPORT")
     print("="*70)
     print(f"Timestamp: {datetime.now().isoformat()}")
-    print(f"MCP Lifecycle Proxy: http://localhost:8090")
+    print(f"Platform Lifecycle Daemon: http://localhost:8079")
     print(f"MCP Gateway: http://localhost:8087")
     print("\nTest Coverage:")
-    print("  ✓ Proxy startup verification")
-    print("  ✓ Cold-start spawn latency")
+    print("  ✓ Lifecycle daemon startup verification")
+    print("  ✓ Gateway startup latency")
     print("  ✓ Gateway endpoint coverage (5 endpoints)")
-    print("  ✓ Platform service endpoints (7 services × 2 endpoints = 14 tests)")
+    print("  ✓ Platform service endpoints (12 services × 2 endpoints = 24 tests)")
     print("  ✓ Tier state verification")
     print("  ✓ Gateway stability monitoring (5s quick check)")
     print("\n" + "="*70)

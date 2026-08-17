@@ -47,6 +47,12 @@ pub enum HealthState {
 /// Hot → Warm at 5 consecutive failures per HYBRID §4.5 TODO annotation.
 pub const FAILURE_DEMOTION_THRESHOLD: u32 = 5;
 
+/// D-7: Circuit breaker opens after this many consecutive failures.
+pub const CIRCUIT_OPEN_THRESHOLD: u32 = 10;
+
+/// D-7: Seconds to wait in open state before allowing a half-open probe.
+pub const CIRCUIT_HALF_OPEN_INTERVAL_SECS: u64 = 300;
+
 #[derive(Debug, Clone)]
 pub struct ServiceEntry {
     pub name: String,
@@ -64,6 +70,18 @@ pub struct ServiceEntry {
     /// Timestamps of recent requests for COLD→WARM auto-promotion (RS-4).
     /// Pruned to retain only entries within COLD_PROMOTION_WINDOW_SECS.
     pub request_timestamps: VecDeque<Instant>,
+    /// D-7: When the circuit breaker opened (None = closed).
+    pub circuit_open_since: Option<Instant>,
+    /// D-7: Last time a half-open probe was attempted.
+    pub last_half_open_probe: Option<Instant>,
+    /// D-8: When consecutive failures started (None = no active failure streak).
+    pub first_failure_at: Option<Instant>,
+    /// D-3: Readiness endpoint path (None = use health_path for readiness too).
+    pub ready_path: Option<String>,
+    /// D-5: Total health checks performed against this service.
+    pub health_checks_total: u64,
+    /// D-5: Health checks that returned healthy.
+    pub health_checks_passed: u64,
 }
 
 impl ServiceEntry {
@@ -152,17 +170,74 @@ impl ServiceRegistry {
             match &state {
                 HealthState::Healthy => {
                     entry.failure_count = 0;
+                    entry.circuit_open_since = None;
+                    entry.last_half_open_probe = None;
+                    entry.first_failure_at = None;
                 }
                 _ => {
+                    if entry.first_failure_at.is_none() {
+                        entry.first_failure_at = Some(Instant::now());
+                    }
                     entry.failure_count += 1;
                     if entry.failure_count >= FAILURE_DEMOTION_THRESHOLD {
                         if entry.tier == ActivationTier::Hot {
                             entry.tier = ActivationTier::Warm;
                         }
                     }
+                    if entry.failure_count >= CIRCUIT_OPEN_THRESHOLD
+                        && entry.circuit_open_since.is_none()
+                    {
+                        entry.circuit_open_since = Some(Instant::now());
+                    }
                 }
             }
             entry.last_health = Some(state);
+        }
+    }
+
+    pub fn open_circuit(&self, name: &str) {
+        let mut entries = self.entries.write().unwrap();
+        if let Some(entry) = entries.get_mut(name) {
+            entry.circuit_open_since = Some(Instant::now());
+        }
+    }
+
+    pub fn close_circuit(&self, name: &str) {
+        let mut entries = self.entries.write().unwrap();
+        if let Some(entry) = entries.get_mut(name) {
+            entry.circuit_open_since = None;
+            entry.last_half_open_probe = None;
+            entry.failure_count = 0;
+        }
+    }
+
+    pub fn try_half_open_probe(&self, name: &str) -> bool {
+        let mut entries = self.entries.write().unwrap();
+        if let Some(entry) = entries.get_mut(name) {
+            let now = Instant::now();
+            if let Some(opened) = entry.circuit_open_since {
+                if now.duration_since(opened).as_secs() < CIRCUIT_HALF_OPEN_INTERVAL_SECS {
+                    return false;
+                }
+                if let Some(last_probe) = entry.last_half_open_probe {
+                    if now.duration_since(last_probe).as_secs() < CIRCUIT_HALF_OPEN_INTERVAL_SECS {
+                        return false;
+                    }
+                }
+                entry.last_half_open_probe = Some(now);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn increment_health_check(&self, name: &str, passed: bool) {
+        let mut entries = self.entries.write().unwrap();
+        if let Some(entry) = entries.get_mut(name) {
+            entry.health_checks_total += 1;
+            if passed {
+                entry.health_checks_passed += 1;
+            }
         }
     }
 
@@ -203,6 +278,12 @@ mod tests {
             warm_idle_timeout_secs: 600,
             last_request: None,
             request_timestamps: VecDeque::new(),
+            circuit_open_since: None,
+            last_half_open_probe: None,
+            first_failure_at: None,
+            ready_path: None,
+            health_checks_total: 0,
+            health_checks_passed: 0,
         }
     }
 

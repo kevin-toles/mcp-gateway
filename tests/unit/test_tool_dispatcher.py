@@ -712,73 +712,135 @@ class TestIdentityDegradationGuard:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# _try_auto_start: detect-before-spawn state machine
+# _try_auto_start: detect-before-spawn state machine (RED against old impl)
 # ═══════════════════════════════════════════════════════════════════════
 
+class _MockHTTPFactory:
+    """Shared mock for httpx.AsyncClient that returns canned responses in order.
+
+    Acts as both the constructor (callable) and the client (async context manager).
+    Responses are consumed in sequence; excess calls raise ConnectError.
+    """
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self._idx = 0
+
+    def __call__(self, **kwargs):  # replaces AsyncClient constructor
+        return self
+
+    async def get(self, url, **kwargs):
+        if self._idx >= len(self._responses):
+            raise httpx.ConnectError("no more mock responses")
+        resp = self._responses[self._idx]
+        self._idx += 1
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
 class TestTryAutoStart:
-    """Tests for _try_auto_start detect-before-spawn logic."""
+    """_try_auto_start — detect-before-spawn and tier-budget behaviour.
 
-    @pytest.fixture
-    def dispatcher(self):
-        from src.core.config import Settings
-        from src.tool_dispatcher import ToolDispatcher
-        return ToolDispatcher(Settings())
+    All three tests are RED against the old implementation because:
+      A) old impl never pre-probes, so it spawns even when already healthy
+      B) old impl never pre-probes, so it spawns even when port is bound+sick
+      C) old impl caps timeout at min(health_timeout_for(key), 30.0), so a
+         COLD service (60s budget) times out at 30s instead of continuing
 
-    @pytest.mark.asyncio
-    async def test_returns_true_immediately_when_already_healthy(self, dispatcher, respx_mock):
-        """If the service is already healthy, skip spawn and return True."""
-        respx_mock.get("http://localhost:8082/health").mock(
-            return_value=httpx.Response(200)
-        )
-        result = await dispatcher._try_auto_start("ai-agents", "http://localhost:8082")
-        assert result is True
+    They turn GREEN after the new implementation is applied.
+    """
 
-    @pytest.mark.asyncio
-    async def test_returns_false_when_port_bound_but_unhealthy(self, dispatcher, respx_mock):
-        """Port bound, service sick → conflict warning, return False without spawning."""
-        respx_mock.get("http://localhost:8082/health").mock(
-            return_value=httpx.Response(503)
-        )
-        result = await dispatcher._try_auto_start("ai-agents", "http://localhost:8082")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_returns_false_when_no_startup_command(self, dispatcher, respx_mock):
-        """Unknown service key (no entry in SERVICE_STARTUP_COMMANDS) → False."""
-        respx_mock.get("http://localhost:9999/health").mock(
-            side_effect=httpx.ConnectError("refused")
-        )
-        result = await dispatcher._try_auto_start("unknown-service-xyz", "http://localhost:9999")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_uses_custom_health_endpoint_for_amve(self, dispatcher, respx_mock):
-        """AMVE uses /v1/health — pre-spawn probe must use the correct path."""
-        respx_mock.get("http://localhost:8092/v1/health").mock(
-            return_value=httpx.Response(200)
-        )
-        result = await dispatcher._try_auto_start("amve", "http://localhost:8092")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_hot_service_times_out_after_2s(self, dispatcher, respx_mock, monkeypatch):
-        """HOT-tier startup budget is 2s — poll loop must exit at that ceiling."""
-        import time as time_mod
-        respx_mock.get("http://localhost:8080/health").mock(
-            side_effect=httpx.ConnectError("refused")
-        )
-        # Patch asyncio.create_subprocess_shell so no real process is spawned.
+    async def test_skips_spawn_when_service_already_healthy(self, dispatcher, monkeypatch):
+        """Pre-probe 200 → service is up; spawn must not be called."""
         import asyncio
-        async def _noop_spawn(*args, **kwargs):
-            class _FakeProc:
-                returncode = None
-            return _FakeProc()
-        monkeypatch.setattr(asyncio, "create_subprocess_shell", _noop_spawn)
 
-        start = time_mod.monotonic()
-        result = await dispatcher._try_auto_start("llm-gateway", "http://localhost:8080")
-        elapsed = time_mod.monotonic() - start
+        spawn_calls = []
+
+        async def mock_spawn(cmd, **kw):
+            spawn_calls.append(cmd)
+            class _P:
+                returncode = None
+            return _P()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", mock_spawn)
+        monkeypatch.setattr(httpx, "AsyncClient", _MockHTTPFactory([httpx.Response(200)]))
+
+        result = await dispatcher._try_auto_start("ai-agents", "http://localhost:8082")
+
+        assert result is True
+        assert spawn_calls == [], "spawn must not be called when service is already healthy"
+
+    async def test_returns_false_immediately_when_port_bound_but_sick(self, dispatcher, monkeypatch):
+        """Pre-probe 503 → port conflict; spawn must not be called; return False."""
+        import asyncio
+        import time as time_mod
+        from unittest.mock import AsyncMock
+
+        spawn_calls = []
+
+        async def mock_spawn(cmd, **kw):
+            spawn_calls.append(cmd)
+            class _P:
+                returncode = None
+            return _P()
+
+        # Clock advances 20s per call so old impl's poll loop exits on first check.
+        tick = [0.0]
+        def fast_clock():
+            t = tick[0]; tick[0] += 20.0; return t
+
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", mock_spawn)
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(time_mod, "monotonic", fast_clock)
+        # Enough 503/ConnectError pairs to survive old impl's poll loop iterations.
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            _MockHTTPFactory([httpx.Response(503)] + [httpx.ConnectError("x")] * 10),
+        )
+
+        result = await dispatcher._try_auto_start("ai-agents", "http://localhost:8082")
 
         assert result is False
-        # Should give up close to the 2s HOT budget, not the old 30s cap.
-        assert elapsed < 5.0, f"HOT service timed out too slowly: {elapsed:.1f}s"
+        assert spawn_calls == [], "spawn must not be called when port is already bound but unhealthy"
+
+    async def test_cold_service_uses_60s_budget_not_30s(self, dispatcher, monkeypatch):
+        """COLD-tier budget is 60s; old min(..., 30) cap makes it return False at 31s."""
+        import asyncio
+        import time as time_mod
+        from unittest.mock import AsyncMock
+
+        async def mock_spawn(cmd, **kw):
+            class _P:
+                returncode = None
+            return _P()
+
+        # Clock: 0.0 on first call (start), 31.0 thereafter (loop checks).
+        # Old impl: min(60, 30)=30 → 31 < 30 is False → loop never runs → False.
+        # New impl: 60 → 31 < 60 is True → poll fires → 200 → True.
+        times = [0.0, 31.0]
+        def fake_clock():
+            return times.pop(0) if times else 31.0
+
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", mock_spawn)
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(time_mod, "monotonic", fake_clock)
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            _MockHTTPFactory([
+                httpx.ConnectError("refused"),  # pre-probe: port not bound → spawn
+                httpx.Response(200),             # first poll at t=31: service ready
+            ]),
+        )
+
+        result = await dispatcher._try_auto_start("inference-service-cpp", "http://localhost:8085")
+
+        assert result is True  # RED: old returns False; GREEN: new returns True

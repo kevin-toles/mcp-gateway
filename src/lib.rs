@@ -9,7 +9,9 @@
 pub mod config;
 pub mod lifecycle;
 pub mod llm_router;
+pub mod persistence;
 pub mod platform_services;
+pub mod slo;
 pub mod registry;
 pub mod session;
 pub mod spawn;

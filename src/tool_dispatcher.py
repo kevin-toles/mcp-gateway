@@ -32,6 +32,28 @@ from src.resilience.circuit_breaker import CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
 
+# Lifecycle daemon activity-report endpoint. Every successful dispatch
+# POSTs here so the Rust ServiceRegistry transitions the target service
+# Cold/Warm → Hot. Fire-and-forget — failures are silently ignored.
+_LIFECYCLE_ACTIVITY_URL = "http://127.0.0.1:8079/activity/"
+_lifecycle_client: httpx.AsyncClient | None = None
+
+
+def _get_lifecycle_client() -> httpx.AsyncClient:
+    global _lifecycle_client
+    if _lifecycle_client is None or _lifecycle_client.is_closed:
+        _lifecycle_client = httpx.AsyncClient(timeout=1.0)
+    return _lifecycle_client
+
+
+async def _report_activity(service_name: str) -> None:
+    """Fire-and-forget POST to lifecycle daemon after a successful dispatch."""
+    try:
+        client = _get_lifecycle_client()
+        await client.post(f"{_LIFECYCLE_ACTIVITY_URL}{service_name}")
+    except Exception:
+        pass
+
 # ── Data classes ────────────────────────────────────────────────────────
 
 
@@ -851,6 +873,8 @@ class ToolDispatcher:
                     # P1-06: Increment tool calls counter on successful dispatch
                     _status = "success" if result.status_code < 400 else "error"
                     TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status=_status).inc()
+                    if result.status_code < 500:
+                        await _report_activity(service_name)
                     return result
 
             if last_exc is not None:
@@ -882,6 +906,8 @@ class ToolDispatcher:
             if result is not None:
                 _status = "success" if result.status_code < 400 else "error"
                 TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status=_status).inc()
+                if result.status_code < 500:
+                    await _report_activity(service_name)
                 return result
 
             TOOL_CALLS_TOTAL.labels(tool_name=tool_name, status="error").inc()
@@ -1005,6 +1031,7 @@ class ToolDispatcher:
                 timeout=route.timeout,
             ) as response:
                 await cb.on_success()
+                await _report_activity(service_name)
                 async for line in response.aiter_lines():
                     yield line
         except (httpx.ConnectError, httpx.ConnectTimeout) as err:
@@ -1021,6 +1048,7 @@ class ToolDispatcher:
                     timeout=route.timeout,
                 ) as response:
                     await cb.on_success()
+                    await _report_activity(service_name)
                     async for line in response.aiter_lines():
                         yield line
             except (httpx.ConnectError, httpx.ConnectTimeout):

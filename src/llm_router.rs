@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::registry::ServiceRegistry;
+use crate::registry::{ActivationTier, ServiceRegistry};
 use crate::spawn;
 
 pub const LLM_ROUTER_PORT: u16 = 8079;
@@ -36,13 +36,13 @@ pub async fn run(registry: Arc<ServiceRegistry>) {
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("llm-router: bind {} failed: {}", addr, e);
+            tracing::error!(addr = %addr, error = %e, "llm-router: bind failed");
             return;
         }
     };
-    println!(
-        "llm-router: :{} ready  (gateway :8080 | anthropic fallback)",
-        LLM_ROUTER_PORT
+    tracing::info!(
+        port = LLM_ROUTER_PORT,
+        "llm-router ready (gateway :8080 | anthropic fallback)"
     );
 
     loop {
@@ -51,7 +51,7 @@ pub async fn run(registry: Arc<ServiceRegistry>) {
                 let reg = Arc::clone(&registry);
                 tokio::spawn(handle(stream, reg));
             }
-            Err(e) => eprintln!("llm-router: accept: {}", e),
+            Err(e) => tracing::error!(error = %e, "llm-router: accept failed"),
         }
     }
 }
@@ -136,6 +136,65 @@ async fn handle(mut client: TcpStream, registry: Arc<ServiceRegistry>) {
     if req.path.starts_with("/health") {
         let body = b"{\"status\":\"ok\",\"mode\":\"llm-router\"}";
         let _ = simple_response(&mut client, 200, "OK", body).await;
+        return;
+    }
+
+    if req.path == "/slo" && req.method == "GET" {
+        let mut slo_data = Vec::new();
+        for entry in registry.all() {
+            let ratio = crate::slo::uptime_ratio(
+                entry.health_checks_passed,
+                entry.health_checks_total,
+            );
+            let in_slo = crate::slo::within_slo(ratio, &entry.tier);
+            let budget = crate::slo::error_budget_remaining(ratio, &entry.tier);
+            slo_data.push(serde_json::json!({
+                "service": entry.name,
+                "tier": format!("{:?}", entry.tier),
+                "health_checks_total": entry.health_checks_total,
+                "health_checks_passed": entry.health_checks_passed,
+                "uptime_ratio": (ratio * 10000.0).round() / 10000.0,
+                "slo_target": crate::slo::slo_for_tier(&entry.tier).uptime_target,
+                "within_slo": in_slo,
+                "error_budget_remaining": (budget * 10000.0).round() / 10000.0,
+            }));
+        }
+        let body = serde_json::to_string(&slo_data).unwrap_or_else(|_| "[]".to_string());
+        let _ = simple_response(&mut client, 200, "OK", body.as_bytes()).await;
+        return;
+    }
+
+    // POST /activity/{service} — request-driven lifecycle transition.
+    // Any caller (Python gateway, direct HTTP, service-to-service) can
+    // report that a service handled a valid request. This is the primary
+    // mechanism for Cold/Warm → Hot promotion after the proxy removal.
+    if req.path.starts_with("/activity/") && req.method == "POST" {
+        let service = &req.path["/activity/".len()..];
+        if service.is_empty() {
+            let _ = simple_response(&mut client, 400, "Bad Request", b"{\"error\":\"missing service name\"}").await;
+        } else {
+            registry.record_request(service);
+            let promoted = match registry.get(service) {
+                Some(entry) if entry.tier != ActivationTier::Hot => {
+                    let from_tier = format!("{:?}", entry.tier);
+                    registry.update_tier(service, ActivationTier::Hot);
+                    tracing::info!(
+                        service = %service,
+                        from_tier = %from_tier,
+                        to_tier = "Hot",
+                        "activity: promoted service"
+                    );
+                    true
+                }
+                _ => false,
+            };
+            let body = if promoted {
+                format!("{{\"service\":\"{}\",\"promoted\":true,\"tier\":\"Hot\"}}", service)
+            } else {
+                format!("{{\"service\":\"{}\",\"recorded\":true}}", service)
+            };
+            let _ = simple_response(&mut client, 200, "OK", body.as_bytes()).await;
+        }
         return;
     }
 

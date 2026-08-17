@@ -660,6 +660,12 @@ mod tests {
             warm_idle_timeout_secs: 600,
             last_request: None,
             request_timestamps: std::collections::VecDeque::new(),
+            circuit_open_since: None,
+            last_half_open_probe: None,
+            first_failure_at: None,
+            ready_path: None,
+            health_checks_total: 0,
+            health_checks_passed: 0,
         });
 
         let id = mgr.create(Some("llm-gateway")).unwrap();

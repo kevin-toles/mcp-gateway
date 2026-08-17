@@ -69,6 +69,7 @@ _VENV_BOOTSTRAP = (
 SERVICE_STARTUP_COMMANDS: dict[str, str] = {
     "unified-search-service": (
         "cd /Users/kevintoles/POC/unified-search-service && "
+        f"{_VENV_BOOTSTRAP} && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081"
     ),
     "code-orchestrator": (
@@ -81,6 +82,7 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
     ),
     "llm-gateway": (
         "cd /Users/kevintoles/POC/llm-gateway && "
+        f"{_VENV_BOOTSTRAP} && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080"
     ),
     "ai-agents": (
@@ -112,8 +114,8 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
         "./run_native.sh"
     ),
     "mcp-gateway": (
-        "lsof -ti:8087 | xargs kill -9 2>/dev/null || true; sleep 1; "
         "cd /Users/kevintoles/POC/mcp-gateway && "
+        f"{_VENV_BOOTSTRAP} && "
         ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8087"
     ),
     "semantic-search": (
@@ -123,10 +125,11 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
     "struct-analyzer": (
         "cd /Users/kevintoles/POC/struct-analyzer-service && "
         "go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && "
-        "/tmp/struct-analyzer serve"
+        "STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve"
     ),
     "validation-service": (
         "cd /Users/kevintoles/POC/validation-service/python && "
+        f"{_VENV_BOOTSTRAP} && "
         "PORT=8091 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8091"
     ),
 }

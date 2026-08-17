@@ -32,16 +32,29 @@ TIER_RECOVERY_SCRIPT="/tmp/hwc_tier_recovery.sh"
 # Phase 1: Wait for Proxy & Gateway
 # ─────────────────────────────────────────────────────────────────────────────
 
-wait_for_proxy() {
-  echo "Waiting for MCP Lifecycle Proxy (:8090)..."
+wait_for_services() {
+  echo "Waiting for platform lifecycle daemon (:8079) and mcp-gateway (:8087)..."
+
+  local lifecycle_up=false
+  local gateway_up=false
+
   for i in {1..30}; do
-    if (echo > /dev/tcp/127.0.0.1/8090) 2>/dev/null; then
-      echo "✓ Proxy listening"
+    if [ "$lifecycle_up" = false ] && (echo > /dev/tcp/127.0.0.1/8079) 2>/dev/null; then
+      echo "✓ Platform lifecycle daemon listening (:8079)"
+      lifecycle_up=true
+    fi
+    if [ "$gateway_up" = false ] && (echo > /dev/tcp/127.0.0.1/8087) 2>/dev/null; then
+      echo "✓ MCP gateway listening (:8087)"
+      gateway_up=true
+    fi
+    if [ "$lifecycle_up" = true ] && [ "$gateway_up" = true ]; then
       return 0
     fi
     sleep 1
   done
-  echo "✗ Proxy did not start within 30 seconds"
+
+  [ "$lifecycle_up" = false ] && echo "✗ Platform lifecycle daemon (:8079) did not start within 30 seconds"
+  [ "$gateway_up" = false ] && echo "✗ MCP gateway (:8087) did not start within 30 seconds"
   return 1
 }
 
@@ -69,6 +82,9 @@ run_tests() {
   if [ ! -f "$VENV_PYTHON" ]; then
     VENV_PYTHON="python3"  # Fallback to system Python
   fi
+
+  # INTEGRATION=1 enables the integration test conftest guard
+  export INTEGRATION=1
 
   # Run pytest with output to both screen and log
   "$VENV_PYTHON" -m pytest "$TESTS_DIR/$TEST_FILE" \
@@ -149,9 +165,9 @@ EOFRECOVERY
 # ─────────────────────────────────────────────────────────────────────────────
 
 main() {
-  # Ensure proxy is running
-  wait_for_proxy || {
-    echo "✗ Proxy startup failed. Check LaunchAgent configuration."
+  # Ensure lifecycle daemon and gateway are running
+  wait_for_services || {
+    echo "✗ Startup failed. Check LaunchAgent configuration for com.kevintoles.mcp-gateway-shim and com.kevintoles.mcp-gateway."
     exit 1
   }
   

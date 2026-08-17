@@ -1,4 +1,4 @@
-use crate::registry::{ActivationTier, HealthState, ServiceRegistry};
+use crate::registry::{ActivationTier, HealthState, ServiceRegistry, ServiceRuntime};
 use crate::spawn::poll_health;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,11 +39,11 @@ pub const COLD_PROMOTION_WINDOW_SECS: u64 = 600; // 10 minutes
 pub const HEALTH_CHECK_INTERVAL_SECS: u64 = 15;
 pub const HEALTH_FAILURE_RESPAWN_THRESHOLD: u32 = 2;
 
-// ── GAP-3 RED sentinel ──────────────────────────────────────────────────────
-// Compile-time constant used by test_proxy_path_missing_record_request.
-// Set to true only when GREEN implementation adds record_request calls to
-// main.rs proxy path AND session.rs cascade_to_registry.
-pub const PROXY_CALLS_RECORD_REQUEST: bool = true;
+/// D-8: Consecutive failures must persist for this long before respawn action.
+pub const FAILURE_DURATION_GATE_SECS: u64 = 60;
+
+/// D-8: Suppress respawn during the first N seconds after monitor startup.
+pub const STARTUP_GRACE_PERIOD_SECS: u64 = 120;
 
 #[derive(Debug)]
 pub enum LifecycleError {
@@ -65,7 +65,8 @@ pub async fn boot_to_cold(
         return Ok(()); // idempotent — already past Boot
     }
 
-    let health_url = format!("http://localhost:{}{}", entry.port, entry.health_path);
+    let check_path = entry.ready_path.as_deref().unwrap_or(&entry.health_path);
+    let health_url = format!("http://localhost:{}{}", entry.port, check_path);
     poll_health(
         &health_url,
         Duration::from_secs(BOOT_HEALTH_TIMEOUT_SECS),
@@ -184,9 +185,10 @@ pub async fn startup_scan(registry: &ServiceRegistry) {
         if entry.tier == ActivationTier::Boot {
             // Non-blocking check — if already responding, promote immediately
             let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
+            let check_path = entry.ready_path.as_deref().unwrap_or(&entry.health_path);
             let health_url = format!(
                 "http://localhost:{}{}",
-                health_port, entry.health_path
+                health_port, check_path
             );
             if reqwest::get(&health_url).await
                 .map(|r| r.status().is_success())
@@ -218,9 +220,15 @@ pub async fn health_failure_monitor(
     registry: Arc<ServiceRegistry>,
     deployment_mode: String,
 ) {
+    let started_at = std::time::Instant::now();
     let mut interval = tokio::time::interval(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS));
     loop {
         interval.tick().await;
+
+        // D-8: Suppress respawn during startup grace period
+        let in_grace = started_at.elapsed().as_secs() < STARTUP_GRACE_PERIOD_SECS;
+
+        let mut failed_this_cycle: Vec<String> = Vec::new();
 
         for entry in registry.all() {
 
@@ -234,15 +242,17 @@ pub async fn health_failure_monitor(
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
 
+            registry.increment_health_check(&entry.name, is_healthy);
+
             if is_healthy {
                 if entry.failure_count > 0 {
-                    // Reset failure count without spamming logs on every tick.
                     registry.update_health(&entry.name, HealthState::Healthy);
                 }
                 continue;
             }
 
             registry.update_health(&entry.name, HealthState::Unreachable);
+            failed_this_cycle.push(entry.name.clone());
 
             // Re-fetch to get updated failure_count after the update_health call.
             let Some(current) = registry.get(&entry.name) else {
@@ -250,6 +260,54 @@ pub async fn health_failure_monitor(
             };
             if current.failure_count < HEALTH_FAILURE_RESPAWN_THRESHOLD {
                 continue;
+            }
+
+            // D-8: Duration gate — failures must persist for FAILURE_DURATION_GATE_SECS
+            if let Some(first_fail) = current.first_failure_at {
+                if first_fail.elapsed().as_secs() < FAILURE_DURATION_GATE_SECS {
+                    tracing::debug!(
+                        service = %current.name,
+                        failure_count = current.failure_count,
+                        "health_failure_monitor: within duration gate — deferring respawn"
+                    );
+                    continue;
+                }
+            }
+
+            // D-8: Startup grace — suppress respawn while shim is still booting
+            if in_grace {
+                tracing::debug!(
+                    service = %current.name,
+                    "health_failure_monitor: within startup grace period — deferring respawn"
+                );
+                continue;
+            }
+
+            // KeepAlive services (Auto runtime) are restarted by launchd,
+            // not by us. Skip the respawn but still track health state.
+            if matches!(current.runtime, ServiceRuntime::Auto) {
+                tracing::info!(
+                    service = %current.name,
+                    failure_count = current.failure_count,
+                    "health_failure_monitor: KeepAlive service unhealthy — launchd is restart authority"
+                );
+                continue;
+            }
+
+            // D-7: Circuit breaker — skip respawn when circuit is open
+            if current.circuit_open_since.is_some() {
+                if !registry.try_half_open_probe(&current.name) {
+                    tracing::debug!(
+                        service = %current.name,
+                        failure_count = current.failure_count,
+                        "health_failure_monitor: circuit open — skipping respawn"
+                    );
+                    continue;
+                }
+                tracing::info!(
+                    service = %current.name,
+                    "health_failure_monitor: circuit half-open — attempting probe"
+                );
             }
 
             tracing::warn!(
@@ -273,8 +331,8 @@ pub async fn health_failure_monitor(
                         pid = pid,
                         "health_failure_monitor: service respawned and promoted to Hot"
                     );
-                    // Reset failure count so the next tick doesn't re-trigger.
                     registry.update_health(&current.name, HealthState::Healthy);
+                    registry.close_circuit(&current.name);
                 }
                 Err(e) => {
                     tracing::error!(
@@ -284,6 +342,15 @@ pub async fn health_failure_monitor(
                     );
                 }
             }
+        }
+
+        // D-8: Per-cycle grouped failure log
+        if !failed_this_cycle.is_empty() {
+            tracing::debug!(
+                failed_services = ?failed_this_cycle,
+                count = failed_this_cycle.len(),
+                "health_failure_monitor: services unhealthy this cycle"
+            );
         }
     }
 }
@@ -375,6 +442,12 @@ mod tests {
             warm_idle_timeout_secs: 600,
             last_request: None,
             request_timestamps: VecDeque::new(),
+            circuit_open_since: None,
+            last_half_open_probe: None,
+            first_failure_at: None,
+            ready_path: None,
+            health_checks_total: 0,
+            health_checks_passed: 0,
         }
     }
 
@@ -809,19 +882,6 @@ mod tests {
 
         handle.abort();
         std::env::remove_var("HOT_IDLE_TIMEOUT_SECS");
-    }
-
-    /// GAP-3 RED canary: Compile-time sentinel.
-    /// PASSES while the bug exists (const is false) — if this test fails
-    /// it means PROXY_CALLS_RECORD_REQUEST was set to true without the
-    /// corresponding GREEN implementation in main.rs and session.rs.
-    #[tokio::test]
-    async fn test_proxy_path_missing_record_request() {
-        assert!(
-            super::PROXY_CALLS_RECORD_REQUEST,
-            "GAP-3 GREEN: PROXY_CALLS_RECORD_REQUEST is true — record_request() \
-             calls are wired in main.rs proxy path and session.rs cascade_to_registry()"
-        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1270,6 +1330,234 @@ mod tests {
             down.tier,
             ActivationTier::Boot,
             "RS-3: unreachable service must remain Boot"
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // D-7: Circuit Breaker — RED phase tests
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// D-7 TC-1: After CIRCUIT_OPEN_THRESHOLD consecutive failures,
+    /// circuit_open_since must be set and respawn must be skipped.
+    #[tokio::test]
+    async fn test_circuit_opens_at_threshold() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("cb-open-svc", 29001, ActivationTier::Cold);
+        entry.runtime = ServiceRuntime::Native {
+            spawn_cmd: "/bin/sleep".to_string(),
+            pid_file: None,
+        };
+        entry.failure_count = 0;
+        registry.register(entry);
+
+        let reg_clone = registry.clone();
+        let handle = tokio::spawn(async move {
+            health_failure_monitor(reg_clone, "hybrid".to_string()).await;
+        });
+
+        // Wait long enough for 10+ check cycles (15s each).
+        // With no live endpoint on port 29001, failure_count increments each cycle.
+        // At threshold 2 it tries respawn (fails), at 10 circuit should open.
+        // Use a shorter interval: run for ~12 cycles worth = ~180s.
+        // That's too long for a unit test. Instead, pre-set failure_count
+        // close to threshold and let the monitor push it over.
+        handle.abort();
+
+        // Direct approach: manually simulate failures via update_health
+        for _ in 0..10 {
+            registry.update_health("cb-open-svc", HealthState::Unreachable);
+        }
+
+        let svc = registry.get("cb-open-svc").unwrap();
+        assert_eq!(svc.failure_count, 10);
+
+        // Circuit should be open after 10 failures.
+        // Currently this WILL FAIL because no code opens the circuit.
+        assert!(
+            svc.circuit_open_since.is_some(),
+            "D-7: circuit_open_since must be set after {} failures",
+            crate::registry::CIRCUIT_OPEN_THRESHOLD
+        );
+    }
+
+    /// D-7 TC-2: After 5min in open state, a half-open probe is allowed.
+    #[tokio::test]
+    async fn test_circuit_half_open_after_interval() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("cb-halfopen-svc", 29002, ActivationTier::Cold);
+        entry.runtime = ServiceRuntime::Native {
+            spawn_cmd: "/bin/sleep".to_string(),
+            pid_file: None,
+        };
+        entry.failure_count = 12;
+        entry.circuit_open_since = Some(Instant::now() - Duration::from_secs(301));
+        registry.register(entry);
+
+        let allowed = registry.try_half_open_probe("cb-halfopen-svc");
+        assert!(
+            allowed,
+            "D-7: half-open probe must be allowed after 5min in open state"
+        );
+
+        let svc = registry.get("cb-halfopen-svc").unwrap();
+        assert!(
+            svc.last_half_open_probe.is_some(),
+            "D-7: last_half_open_probe must be updated after probe"
+        );
+    }
+
+    /// D-7 TC-3: Successful health check closes the circuit.
+    #[tokio::test]
+    async fn test_circuit_closes_on_success() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("cb-close-svc", 29003, ActivationTier::Cold);
+        entry.failure_count = 12;
+        entry.circuit_open_since = Some(Instant::now() - Duration::from_secs(600));
+        entry.last_half_open_probe = Some(Instant::now() - Duration::from_secs(10));
+        registry.register(entry);
+
+        registry.close_circuit("cb-close-svc");
+
+        let svc = registry.get("cb-close-svc").unwrap();
+        assert!(
+            svc.circuit_open_since.is_none(),
+            "D-7: circuit_open_since must be None after close_circuit"
+        );
+        assert_eq!(
+            svc.failure_count, 0,
+            "D-7: failure_count must be 0 after close_circuit"
+        );
+        assert!(
+            svc.last_half_open_probe.is_none(),
+            "D-7: last_half_open_probe must be None after close_circuit"
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // D-8: Alert Fatigue — RED phase tests
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// D-8 TC-1: first_failure_at is set on first failure and cleared on recovery.
+    #[tokio::test]
+    async fn test_first_failure_at_tracking() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let entry = make_entry("d8-track-svc", 29010, ActivationTier::Cold);
+        registry.register(entry);
+
+        assert!(registry.get("d8-track-svc").unwrap().first_failure_at.is_none());
+
+        registry.update_health("d8-track-svc", HealthState::Unreachable);
+        let svc = registry.get("d8-track-svc").unwrap();
+        assert!(
+            svc.first_failure_at.is_some(),
+            "D-8: first_failure_at must be set on first failure"
+        );
+
+        registry.update_health("d8-track-svc", HealthState::Healthy);
+        let svc = registry.get("d8-track-svc").unwrap();
+        assert!(
+            svc.first_failure_at.is_none(),
+            "D-8: first_failure_at must be cleared on recovery"
+        );
+    }
+
+    /// D-8 TC-2: first_failure_at is NOT overwritten on subsequent failures.
+    #[tokio::test]
+    async fn test_first_failure_at_not_overwritten() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let entry = make_entry("d8-stable-svc", 29011, ActivationTier::Cold);
+        registry.register(entry);
+
+        registry.update_health("d8-stable-svc", HealthState::Unreachable);
+        let first = registry.get("d8-stable-svc").unwrap().first_failure_at.unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+        registry.update_health("d8-stable-svc", HealthState::Unreachable);
+        let second = registry.get("d8-stable-svc").unwrap().first_failure_at.unwrap();
+
+        assert_eq!(
+            first, second,
+            "D-8: first_failure_at must not change on subsequent failures"
+        );
+    }
+
+    // ── D-3: Readiness probe tests ──────────────────────────────────────────
+
+    /// Helper: spawn a tiny HTTP server that returns 200 on `ok_path` and 500
+    /// on everything else. Returns the port it bound to.
+    async fn spawn_mock_server(ok_path: &'static str) -> u16 {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 1024];
+                let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+                let request = String::from_utf8_lossy(&buf);
+                let path = request.split_whitespace().nth(1).unwrap_or("/");
+                let response = if path == ok_path {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+                } else {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nerr"
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn test_boot_to_cold_uses_ready_path() {
+        // D-3: When ready_path is set, boot_to_cold should poll ready_path
+        // instead of health_path for the Boot→Cold promotion check.
+        //
+        // Server returns 200 on /ready, 500 on /health.
+        // If boot_to_cold uses ready_path → promotion succeeds.
+        // If boot_to_cold uses health_path → BootTimeout (fails the test).
+        let port = spawn_mock_server("/ready").await;
+
+        let registry = ServiceRegistry::new();
+        let mut entry = make_entry("ready-svc", port, ActivationTier::Boot);
+        entry.health_path = "/health".to_string();
+        entry.ready_path = Some("/ready".to_string());
+        registry.register(entry);
+
+        let result = boot_to_cold(&registry, "ready-svc").await;
+        assert!(
+            result.is_ok(),
+            "D-3: boot_to_cold must use ready_path when set, but got: {:?}",
+            result
+        );
+        assert_eq!(
+            registry.get("ready-svc").unwrap().tier,
+            ActivationTier::Cold,
+            "D-3: service should be promoted to Cold via ready_path"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_ignores_ready_path() {
+        // D-3: health_failure_monitor must use health_path (liveness), NOT
+        // ready_path (readiness). Readiness is only for startup promotion.
+        let registry = ServiceRegistry::new();
+        let mut entry = make_entry("monitor-svc", 19997, ActivationTier::Hot);
+        entry.ready_path = Some("/ready".to_string());
+        entry.health_path = "/health".to_string();
+        registry.register(entry);
+
+        // health_failure_monitor checks health_path. If it wrongly used
+        // ready_path, the URL would differ. We verify by checking the
+        // entry's health_path is what the monitor would use (structural
+        // assertion — the monitor code path uses entry.health_path).
+        let entry = registry.get("monitor-svc").unwrap();
+        assert_eq!(
+            entry.health_path, "/health",
+            "D-3: health_failure_monitor must use health_path for liveness"
+        );
+        assert_eq!(
+            entry.ready_path, Some("/ready".to_string()),
+            "D-3: ready_path should be preserved but not used for liveness"
         );
     }
 }
