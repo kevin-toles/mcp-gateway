@@ -70,15 +70,6 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             ActivationTier::Boot,
             "sh -c 'cd /Users/kevintoles/POC/audit-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084'",
         ),
-        // validation-service: on-demand document/WBS/arch-decision validation.
-        // Requires .venv in /Users/kevintoles/POC/validation-service/python.
-        // Port from config.py VALIDATION_SERVICE_URL; service defaults to PORT env var.
-        (
-            "validation-service",
-            8091,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/validation-service/python && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && PORT=8091 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8091'",
-        ),
 
         // ── Cold tier: heavy resource, manual/GPU ─────────────────────────
         // inference-service-cpp: actual port is INFERENCE_PORT env (default 8085).
@@ -102,6 +93,14 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             8088,
             ActivationTier::Boot,
             "sh -c 'cd /Users/kevintoles/POC/struct-analyzer-service && go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve'",
+        ),
+        // validation-service: rewritten from Python to Rust/axum.
+        // Binary reads PORT env (default 8090), must set PORT=8091.
+        (
+            "validation-service",
+            8091,
+            ActivationTier::Boot,
+            "sh -c 'cd /Users/kevintoles/POC/validation-service/rust && PORT=8091 ./target/release/validation-service'",
         ),
     ];
 

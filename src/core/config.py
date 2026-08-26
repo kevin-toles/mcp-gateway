@@ -238,7 +238,7 @@ class Settings(BaseSettings):
                 "name": "validation-service",
                 "url": self.VALIDATION_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8091 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/validation-service/python && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && PORT=8091 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8091",
+                "restart_command": "lsof -ti:8091 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/validation-service/rust && PORT=8091 ./target/release/validation-service",
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },

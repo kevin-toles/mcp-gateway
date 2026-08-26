@@ -202,6 +202,8 @@ if [ ! -f "$VENV_PYTHON" ]; then
   VENV_PYTHON="python3"
 fi
 
+export INTEGRATION=1
+
 "$VENV_PYTHON" -m pytest "TESTS_DIR_PLACEHOLDER/TEST_FILE_PLACEHOLDER" \
   -v --tb=short -m integration
 

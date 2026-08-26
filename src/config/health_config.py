@@ -128,9 +128,8 @@ SERVICE_STARTUP_COMMANDS: dict[str, str] = {
         "STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve"
     ),
     "validation-service": (
-        "cd /Users/kevintoles/POC/validation-service/python && "
-        f"{_VENV_BOOTSTRAP} && "
-        "PORT=8091 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8091"
+        "cd /Users/kevintoles/POC/validation-service/rust && "
+        "PORT=8091 ./target/release/validation-service"
     ),
 }
 
