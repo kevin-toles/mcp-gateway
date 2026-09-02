@@ -29,6 +29,24 @@ from src.core.keys import normalize_service_key  # re-export for back-compat
 __all__ = ["normalize_service_key"]
 
 
+def _restart_cmd(service_key: str) -> str:
+    """Manifest-derived kill-then-start command (config/services.toml).
+
+    Deferred import: health_config imports ServiceKey from this module, so
+    importing it at module load would be circular. HEALTH_PROXY_SERVICE_CONFIG
+    is a runtime property, so the import happens after both modules exist.
+    """
+    from src.config.health_config import restart_command_for
+
+    cmd = restart_command_for(service_key)
+    if cmd is None:
+        raise KeyError(
+            f"no manifest entry for service '{service_key}' — "
+            "add it to config/services.toml"
+        )
+    return cmd
+
+
 class Settings(BaseSettings):
     """MCP Gateway configuration.
 
@@ -46,7 +64,7 @@ class Settings(BaseSettings):
     # ── Backend service URLs ────────────────────────────────────────
     LLM_GATEWAY_URL: str = "http://localhost:8080"
     UNIFIED_SEARCH_URL: str = "http://localhost:8081"
-    UNIFIED_SEARCH_RS_URL: str = "http://localhost:8093"
+    UNIFIED_SEARCH_RS_URL: str = "http://localhost:8081"
     AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
     AUDIT_SERVICE_URL: str = "http://localhost:8084"
@@ -100,7 +118,6 @@ class Settings(BaseSettings):
 
     # ── Service shutdown / restart commands ──────────────────────────
     SERVICE_SHUTDOWN_COMMANDS: dict[str, str] = {
-        "unified-search-service": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true",
         "code-orchestrator": "lsof -ti:8083 | xargs kill -9 2>/dev/null || true",
         "llm-gateway": "lsof -ti:8080 | xargs kill -9 2>/dev/null || true",
         "ai-agents": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true",
@@ -108,7 +125,7 @@ class Settings(BaseSettings):
         "context-management-service": "lsof -ti:8086 | xargs kill -9 2>/dev/null || true",
         "amve": "lsof -ti:8092 | xargs kill -9 2>/dev/null || true",
         "struct-analyzer": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true",
-        "unified-search-rs": "lsof -ti:8093 | xargs kill -9 2>/dev/null || true",
+        "unified-search-rs": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true",
         "inference-service-cpp": "pkill -f inference-service 2>/dev/null || true",
         "mcp-gateway": "lsof -ti:8087 | xargs kill -9 2>/dev/null || true",
         "validation-service": "lsof -ti:8091 | xargs kill -9 2>/dev/null || true",
@@ -121,22 +138,22 @@ class Settings(BaseSettings):
     # ── Backward-compat aliases ────────────────────────────────────
     @property
     def SEMANTIC_SEARCH_URL(self) -> str:
-        """Primary search service — now unified-search-rs (Rust :8093)."""
+        """Primary search service — unified-search-rs (Rust :8081)."""
         return self.UNIFIED_SEARCH_RS_URL
 
     @property
     def CO_RESTART_COMMAND(self) -> str:
-        """Build the canonical CO restart command with lifecycle env vars."""
-        return (
-            "lsof -ti:8083 | xargs kill -9 2>/dev/null || true; sleep 1; "
-            "cd /Users/kevintoles/POC/Code-Orchestrator-Service && "
-            "(test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && "
-            f"COS_CODEBERT_START_MODE={self.CO_CODEBERT_START_MODE} "
-            f"COS_GRAPHCODEBERT_START_MODE={self.CO_GRAPHCODEBERT_START_MODE} "
-            f"COS_CODET5_START_MODE={self.CO_CODET5_START_MODE} "
-            ".venv/bin/uvicorn "
-            "src.main:app --host 0.0.0.0 --port 8083"
-        )
+        """Manifest restart command with lifecycle start modes from settings."""
+        import re as _re
+
+        cmd = _restart_cmd("code-orchestrator")
+        for var, value in (
+            ("COS_CODEBERT_START_MODE", self.CO_CODEBERT_START_MODE),
+            ("COS_GRAPHCODEBERT_START_MODE", self.CO_GRAPHCODEBERT_START_MODE),
+            ("COS_CODET5_START_MODE", self.CO_CODET5_START_MODE),
+        ):
+            cmd = _re.sub(rf"{var}=\S+", f"{var}={value}", cmd)
+        return cmd
 
     @property
     def HEALTH_PROXY_SERVICE_CONFIG(self) -> dict[str, dict[str, object]]:
@@ -150,7 +167,7 @@ class Settings(BaseSettings):
                 "name": "unified-search-rs",
                 "url": self.UNIFIED_SEARCH_RS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8093 | xargs kill -9 2>/dev/null || true; sleep 3; cd /Users/kevintoles/POC/unified-search-rs && PORT=8093 cargo run --release",
+                "restart_command": _restart_cmd("unified-search-rs"),
                 "timeout": 30.0,
                 "sla_timeout": 2.0,
             },
@@ -174,7 +191,7 @@ class Settings(BaseSettings):
                 "name": "llm-gateway",
                 "url": self.LLM_GATEWAY_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8080 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/llm-gateway && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080",
+                "restart_command": _restart_cmd("llm-gateway"),
                 "timeout": 5.0,
                 "sla_timeout": 2.0,
             },
@@ -182,7 +199,7 @@ class Settings(BaseSettings):
                 "name": "ai-agents",
                 "url": self.AI_AGENTS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/ai-agents && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082",
+                "restart_command": _restart_cmd("ai-agents"),
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },
@@ -190,7 +207,7 @@ class Settings(BaseSettings):
                 "name": "ai-agents",
                 "url": self.AI_AGENTS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/ai-agents && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082",
+                "restart_command": _restart_cmd("ai-agents"),
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },
@@ -198,7 +215,7 @@ class Settings(BaseSettings):
                 "name": "audit-service",
                 "url": self.AUDIT_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8084 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/audit-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084",
+                "restart_command": _restart_cmd("audit-service"),
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },
@@ -206,7 +223,7 @@ class Settings(BaseSettings):
                 "name": "audit-service",
                 "url": self.AUDIT_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8084 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/audit-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084",
+                "restart_command": _restart_cmd("audit-service"),
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },
@@ -214,7 +231,7 @@ class Settings(BaseSettings):
                 "name": "context-management-service",
                 "url": self.CONTEXT_MANAGEMENT_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8086 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/context-management-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8086",
+                "restart_command": _restart_cmd("context-management-service"),
                 "timeout": 60.0,
                 "sla_timeout": 15.0,
             },
@@ -222,7 +239,7 @@ class Settings(BaseSettings):
                 "name": "amve",
                 "url": self.AMVE_SERVICE_URL,
                 "health_endpoint": "/v1/health",
-                "restart_command": "lsof -ti:8092 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/architecture-mapping-validation-engine && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && PORT=8092 .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8092",
+                "restart_command": _restart_cmd("amve"),
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },
@@ -230,7 +247,7 @@ class Settings(BaseSettings):
                 "name": "struct-analyzer",
                 "url": self.STRUCT_ANALYZER_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/struct-analyzer-service && go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && /tmp/struct-analyzer serve",
+                "restart_command": _restart_cmd("struct-analyzer"),
                 "timeout": 8.0,
                 "sla_timeout": 15.0,
             },
@@ -238,7 +255,7 @@ class Settings(BaseSettings):
                 "name": "validation-service",
                 "url": self.VALIDATION_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8091 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/validation-service/rust && PORT=8091 ./target/release/validation-service",
+                "restart_command": _restart_cmd("validation-service"),
                 "timeout": 8.0,
                 "sla_timeout": 8.0,
             },
@@ -246,7 +263,7 @@ class Settings(BaseSettings):
                 "name": "unified-search-rs",
                 "url": self.UNIFIED_SEARCH_RS_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8093 | xargs kill -9 2>/dev/null || true; sleep 3; cd /Users/kevintoles/POC/unified-search-rs && PORT=8093 cargo run --release",
+                "restart_command": _restart_cmd("unified-search-rs"),
                 "timeout": 30.0,
                 "sla_timeout": 2.0,
             },
@@ -254,17 +271,9 @@ class Settings(BaseSettings):
                 "name": "inference-service-cpp",
                 "url": self.INFERENCE_SERVICE_URL,
                 "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8085 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/inference-service-cpp && ./run_native.sh",
+                "restart_command": _restart_cmd("inference-service-cpp"),
                 "timeout": 60.0,
                 "sla_timeout": 15.0,
-            },
-            "unified-search-service": {
-                "name": "unified-search-service",
-                "url": self.UNIFIED_SEARCH_URL,
-                "health_endpoint": HEALTH_ENDPOINT,
-                "restart_command": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true; sleep 1; cd /Users/kevintoles/POC/unified-search-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081",
-                "timeout": 5.0,
-                "sla_timeout": 2.0,
             },
         }
 

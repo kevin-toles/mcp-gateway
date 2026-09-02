@@ -27,15 +27,17 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────────────
 
 LIFECYCLE_DAEMON_PORT = 8079
-AUTO_START_TIMEOUT_SECS = 90
+# 150s: heavy Python services (context-management measured ~100s cold under
+# load; boot storms at login make it worse). The Rust spawn path polls its
+# own BOOT-tier budget of 120s — the test window must exceed it.
+AUTO_START_TIMEOUT_SECS = 150
 HEALTH_POLL_INTERVAL_SECS = 2
 
 # KeepAlive services: launchd manages these, they should always be up.
 KEEPALIVE_SERVICES = {
     "llm-gateway": (8080, "/health"),
     "mcp-gateway": (8087, "/health"),
-    "unified-search-rs": (8093, "/health"),
-    "unified-search-service": (8081, "/health"),
+    "unified-search-rs": (8081, "/health"),
 }
 
 # On-demand services: Rust shim spawns these via spawn_cmd.
@@ -108,6 +110,128 @@ async def is_service_up(port: int, health_path: str) -> bool:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# PHASE 0: Config Integrity — manifest vs LaunchAgent plists
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The manifest (config/services.toml) is the single source of truth for
+# service config. LaunchAgent plists are hand-maintained, so they CAN drift
+# (this is exactly how validation-service broke: rewritten Python→Rust,
+# plist kept the deleted Python path, exit code 78 on every launchd start).
+# These tests catch that drift on every boot instead of letting it fester.
+
+import plistlib
+import tomllib
+from pathlib import Path
+
+MANIFEST_PATH = Path(__file__).resolve().parents[2] / "config" / "services.toml"
+LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+# manifest service name -> plist basename (where they differ)
+PLIST_NAME_OVERRIDES = {
+    "semantic-search": "unified-search-rs",
+}
+
+
+def _load_manifest() -> dict:
+    with open(MANIFEST_PATH, "rb") as f:
+        return tomllib.load(f)["services"]
+
+
+def _plist_for(service: str) -> Path:
+    basename = PLIST_NAME_OVERRIDES.get(service, service)
+    return LAUNCH_AGENTS / f"com.kevintoles.{basename}.plist"
+
+
+@pytest.mark.integration
+def test_hwc_00_manifest_exists_and_parses():
+    """The service manifest must exist — everything derives from it."""
+    assert MANIFEST_PATH.is_file(), f"MANIFEST MISSING: {MANIFEST_PATH}"
+    services = _load_manifest()
+    assert len(services) >= 12, f"manifest has only {len(services)} services"
+    print(f"  ✓ Manifest OK: {len(services)} services")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("service", sorted(_load_manifest()))
+def test_hwc_01_plist_matches_manifest(service: str):
+    """LaunchAgent plist working dirs/commands must exist and agree with
+    the manifest — a plist pointing at a deleted directory is exactly the
+    validation-service failure mode."""
+    plist_path = _plist_for(service)
+    if not plist_path.is_file():
+        pytest.skip(f"{service}: no LaunchAgent plist (spawned on demand only)")
+        return
+
+    with open(plist_path, "rb") as f:
+        plist = plistlib.load(f)
+
+    # 1. WorkingDirectory must exist on disk
+    wd = plist.get("WorkingDirectory")
+    if wd:
+        assert Path(wd).is_dir(), (
+            f"{service}: plist WorkingDirectory does not exist: {wd} "
+            f"— update {plist_path}"
+        )
+
+    # 2. Any absolute path mentioned in ProgramArguments must exist
+    args = " ".join(plist.get("ProgramArguments", []))
+    for token in args.replace("&&", " ").split():
+        if token.startswith("/Users/") and ".venv" not in token:
+            path = Path(token)
+            base = path.parent if not path.exists() and path.suffix else path
+            assert base.exists(), (
+                f"{service}: plist references nonexistent path {token} "
+                f"— update {plist_path}"
+            )
+
+    # 3. Port in plist env (if declared) must match the manifest
+    manifest_port = _load_manifest()[service]["port"]
+    env = plist.get("EnvironmentVariables", {})
+    if "PORT" in env:
+        assert int(env["PORT"]) == manifest_port, (
+            f"{service}: plist PORT={env['PORT']} but manifest says "
+            f"{manifest_port} — update {plist_path} or config/services.toml"
+        )
+    print(f"  ✓ {service}: plist agrees with manifest")
+
+
+@pytest.mark.integration
+def test_hwc_00b_mcp_json_matches_manifest():
+    """~/.claude/mcp.json must point to the mcp-gateway port declared in
+    services.toml.  This is the drift that broke every Claude Code session
+    after the 2026-08-16 proxy removal: port 8090 was intentionally removed
+    from the shim, but mcp.json was never updated to point directly to 8087.
+    """
+    import json
+
+    mcp_json_path = Path.home() / ".claude" / "mcp.json"
+    assert mcp_json_path.is_file(), f"~/.claude/mcp.json not found at {mcp_json_path}"
+
+    services = _load_manifest()
+    assert "mcp-gateway" in services, "mcp-gateway not in services.toml — cannot validate"
+    canonical_port = services["mcp-gateway"]["port"]
+    expected_url = f"http://localhost:{canonical_port}/mcp/sse"
+
+    with open(mcp_json_path) as f:
+        mcp_config = json.load(f)
+
+    servers = mcp_config.get("mcpServers", {})
+    assert "ai-platform" in servers, (
+        "~/.claude/mcp.json has no 'ai-platform' server entry — "
+        "add: {\"mcpServers\": {\"ai-platform\": {\"type\": \"sse\", \"url\": \"" + expected_url + "\"}}}"
+    )
+
+    actual_url = servers["ai-platform"].get("url", "")
+    assert actual_url == expected_url, (
+        f"~/.claude/mcp.json ai-platform URL is '{actual_url}' "
+        f"but services.toml declares mcp-gateway on port {canonical_port} — "
+        f"expected '{expected_url}'. "
+        f"Run: scripts/validate_mcp_json.py --fix"
+    )
+    print(f"  ✓ mcp.json ai-platform URL matches manifest: {actual_url}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # PHASE 1: Core Infrastructure
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -153,7 +277,9 @@ async def test_hwc_02_gateway_healthy():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-KEEPALIVE_BOOT_TIMEOUT_SECS = 45
+# Generous: at login every service boots simultaneously (boot storm), so a
+# service that takes ~38s on an idle system can take far longer under load.
+KEEPALIVE_BOOT_TIMEOUT_SECS = 90
 
 
 @pytest.mark.integration
@@ -255,6 +381,31 @@ async def test_hwc_30_slo_endpoint_available():
                 )
         except httpx.ConnectError:
             pytest.fail("Lifecycle daemon not reachable for SLO check")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_hwc_32_status_endpoint_full_diagnostics():
+    """GET /status returns the full per-service diagnostic snapshot:
+    tier, runtime, failure counts, circuit state, last transition."""
+    async with httpx.AsyncClient(timeout=5) as client:
+        try:
+            response = await client.get(f"http://localhost:{LIFECYCLE_DAEMON_PORT}/status")
+        except httpx.ConnectError:
+            pytest.fail("Lifecycle daemon not reachable for /status check")
+    assert response.status_code == 200, f"/status returned {response.status_code}"
+    data = response.json()
+    services = data.get("services")
+    assert isinstance(services, list) and services, "/status must list services"
+    required = {
+        "service", "port", "tier", "runtime", "failure_count",
+        "circuit_open", "last_transition", "health_checks_total",
+    }
+    for entry in services:
+        missing = required - set(entry)
+        assert not missing, f"{entry.get('service')}: /status missing {missing}"
+    transitions = sum(1 for e in services if e.get("last_transition"))
+    print(f"  ✓ /status: {len(services)} services, {transitions} with recorded transitions")
 
 
 @pytest.mark.integration

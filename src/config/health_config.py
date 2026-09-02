@@ -7,6 +7,11 @@ per-service HTTP timeouts during health checks.
 Also provides ``SERVICE_STARTUP_COMMANDS`` and ``auto_warm_service()``
 for on-demand cold-start of tier-appropriate services.
 
+**Single source of truth**: service tiers, ports, and startup commands are
+loaded from ``config/services.toml`` — the same manifest the Rust lifecycle
+daemon reads. Nothing service-specific is hardcoded here; edit the manifest,
+not this module.
+
 Tiers
 -----
 HOT   (2.0s)  — Services that are always expected to be running.
@@ -19,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tomllib
+from pathlib import Path
 
 from src.core.config import ServiceKey
 
@@ -34,104 +41,66 @@ TIER_HEALTH_TIMEOUTS: dict[str, float] = {
     "boot": float(os.environ.get("HEALTH_CHECK_TIMEOUT_BOOT", os.environ.get("HWC_BOOT_TIMEOUT", "120.0"))),
 }
 
-# ── Service tier assignments ────────────────────────────────────────────
-# Maps canonical service keys (hyphen-form, matching ServiceKey.__str__)
-# to their tier classification.
+# ── Service manifest (single source of truth) ───────────────────────────
 
-SERVICE_TIERS: dict[str, str] = {
-    # HOT — always-running core services
-    "llm-gateway": "hot",
-    "semantic-search": "hot",
-    "unified-search-service": "hot",
-    "unified-search-rs": "hot",
-    "mcp-gateway": "hot",
-    # WARM — frequently used but may need a moment
-    "ai-agents": "warm",
-    "audit-service": "warm",
-    "code-orchestrator": "warm",
-    "validation-service": "warm",
-    "amve": "warm",
-    # COLD — on-demand / infrequently used
-    "inference-service-cpp": "cold",
-    "context-management-service": "cold",
-    "struct-analyzer": "cold",
-}
+_MANIFEST_PATH = Path(__file__).resolve().parents[2] / "config" / "services.toml"
 
-# ── Service startup commands ────────────────────────────────────────────
-# Shell commands to start each service when auto-warming a cold or warm
-# service on demand.  Keys match SERVICE_TIERS.
-# Keys match SERVICE_TIERS.
+DEFAULT_POC_ROOT = "/Users/kevintoles/POC"
 
-_VENV_BOOTSTRAP = (
-    "test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)"
-)
 
-SERVICE_STARTUP_COMMANDS: dict[str, str] = {
-    "unified-search-service": (
-        "cd /Users/kevintoles/POC/unified-search-service && "
-        f"{_VENV_BOOTSTRAP} && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8081"
-    ),
-    "code-orchestrator": (
-        "cd /Users/kevintoles/POC/Code-Orchestrator-Service && "
-        f"{_VENV_BOOTSTRAP} && "
-        "COS_CODEBERT_START_MODE=warm "
-        "COS_GRAPHCODEBERT_START_MODE=cold "
-        "COS_CODET5_START_MODE=cold "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8083"
-    ),
-    "llm-gateway": (
-        "cd /Users/kevintoles/POC/llm-gateway && "
-        f"{_VENV_BOOTSTRAP} && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080"
-    ),
-    "ai-agents": (
-        "cd /Users/kevintoles/POC/ai-agents && "
-        f"{_VENV_BOOTSTRAP} && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082"
-    ),
-    "audit-service": (
-        "cd /Users/kevintoles/POC/audit-service && "
-        f"{_VENV_BOOTSTRAP} && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084"
-    ),
-    "context-management-service": (
-        "cd /Users/kevintoles/POC/context-management-service && "
-        f"{_VENV_BOOTSTRAP} && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8086"
-    ),
-    "amve": (
-        "cd /Users/kevintoles/POC/architecture-mapping-validation-engine && "
-        f"{_VENV_BOOTSTRAP} && "
-        "PORT=8092 .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8092"
-    ),
-    "unified-search-rs": (
-        "cd /Users/kevintoles/POC/unified-search-rs && "
-        "PORT=8093 cargo run --release"
-    ),
-    "inference-service-cpp": (
-        "cd /Users/kevintoles/POC/inference-service-cpp && "
-        "./run_native.sh"
-    ),
-    "mcp-gateway": (
-        "cd /Users/kevintoles/POC/mcp-gateway && "
-        f"{_VENV_BOOTSTRAP} && "
-        ".venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8087"
-    ),
-    "semantic-search": (
-        "cd /Users/kevintoles/POC/unified-search-rs && "
-        "PORT=8093 cargo run --release"
-    ),
-    "struct-analyzer": (
-        "cd /Users/kevintoles/POC/struct-analyzer-service && "
-        "go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && "
-        "STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve"
-    ),
-    "validation-service": (
-        "cd /Users/kevintoles/POC/validation-service/rust && "
-        "PORT=8091 ./target/release/validation-service"
-    ),
-}
+def _poc_root() -> str:
+    return os.environ.get("POC_ROOT", DEFAULT_POC_ROOT)
+
+
+def _load_manifest() -> dict[str, dict]:
+    with open(_MANIFEST_PATH, "rb") as f:
+        return tomllib.load(f)["services"]
+
+
+def _build_tables() -> tuple[dict[str, str], dict[str, str], dict[str, int], dict[str, str]]:
+    """Derive (tiers, startup_commands, ports, ready_paths) from the manifest.
+
+    Aliases resolve to the same values as their primary service.
+    ``${POC_ROOT}`` placeholders are expanded from the POC_ROOT env var.
+    """
+    manifest = _load_manifest()
+    root = _poc_root()
+
+    tiers: dict[str, str] = {}
+    commands: dict[str, str] = {}
+    ports: dict[str, int] = {}
+    ready_paths: dict[str, str] = {}
+
+    for name, svc in manifest.items():
+        keys = [name, *svc.get("aliases", [])]
+        command = svc["spawn"].replace("${POC_ROOT}", root)
+        for key in keys:
+            tiers[key] = svc["tier"]
+            commands[key] = command
+            ports[key] = svc["port"]
+            if svc.get("ready_path"):
+                ready_paths[key] = svc["ready_path"]
+
+    return tiers, commands, ports, ready_paths
+
+
+SERVICE_TIERS, SERVICE_STARTUP_COMMANDS, SERVICE_PORTS, SERVICE_READY_PATHS = _build_tables()
+
+
+def restart_command_for(service_key: str) -> str | None:
+    """Kill-then-start command for HEALTH_PROXY_SERVICE_CONFIG consumers.
+
+    Prefixes the manifest spawn command with a port-based kill so a stale
+    or wedged process can't hold the port (canonical decision: kill-before-
+    start lives ONLY in restart commands, never in plain spawn commands).
+    """
+    command = SERVICE_STARTUP_COMMANDS.get(service_key)
+    port = SERVICE_PORTS.get(service_key)
+    if command is None or port is None:
+        return None
+    return (
+        f"lsof -ti:{port} | xargs kill -9 2>/dev/null || true; sleep 1; {command}"
+    )
 
 
 def health_timeout_for(service_key: str | ServiceKey) -> float:
@@ -183,7 +152,7 @@ async def auto_warm_service(service_key: str | ServiceKey) -> None:
     if not command:
         raise RuntimeError(
             f"No startup command registered for service '{key}'; "
-            "add an entry to SERVICE_STARTUP_COMMANDS in health_config.py"
+            "add an entry to config/services.toml"
         )
 
     timeout = TIER_HEALTH_TIMEOUTS.get(tier, 15.0)

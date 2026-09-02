@@ -30,6 +30,14 @@ from src.core.errors import BackendUnavailableError, CircuitOpenError, ToolTimeo
 from src.core.idle_timeout import get_tracker, record_dispatch_for_promotion
 from src.resilience.circuit_breaker import CircuitBreakerRegistry
 
+# ── Auto-start spawn backoff (assessment finding #5) ─────────────────────
+# After this many consecutive failed auto-starts, stop attempting for the
+# cooldown window. The Rust daemon's health_failure_monitor has its own
+# circuit breaker; the gateway must not independently hammer a crash-looping
+# service on every dispatch.
+AUTO_START_MAX_CONSECUTIVE_FAILURES = 3
+AUTO_START_COOLDOWN_SECS = 300.0
+
 logger = logging.getLogger(__name__)
 
 # Lifecycle daemon activity-report endpoint. Every successful dispatch
@@ -196,7 +204,7 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
     """
     _HYBRID = "/v1/search/hybrid"
     return {
-        # ── unified-search-rs (Rust :8093) ─────────────────────────────────────
+        # ── unified-search-rs (Rust :8081) ─────────────────────────────────────
         "semantic_search": DispatchRoute(
             base_url=settings.SEMANTIC_SEARCH_URL,
             path=_HYBRID,
@@ -626,6 +634,12 @@ class ToolDispatcher:
         # Legacy single-client attribute — tests can override this
         self._client: httpx.AsyncClient | None = None
 
+        # Spawn backoff: service -> (consecutive_failures, blocked_until).
+        # After AUTO_START_MAX_CONSECUTIVE_FAILURES failed auto-starts the
+        # service is skipped until blocked_until (monotonic secs) — a
+        # crash-looping backend must not be re-spawned on every dispatch.
+        self._auto_start_failures: dict[str, tuple[int, float]] = {}
+
         # C-5: Per-backend circuit breakers
         self._cb_registry = CircuitBreakerRegistry(
             failure_threshold=settings.CIRCUIT_BREAKER_THRESHOLD,
@@ -701,20 +715,47 @@ class ToolDispatcher:
         """Detect service state, spawn if absent, and poll until healthy.
 
         State machine:
+          circuit open     → return False immediately (no probe, no spawn)
           healthy already  → return True immediately (skip spawn)
           port bound, sick → log conflict; return False (Rust supervisor handles respawn)
-          port not bound   → spawn via SERVICE_STARTUP_COMMANDS, then poll
+          port not bound   → spawn via SERVICE_STARTUP_COMMANDS, then poll READINESS
 
-        Startup polling uses the tier-specific budget from health_timeout_for():
-        HOT=2s, WARM=15s, COLD=60s, BOOT=120s.
+        The post-spawn poll uses the service's readiness endpoint (manifest
+        ready_path) when it declares one — alive-but-still-loading must not
+        count as started. Polling budget is tier-specific via
+        health_timeout_for(): HOT=2s, WARM=15s, COLD=60s, BOOT=120s.
         """
-        from src.config.health_config import SERVICE_STARTUP_COMMANDS, health_timeout_for
+        from src.config.health_config import (
+            SERVICE_READY_PATHS,
+            SERVICE_STARTUP_COMMANDS,
+            health_timeout_for,
+        )
 
         key = normalize_service_key(str(service_name))
+
+        # Spawn backoff: a crash-looping service gets a cooldown, not a
+        # respawn per dispatch.
+        failures, blocked_until = self._auto_start_failures.get(key, (0, 0.0))
+        if failures >= AUTO_START_MAX_CONSECUTIVE_FAILURES:
+            if time.monotonic() < blocked_until:
+                logger.warning(
+                    "%s auto-start circuit OPEN (%d consecutive failures) — "
+                    "skipping until cooldown expires",
+                    key,
+                    failures,
+                )
+                return False
+            # Cooldown elapsed — allow one half-open attempt.
+            self._auto_start_failures[key] = (
+                AUTO_START_MAX_CONSECUTIVE_FAILURES - 1,
+                0.0,
+            )
 
         hp_config = self._settings.HEALTH_PROXY_SERVICE_CONFIG
         health_endpoint = str(hp_config.get(key, {}).get("health_endpoint", "/health"))
         health_url = f"{base_url}{health_endpoint}"
+        # Readiness endpoint for the post-spawn poll (falls back to liveness).
+        ready_url = f"{base_url}{SERVICE_READY_PATHS.get(key, health_endpoint)}"
 
         # Probe current state before deciding whether to spawn.
         try:
@@ -722,6 +763,7 @@ class ToolDispatcher:
                 r = await probe.get(health_url)
                 if r.status_code == 200:
                     logger.info("%s is already healthy — skipping spawn", key)
+                    self._auto_start_failures.pop(key, None)
                     return True
                 # Port is bound but service is unhealthy — stale or mid-restart.
                 # Spawning another copy would cause a port conflict.
@@ -757,6 +799,7 @@ class ToolDispatcher:
             )
         except Exception as exc:
             logger.warning("Failed to spawn %s: %s", key, exc)
+            self._record_auto_start_failure(key)
             return False
 
         timeout = health_timeout_for(key)
@@ -764,16 +807,34 @@ class ToolDispatcher:
         while (time.monotonic() - start) < timeout:
             try:
                 async with httpx.AsyncClient(timeout=1.0) as probe:
-                    r = await probe.get(health_url)
+                    r = await probe.get(ready_url)
                     if r.status_code == 200:
                         logger.info("%s ready in %.1fs", key, time.monotonic() - start)
+                        self._auto_start_failures.pop(key, None)
                         return True
             except Exception:
                 pass
             await asyncio.sleep(0.2)
 
-        logger.warning("%s not healthy after %.1fs", key, timeout)
+        logger.warning("%s not ready after %.1fs", key, timeout)
+        self._record_auto_start_failure(key)
         return False
+
+    def _record_auto_start_failure(self, key: str) -> None:
+        """Count a failed auto-start; open the spawn circuit at the limit."""
+        failures, _ = self._auto_start_failures.get(key, (0, 0.0))
+        failures += 1
+        blocked_until = 0.0
+        if failures >= AUTO_START_MAX_CONSECUTIVE_FAILURES:
+            blocked_until = time.monotonic() + AUTO_START_COOLDOWN_SECS
+            logger.warning(
+                "%s auto-start circuit OPEN after %d consecutive failures — "
+                "cooling down for %.0fs",
+                key,
+                failures,
+                AUTO_START_COOLDOWN_SECS,
+            )
+        self._auto_start_failures[key] = (failures, blocked_until)
 
     def _parse_body(self, response: httpx.Response) -> dict:
         """Safely parse a JSON response body."""

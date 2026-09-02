@@ -41,7 +41,6 @@ SERVICE_TIERS: dict[str, str] = {
     "ai-agents": "COLD",
     "amve": "COLD",
     "audit-service": "COLD",
-    "unified-search-service": "COLD",
     "context-management-service": "COLD",
     "struct-analyzer": "COLD",
 }

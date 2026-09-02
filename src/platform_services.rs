@@ -10,176 +10,55 @@
 //! Called once at shim startup by `main.rs` before `lifecycle::startup_scan()`
 //! so that scan actually finds services to promote.
 
+use crate::manifest::load_manifest;
 use crate::registry::{
     ActivationTier, ServiceEntry, ServiceRegistry, ServiceRuntime,
 };
 use std::collections::VecDeque;
 
-/// Populate `registry` with the platform's known services.
+/// Populate `registry` from the service manifest (`config/services.toml`).
 ///
-/// Ports match the services' actual listen addresses. Tiers follow
-/// HYBRID_ARCHITECTURE_RECOMMENDATION.md §4.6.2 per-service assignments.
+/// The manifest is the single source of truth for ports, tiers, runtimes,
+/// health/ready paths, and spawn commands — shared with the Python gateway.
 /// All entries start in `Boot` so `startup_scan()` and `BootColdMonitor`
 /// can promote them appropriately.
 ///
-/// **KeepAlive rule**: services whose LaunchAgent plist sets `KeepAlive=true`
-/// are NOT registered here — launchd is their sole restart authority. The
-/// shim still routes to them and health-checks them, but `health_failure_monitor`
-/// must not respawn them (double-management race). Excluded:
-///   - unified-search-service (Python, :8081) — per A-7
-///   - llm-gateway (:8080) — per H-4
-///   - unified-search-rs (:8093) — per H-4
-///   - mcp-gateway (:8087) — per D-2 (dual restart authority resolved)
+/// **KeepAlive rule**: services with `runtime = "auto"` in the manifest have
+/// `KeepAlive=true` LaunchAgent plists — launchd is their sole restart
+/// authority (H-4/A-7/D-2). They are registered with `ServiceRuntime::Auto`
+/// for tier tracking only; `health_failure_monitor` never respawns them
+/// (double-management race).
 ///
 /// `spawn_cmd` uses `sh -c '...'` syntax so shell pipelines and `&&` chains
 /// are handled correctly by `spawn::spawn_native_process` (which calls
 /// `shlex::split` then `Command::new`).
 pub fn seed_platform_services(registry: &ServiceRegistry) {
-    // (name, port, tier, spawn_cmd)
-    // Spawn commands are only invoked when the port is not bound and the
-    // health_failure_monitor determines the service needs to be respawned.
-    let services: &[(&str, u16, ActivationTier, &str)] = &[
-        // ── Hot tier: always-on ────────────────────────────────────────────
-        // llm-gateway (:8080) has KeepAlive=true in its LaunchAgent plist.
-        // NOT registered here — launchd is the sole restart authority (H-4).
-        //
-        // mcp-gateway has KeepAlive=true in its LaunchAgent plist.
-        // NOT registered here — launchd is the sole restart authority (D-2).
-        //
-        // unified-search-rs (:8093) has KeepAlive=true in its LaunchAgent plist.
-        // NOT registered here — launchd is the sole restart authority (H-4).
-        // The legacy Python unified-search-service (:8081) is also excluded
-        // for the same reason (A-7).
+    // The manifest is the single source of truth (config/services.toml).
+    // runtime = "auto"   → launchd (KeepAlive=true) is the sole restart
+    //                      authority; registered for tier tracking only so
+    //                      record_request() / POST /activity/{service} work.
+    //                      health_failure_monitor never respawns (Auto →
+    //                      RuntimeUnresolved).
+    // runtime = "native" → health_failure_monitor respawns via spawn_cmd
+    //                      when the port is unbound and the service is due.
+    let manifest = load_manifest();
 
-        // ── Warm tier: on-demand backends ─────────────────────────────────
-        (
-            "ai-agents",
-            8082,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/ai-agents && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082'",
-        ),
-        (
-            "code-orchestrator",
-            8083,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/Code-Orchestrator-Service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && COS_CODEBERT_START_MODE=warm COS_GRAPHCODEBERT_START_MODE=cold COS_CODET5_START_MODE=cold .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8083'",
-        ),
-        (
-            "audit-service",
-            8084,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/audit-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084'",
-        ),
-
-        // ── Cold tier: heavy resource, manual/GPU ─────────────────────────
-        // inference-service-cpp: actual port is INFERENCE_PORT env (default 8085).
-        // Was previously registered as 8089 — corrected to match run_native.sh.
-        (
-            "inference-service-cpp",
-            8085,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/inference-service-cpp && ./run_native.sh'",
-        ),
-        (
-            "context-management-service",
-            8086,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/context-management-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8086'",
-        ),
-        // struct-analyzer: Go binary, must be built before first spawn.
-        // `serve` subcommand is required — running without it prints usage and exits.
-        (
-            "struct-analyzer",
-            8088,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/struct-analyzer-service && go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve'",
-        ),
-        // validation-service: rewritten from Python to Rust/axum.
-        // Binary reads PORT env (default 8090), must set PORT=8091.
-        (
-            "validation-service",
-            8091,
-            ActivationTier::Boot,
-            "sh -c 'cd /Users/kevintoles/POC/validation-service/rust && PORT=8091 ./target/release/validation-service'",
-        ),
-    ];
-
-    for (name, port, tier, spawn_cmd) in services {
-        let ready_path = match *name {
-            "code-orchestrator" | "inference-service-cpp" => Some("/ready".to_string()),
-            _ => None,
+    for (name, svc) in &manifest.services {
+        let runtime = if svc.is_native() {
+            ServiceRuntime::Native {
+                spawn_cmd: svc.spawn_cmd(),
+                pid_file: None,
+            }
+        } else {
+            ServiceRuntime::Auto
         };
         registry.register(ServiceEntry {
-            name: name.to_string(),
-            port: *port,
-            health_port: 0,
-            tier: tier.clone(),
-            runtime: ServiceRuntime::Native {
-                spawn_cmd: spawn_cmd.to_string(),
-                pid_file: None,
-            },
-            health_path: "/health".to_string(),
-            last_health: None,
-            failure_count: 0,
-            hot_idle_timeout_secs: 1800,
-            warm_idle_timeout_secs: 600,
-            last_request: None,
-            request_timestamps: VecDeque::new(),
-            circuit_open_since: None,
-            last_half_open_probe: None,
-            first_failure_at: None,
-            ready_path,
-            health_checks_total: 0,
-            health_checks_passed: 0,
-        });
-    }
-
-    // AMVE uses /v1/health (mounted with prefix="/v1"), not /health.
-    // Registered separately to set a custom health_path.
-    registry.register(ServiceEntry {
-        name: "amve".to_string(),
-        port: 8092,
-        health_port: 0,
-        tier: ActivationTier::Boot,
-        runtime: ServiceRuntime::Native {
-            spawn_cmd: "sh -c 'cd /Users/kevintoles/POC/architecture-mapping-validation-engine && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && PORT=8092 .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8092'".to_string(),
-            pid_file: None,
-        },
-        health_path: "/v1/health".to_string(),
-        last_health: None,
-        failure_count: 0,
-        hot_idle_timeout_secs: 1800,
-        warm_idle_timeout_secs: 600,
-        last_request: None,
-        request_timestamps: VecDeque::new(),
-        circuit_open_since: None,
-        last_half_open_probe: None,
-        first_failure_at: None,
-        ready_path: None,
-        health_checks_total: 0,
-        health_checks_passed: 0,
-    });
-
-    // ── KeepAlive=true services: tier tracking only ──────────────────────
-    // These services are restarted by launchd (KeepAlive=true), NOT by
-    // health_failure_monitor. They are registered here solely so that
-    // record_request() and tier transitions work when activity is reported
-    // via POST /activity/{service}. ServiceRuntime::Auto ensures
-    // health_failure_monitor skips respawn (RuntimeUnresolved).
-    let keepalive_services: &[(&str, u16, &str)] = &[
-        ("llm-gateway", 8080, "/health"),
-        ("semantic-search", 8093, "/health"),
-        ("unified-search-service", 8081, "/health"),
-        ("mcp-gateway", 8087, "/health"),
-    ];
-    for (name, port, health_path) in keepalive_services {
-        registry.register(ServiceEntry {
-            name: name.to_string(),
-            port: *port,
+            name: name.clone(),
+            port: svc.port,
             health_port: 0,
             tier: ActivationTier::Boot,
-            runtime: ServiceRuntime::Auto,
-            health_path: health_path.to_string(),
+            runtime,
+            health_path: svc.health_path.clone(),
             last_health: None,
             failure_count: 0,
             hot_idle_timeout_secs: 1800,
@@ -189,9 +68,11 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             circuit_open_since: None,
             last_half_open_probe: None,
             first_failure_at: None,
-            ready_path: None,
+            ready_path: svc.ready_path.clone(),
             health_checks_total: 0,
             health_checks_passed: 0,
+            last_transition_reason: None,
+            last_transition_at: None,
         });
     }
 }

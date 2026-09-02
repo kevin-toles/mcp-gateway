@@ -1,0 +1,106 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# Platform Service Manifest — SINGLE SOURCE OF TRUTH
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Consumed at runtime by:
+#   - Rust:   src/manifest.rs (seed_platform_services builds the registry from it)
+#   - Python: src/config/health_config.py (SERVICE_STARTUP_COMMANDS, SERVICE_TIERS)
+#             src/core/config.py (restart commands)
+#   - Tests:  tests/integration/test_hwc_e2e_startup.py (manifest/plist drift check)
+#
+# Editing rules:
+#   - ${POC_ROOT} expands from the POC_ROOT env var (default /Users/kevintoles/POC).
+#     NEVER hardcode absolute paths here.
+#   - `spawn` is a raw shell command (no `sh -c` wrapper — consumers add their own).
+#   - `runtime = "auto"`  → launchd (KeepAlive=true) is the sole restart authority;
+#                            the Rust daemon tracks tier only and never spawns.
+#     `runtime = "native"` → the Rust daemon's health_failure_monitor respawns
+#                            via `spawn` when the service dies.
+#   - `tier` is the Python health-timeout classification (hot/warm/cold).
+#   - `aliases` are extra Python-side lookup keys; Rust registers the primary
+#     name only.
+#
+# After editing: no rebuild needed for Python; the Rust daemon reads this file
+# at startup (restart the shim to pick up changes). The embedded compile-time
+# copy is a fallback used only if this file is missing or unparsable.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── KeepAlive services (launchd-managed, runtime = auto) ─────────────────────
+
+[services.llm-gateway]
+port = 8080
+tier = "hot"
+runtime = "auto"
+spawn = "cd ${POC_ROOT}/llm-gateway && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080"
+
+[services.mcp-gateway]
+port = 8087
+tier = "hot"
+runtime = "auto"
+spawn = "cd ${POC_ROOT}/mcp-gateway && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8087"
+
+[services.semantic-search]
+port = 8081
+tier = "hot"
+runtime = "auto"
+aliases = ["unified-search-rs", "unified-search-service"]
+spawn = "cd ${POC_ROOT}/unified-search-rs && cargo run --release"
+
+# ── Native services (Rust daemon respawns via health_failure_monitor) ────────
+
+[services.ai-agents]
+port = 8082
+tier = "warm"
+runtime = "native"
+spawn = "cd ${POC_ROOT}/ai-agents && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8082"
+
+[services.code-orchestrator]
+port = 8083
+tier = "warm"
+runtime = "native"
+ready_path = "/ready"
+spawn = "cd ${POC_ROOT}/Code-Orchestrator-Service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && COS_CODEBERT_START_MODE=warm COS_GRAPHCODEBERT_START_MODE=cold COS_CODET5_START_MODE=cold .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8083"
+
+[services.audit-service]
+port = 8084
+tier = "warm"
+runtime = "native"
+spawn = "cd ${POC_ROOT}/audit-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8084"
+
+# inference-service-cpp: actual port is INFERENCE_PORT env (default 8085).
+[services.inference-service-cpp]
+port = 8085
+tier = "cold"
+runtime = "native"
+ready_path = "/ready"
+spawn = "cd ${POC_ROOT}/inference-service-cpp && ./run_native.sh"
+
+[services.context-management-service]
+port = 8086
+tier = "cold"
+runtime = "native"
+spawn = "cd ${POC_ROOT}/context-management-service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8086"
+
+# struct-analyzer: Go binary, built before first spawn. `serve` subcommand is
+# required — running without it prints usage and exits.
+[services.struct-analyzer]
+port = 8088
+tier = "cold"
+runtime = "native"
+spawn = "cd ${POC_ROOT}/struct-analyzer-service && go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve"
+
+# validation-service: rewritten from Python to Rust/axum. Binary reads PORT
+# env (defaults to 8090 — PORT=8091 is required).
+[services.validation-service]
+port = 8091
+tier = "warm"
+runtime = "native"
+spawn = "cd ${POC_ROOT}/validation-service/rust && PORT=8091 ./target/release/validation-service"
+
+# amve: health endpoint is mounted under prefix /v1.
+[services.amve]
+port = 8092
+tier = "warm"
+runtime = "native"
+health_path = "/v1/health"
+spawn = "cd ${POC_ROOT}/architecture-mapping-validation-engine && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && PORT=8092 .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8092"

@@ -311,11 +311,14 @@ class A2ACancelTaskInput(BaseModel):
 class ConvertPDFInput(BaseModel):
     """Input for convert_pdf tool — convert PDF to structured JSON."""
 
-    input_path: str = Field(..., min_length=1, max_length=1000, description="Path to PDF file")
+    input_path: str = Field(..., min_length=1, max_length=1000, description="Path to PDF file or directory of PDFs")
     output_path: str | None = Field(
-        default=None, max_length=1000, description="Output JSON path (auto-generated if omitted)"
+        default=None, max_length=1000, description="Output JSON path (single) or directory (batch). Auto-generated if omitted."
     )
+    file_pattern: str = Field(default="*.pdf", description="Glob pattern when input_path is a directory (default: *.pdf)")
+    skip_existing: bool = Field(default=True, description="Skip PDFs that already have a JSON output file")
     enable_ocr: bool = Field(default=True, description="Enable OCR fallback for image-only pages")
+    workers: int = Field(default=6, ge=1, le=16, description="Concurrent conversions (default: 6, max: 16)")
 
     @field_validator("input_path", mode="before")
     @classmethod

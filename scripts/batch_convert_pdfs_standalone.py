@@ -11,6 +11,7 @@ Usage:
         [--file-pattern *.pdf] \\
         [--skip-existing] \\
         [--enable-ocr] \\
+        [--workers 4] \\
         [--co-url http://localhost:8083]
 
 Monitor live from any terminal:
@@ -24,6 +25,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,6 +35,8 @@ PROGRESS_LOG = "/tmp/conversion_progress.log"  # noqa: S108
 PROGRESS_FILE = "/tmp/pdf_progress.json"  # noqa: S108
 CO_HEALTH_TIMEOUT = 5.0
 CO_REQUEST_TIMEOUT = None  # no timeout — large PDFs can take minutes
+
+_LOG_LOCK = threading.Lock()
 
 
 class FatalBatchError(RuntimeError):
@@ -67,12 +71,13 @@ def bold(t: str) -> str:
 
 
 def _log(msg: str) -> None:
-    """Print to stdout AND append to progress log."""
-    print(msg, flush=True)
+    """Print to stdout AND append to progress log (thread-safe)."""
     ts = datetime.now(UTC).strftime("%H:%M:%S")
-    with open(PROGRESS_LOG, "a") as f:
-        f.write(f"[{ts}] {msg}\n")
-        f.flush()
+    with _LOG_LOCK:
+        print(msg, flush=True)
+        with open(PROGRESS_LOG, "a") as f:
+            f.write(f"[{ts}] {msg}\n")
+            f.flush()
 
 
 def _health_check(co_url: str) -> None:
@@ -150,6 +155,42 @@ def _watch_progress(stop_event: threading.Event, pdf_name: str) -> None:
     print(f"\r{' ' * 80}\r", end="", flush=True)
 
 
+def _convert_one(
+    idx: int,
+    total: int,
+    pdf_path: str,
+    out_path: str,
+    co_url: str,
+    enable_ocr: bool,
+) -> tuple[str, str | None]:
+    """Convert a single PDF. Returns (pdf_name, error_msg | None).
+
+    Each call creates its own httpx.Client so workers don't share connection state.
+    Raises FatalBatchError on disk-full to signal the pool to abort immediately.
+    """
+    pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    book_start = time.time()
+    _log(f"[{idx:4d}/{total}] 📄 {pdf_name}")
+
+    with httpx.Client() as client:
+        try:
+            body = _convert_pdf(client, co_url, pdf_path, out_path, enable_ocr)
+            elapsed = time.time() - book_start
+            pages = body.get("pages_converted", body.get("total_pages", "?"))
+            ocr_pages = body.get("ocr_pages", 0)
+            ocr_note = f"  ({ocr_pages} OCR)" if ocr_pages else ""
+            _log(green(f"[{idx:4d}/{total}] ✅  {pdf_name} — {pages} pages{ocr_note} — {elapsed:.1f}s"))
+            return pdf_name, None
+        except FatalBatchError:
+            elapsed = time.time() - book_start
+            _log(red(f"[{idx:4d}/{total}] ❌  FATAL {pdf_name} ({elapsed:.1f}s) — disk full, aborting"))
+            raise
+        except Exception as e:
+            elapsed = time.time() - book_start
+            _log(red(f"[{idx:4d}/{total}] ❌  {pdf_name} ({elapsed:.1f}s): {str(e)[:200]}"))
+            return pdf_name, str(e)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Batch PDF conversion via code-orchestrator")
     parser.add_argument("--input-dir", required=True)
@@ -159,6 +200,8 @@ def main() -> None:
     parser.add_argument("--enable-ocr", action="store_true", default=False)
     parser.add_argument("--mirror-structure", action="store_true", default=False,
                         help="Mirror input directory structure under output dir (auto-enabled when subdirs detected)")
+    parser.add_argument("--workers", type=int, default=6,
+                        help="Concurrent conversions (default: 6). Use 1 for sequential with live page progress.")
     parser.add_argument("--co-url", default=os.environ.get("CODE_ORCHESTRATOR_URL", "http://localhost:8083"))
     args = parser.parse_args()
 
@@ -190,6 +233,7 @@ def main() -> None:
     _log(f"   Skip existing: {args.skip_existing}")
     _log(f"   OCR: {args.enable_ocr}")
     _log(f"   Mirror structure: {mirror}")
+    _log(f"   Workers: {args.workers}")
     _log("=" * 60)
 
     # Health check — fail fast before touching any files
@@ -248,61 +292,92 @@ def main() -> None:
             if out_parent and not os.path.exists(out_parent):
                 os.makedirs(out_parent, exist_ok=True)
 
-    # Conversion loop
     succeeded = 0
     failed = 0
     failed_names: list[str] = []
     batch_start = time.time()
-
     aborted_due_fatal = False
     fatal_reason = ""
 
-    with httpx.Client() as client:
-        for idx, (pdf_path, out_path) in enumerate(to_process, 1):
-            pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
-            book_start = time.time()
+    if args.workers == 1 or total == 1:
+        # ── Sequential path: preserves live per-page progress watcher ────────
+        with httpx.Client() as client:
+            for idx, (pdf_path, out_path) in enumerate(to_process, 1):
+                pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+                book_start = time.time()
 
-            _log("")
-            _log(f"[{idx:3d}/{total}] 📄 {pdf_name}")
-            _log(f"         → {out_path}")
+                _log("")
+                _log(f"[{idx:3d}/{total}] 📄 {pdf_name}")
+                _log(f"         → {out_path}")
 
-            stop_evt = threading.Event()
-            watcher = threading.Thread(target=_watch_progress, args=(stop_evt, pdf_name), daemon=True)
-            watcher.start()
+                stop_evt = threading.Event()
+                watcher = threading.Thread(target=_watch_progress, args=(stop_evt, pdf_name), daemon=True)
+                watcher.start()
+                try:
+                    body = _convert_pdf(client, args.co_url, pdf_path, out_path, args.enable_ocr)
+                    elapsed = time.time() - book_start
+                    stop_evt.set()
+                    watcher.join(timeout=1.0)
+
+                    pages = body.get("pages_converted", body.get("total_pages", "?"))
+                    ocr_pages = body.get("ocr_pages", 0)
+                    out = body.get("output_path", out_path)
+                    ocr_note = f"  ({ocr_pages} OCR)" if ocr_pages else ""
+                    _log(green(f"   ✅  {pages} pages{ocr_note} — {elapsed:.1f}s"))
+                    _log(f"   📄  {out}")
+                    succeeded += 1
+
+                except FatalBatchError as e:
+                    elapsed = time.time() - book_start
+                    stop_evt.set()
+                    watcher.join(timeout=1.0)
+                    _log(red(f"   ❌  Fatal ({elapsed:.1f}s): {str(e)}"))
+                    failed += 1
+                    failed_names.append(pdf_name)
+                    aborted_due_fatal = True
+                    fatal_reason = str(e)
+                    break
+
+                except Exception as e:
+                    elapsed = time.time() - book_start
+                    stop_evt.set()
+                    watcher.join(timeout=1.0)
+                    _log(red(f"   ❌  Failed ({elapsed:.1f}s): {str(e)[:200]}"))
+                    failed += 1
+                    failed_names.append(pdf_name)
+
+    else:
+        # ── Parallel path: N concurrent workers, each with its own httpx.Client ──
+        _log(cyan(f"   Running {args.workers} workers in parallel"))
+        _log("")
+
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(
+                    _convert_one, idx, total, pdf_path, out_path, args.co_url, args.enable_ocr
+                ): pdf_path
+                for idx, (pdf_path, out_path) in enumerate(to_process, 1)
+            }
             try:
-                body = _convert_pdf(client, args.co_url, pdf_path, out_path, args.enable_ocr)
-                elapsed = time.time() - book_start
-                stop_evt.set()
-                watcher.join(timeout=1.0)
+                for future in as_completed(futures):
+                    try:
+                        pdf_name, error = future.result()
+                        if error is None:
+                            succeeded += 1
+                        else:
+                            failed += 1
+                            failed_names.append(pdf_name)
+                    except FatalBatchError as e:
+                        aborted_due_fatal = True
+                        fatal_reason = str(e)
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+            except KeyboardInterrupt:
+                executor.shutdown(wait=False, cancel_futures=True)
+                _log(yellow("\n⚠️  Interrupted — partial results saved"))
+                raise
 
-                pages = body.get("pages_converted", body.get("total_pages", "?"))
-                ocr_pages = body.get("ocr_pages", 0)
-                out = body.get("output_path", out_path)
-                ocr_note = f"  ({ocr_pages} OCR)" if ocr_pages else ""
-                _log(green(f"   ✅  {pages} pages{ocr_note} — {elapsed:.1f}s"))
-                _log(f"   📄  {out}")
-                succeeded += 1
-
-            except FatalBatchError as e:
-                elapsed = time.time() - book_start
-                stop_evt.set()
-                watcher.join(timeout=1.0)
-                _log(red(f"   ❌  Fatal ({elapsed:.1f}s): {str(e)}"))
-                failed += 1
-                failed_names.append(pdf_name)
-                aborted_due_fatal = True
-                fatal_reason = str(e)
-                break
-
-            except Exception as e:
-                elapsed = time.time() - book_start
-                stop_evt.set()
-                watcher.join(timeout=1.0)
-                _log(red(f"   ❌  Failed ({elapsed:.1f}s): {str(e)[:200]}"))
-                failed += 1
-                failed_names.append(pdf_name)
-
-    # Summary
+    # ── Summary ───────────────────────────────────────────────────────────────
     batch_elapsed = time.time() - batch_start
     _log("")
     _log("=" * 60)

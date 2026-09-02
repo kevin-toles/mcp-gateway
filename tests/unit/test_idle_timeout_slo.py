@@ -33,7 +33,6 @@ SERVICE_NAMES = [
     "ai-agents",
     "audit-service",
     "context-management-service",
-    "unified-search-service",
     "inference-service-cpp",
     "amve",
 ]

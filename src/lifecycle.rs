@@ -1,4 +1,4 @@
-use crate::registry::{ActivationTier, HealthState, ServiceRegistry, ServiceRuntime};
+use crate::registry::{ActivationTier, HealthState, ServiceRegistry, ServiceRuntime, TierEvent};
 use crate::spawn::poll_health;
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,14 +75,14 @@ pub async fn boot_to_cold(
         service: service_name.to_string()
     })?;
 
-    // Re-check current tier before overwriting — another path (e.g.
-    // spawn_service_and_promote from health_failure_monitor) may have
-    // already promoted the service past Boot while we were polling.
-    if let Some(current) = registry.get(service_name) {
-        if current.tier == ActivationTier::Boot {
-            registry.update_tier(service_name, ActivationTier::Cold);
-            registry.record_request(service_name);
-        }
+    // The reducer's Boot-only guard makes this atomic: if another path
+    // (e.g. spawn_service_and_promote) already promoted the service past
+    // Boot while we were polling, the event is a no-op.
+    if registry
+        .apply_event(service_name, TierEvent::ScanFoundReady)
+        .is_some()
+    {
+        registry.record_request(service_name);
     }
     Ok(())
 }
@@ -140,7 +140,7 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
                         timeout = effective_hot_timeout,
                         "hot→warm: connection idle timeout reached"
                     );
-                    registry.update_tier(&entry.name, ActivationTier::Warm);
+                    registry.apply_event(&entry.name, TierEvent::IdleTimeout);
                     // Do NOT continue — fall through so the same entry gets
                     // checked for Warm→Cold in the same tick. This handles
                     // the case where hot_idle_timeout and warm_idle_timeout
@@ -168,11 +168,49 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
                             timeout = effective_warm_timeout,
                             "warm→cold: shim connection idle timeout reached (registry only)"
                         );
-                        registry.update_tier(&current.name, ActivationTier::Cold);
+                        registry.apply_event(&current.name, TierEvent::IdleTimeout);
                         // Cold is per-entry terminal; continue checking remaining entries
                     }
                 }
             }
+        }
+    }
+}
+
+/// Platform invariant: valid requests drive service lifecycle state.
+/// Called from POST /activity/{service} — if the reported service has
+/// Native runtime and its port is not bound (i.e. the process is dead),
+/// spawn it immediately. Activity-driven starts must not depend on
+/// health_failure_monitor cadence, failure thresholds, or the startup
+/// grace period — the user asked for the service NOW.
+///
+/// Auto-runtime services are never spawned (launchd owns their restart).
+/// Returns true if a spawn was performed and the service came up.
+pub async fn ensure_running_after_activity(
+    registry: &Arc<ServiceRegistry>,
+    service_name: &str,
+) -> bool {
+    let Some(entry) = registry.get(service_name) else {
+        return false;
+    };
+    if !matches!(entry.runtime, ServiceRuntime::Native { .. }) {
+        return false;
+    }
+    if crate::spawn::is_port_bound(entry.port).await {
+        return false;
+    }
+    tracing::info!(
+        service = %service_name,
+        "activity on dead service — spawning immediately (request-driven lifecycle)"
+    );
+    match crate::spawn::spawn_service_and_promote(&entry, "hybrid", registry).await {
+        Ok(pid) => {
+            tracing::info!(service = %service_name, pid = pid, "activity-driven spawn succeeded");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(service = %service_name, error = ?e, "activity-driven spawn failed");
+            false
         }
     }
 }
@@ -194,7 +232,7 @@ pub async fn startup_scan(registry: &ServiceRegistry) {
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
             {
-                registry.update_tier(&entry.name, ActivationTier::Cold);
+                registry.apply_event(&entry.name, TierEvent::ScanFoundReady);
                 registry.record_request(&entry.name);
                 tracing::info!(
                     service = %entry.name,
@@ -317,6 +355,26 @@ pub async fn health_failure_monitor(
                 tier = ?current.tier,
                 "health_failure_monitor: consecutive failures exceeded threshold — respawning"
             );
+
+            // Wedged-service eviction: at this point every respawn gate has
+            // passed (failure threshold, duration gate, startup grace,
+            // circuit breaker) and the service is confirmed unhealthy. If
+            // its port is STILL bound, the process is wedged — alive enough
+            // to hold the socket, dead enough to fail health checks. launchd
+            // won't restart it and spawn refuses a bound port, so without
+            // eviction this is a permanent outage (observed: context-
+            // management-service wedged for 1.5 days, 2026-08-28).
+            if crate::spawn::is_port_bound(current.port).await {
+                let killed = crate::spawn::kill_port_listeners(current.port).await;
+                tracing::warn!(
+                    service = %current.name,
+                    port = current.port,
+                    killed = killed,
+                    "health_failure_monitor: evicted wedged listener before respawn"
+                );
+                // Give the OS a moment to release the socket.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
 
             match crate::spawn::spawn_service_and_promote(
                 &current,
@@ -448,6 +506,8 @@ mod tests {
             ready_path: None,
             health_checks_total: 0,
             health_checks_passed: 0,
+            last_transition_reason: None,
+            last_transition_at: None,
         }
     }
 
@@ -1112,6 +1172,65 @@ mod tests {
     /// asserts HealthTimeout. That's TC-1 testing a failure case.
     /// But we need to test SUCCESS.
     ///
+    /// Platform invariant: a valid request (activity report) on a dead
+    /// Native service must START it — not wait for health_failure_monitor
+    /// cadence, thresholds, or the startup grace period.
+    #[tokio::test]
+    async fn test_activity_spawns_dead_native_service() {
+        let health_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let health_port = health_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = health_listener.accept().await.unwrap();
+                let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, response).await;
+            }
+        });
+        let entry_port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("act-spawn-svc", entry_port, ActivationTier::Hot);
+        entry.health_port = health_port;
+        entry.runtime = ServiceRuntime::Native {
+            spawn_cmd: "/bin/sleep".to_string(),
+            pid_file: None,
+        };
+        registry.register(entry);
+
+        let spawned = ensure_running_after_activity(&registry, "act-spawn-svc").await;
+        assert!(spawned, "dead Native service must be spawned on activity");
+        assert_eq!(registry.get("act-spawn-svc").unwrap().tier, ActivationTier::Hot);
+    }
+
+    #[tokio::test]
+    async fn test_activity_spawn_skips_auto_runtime() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("act-auto-svc", 1, ActivationTier::Hot);
+        entry.runtime = ServiceRuntime::Auto;
+        registry.register(entry);
+        // Auto runtime: launchd owns restart — never spawn, even if dead.
+        assert!(!ensure_running_after_activity(&registry, "act-auto-svc").await);
+    }
+
+    #[tokio::test]
+    async fn test_activity_spawn_skips_already_bound_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound_port = listener.local_addr().unwrap().port();
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("act-alive-svc", bound_port, ActivationTier::Hot);
+        entry.runtime = ServiceRuntime::Native {
+            spawn_cmd: "/bin/sleep".to_string(),
+            pid_file: None,
+        };
+        registry.register(entry);
+        // Port bound: the service is running — nothing to spawn.
+        assert!(!ensure_running_after_activity(&registry, "act-alive-svc").await);
+        drop(listener);
+    }
+
     #[tokio::test]
     async fn test_spawn_updates_registry_tier_to_hot() {
         // Start a real TCP health endpoint on a separate port

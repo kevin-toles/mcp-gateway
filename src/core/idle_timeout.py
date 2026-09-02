@@ -317,8 +317,7 @@ class IdleTimeoutTracker:
     
     # Service-specific timeout overrides (from env vars)
     SERVICE_TIMEOUTS = {
-        "unified-search-service": "UNIFIED_SEARCH_IDLE_TIMEOUT",
-        "unified-search-rs": "UNIFIED_SEARCH_RS_IDLE_TIMEOUT",
+        "semantic-search": "UNIFIED_SEARCH_RS_IDLE_TIMEOUT",
         "inference-service-cpp": "INFERENCE_SERVICE_IDLE_TIMEOUT",
         "llm-gateway": "LLM_GATEWAY_IDLE_TIMEOUT",
         "code-orchestrator": "CODE_ORCHESTRATOR_IDLE_TIMEOUT",

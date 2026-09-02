@@ -38,6 +38,8 @@ fn make_entry(name: &str, port: u16, tier: ActivationTier) -> ServiceEntry {
         ready_path: None,
         health_checks_total: 0,
         health_checks_passed: 0,
+        last_transition_reason: None,
+        last_transition_at: None,
     }
 }
 

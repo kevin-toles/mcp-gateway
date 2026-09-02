@@ -30,6 +30,7 @@ def _launch_terminal(
     skip_existing: bool,
     enable_ocr: bool,
     co_url: str,
+    workers: int = 6,
 ) -> dict:
     """Open a new Terminal.app window running the conversion script.
 
@@ -57,6 +58,7 @@ printf '\\n\\033[1;36m══ Batch PDF Conversion ══  Log: {log_file}\\033[0
     --input-dir '{input_dir}' \\
     --output-dir '{out_dir}' \\
     --co-url '{co_url}' \\
+    --workers '{workers}' \\
     {skip_flag} {ocr_flag} 2>&1 | tee '{log_file}'
 EXIT_CODE=${{PIPESTATUS[0]}}
 ln -sf '{log_file}' '{PROGRESS_LOG}'
@@ -99,6 +101,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         file_pattern: str = "*.pdf",
         skip_existing: bool = True,
         enable_ocr: bool = True,
+        workers: int = 6,
     ) -> dict:
         """Convert PDFs to structured JSON.
 
@@ -116,6 +119,8 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             file_pattern: Glob pattern when input_path is a directory (default: *.pdf).
             skip_existing: Skip PDFs that already have a JSON output file.
             enable_ocr: Enable OCR fallback for image-only pages.
+            workers: Concurrent conversions (default: 6). Use 1 for sequential with live
+                     per-page progress. Max 16 — beyond 6 gives diminishing returns on M1 Pro.
         """
         # Resolve CO URL: dispatcher settings > fresh Settings() (env-driven).
         # Fresh Settings() picks up MCP_GATEWAY_CODE_ORCHESTRATOR_URL so Docker
@@ -159,6 +164,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             skip_existing=skip_existing,
             enable_ocr=enable_ocr,
             co_url=co_url,
+            workers=workers,
         )
 
     return convert_pdf_to_json

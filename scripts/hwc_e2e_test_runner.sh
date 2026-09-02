@@ -1,35 +1,68 @@
 #!/bin/bash
-set -e
-
 # ═════════════════════════════════════════════════════════════════════════════
 # H/W/C E2E Startup Test Runner
 # ═════════════════════════════════════════════════════════════════════════════
-# 
-# Opens an external terminal and runs comprehensive H/W/C endpoint tests.
-# After tests, transitions services back to WARM tier (ready for active dev).
+#
+# Validates the HWC lifecycle on every startup. Design invariants:
+#
+#   1. Tests ALWAYS run — headless, in this process, with no dependency on
+#      Terminal.app, /tmp wrapper scripts, or anything a reboot can delete.
+#   2. Results are ALWAYS captured — logs go to ~/Library/Logs/hwc/ which
+#      persists across reboots (unlike /tmp, which macOS wipes).
+#   3. Visibility is best-effort and NEVER gates execution — a Terminal
+#      viewer window and a macOS notification are attempted, but failure
+#      to display never prevents or interrupts the test run.
 #
 # Usage:
-#   ./scripts/hwc_e2e_test_runner.sh [--headless]
-#   
-# Options:
-#   --headless    Run tests without opening external terminal (CI/batch mode)
+#   ./scripts/hwc_e2e_test_runner.sh              # full run (viewer + tests)
+#   ./scripts/hwc_e2e_test_runner.sh --no-viewer  # tests only (CI/manual)
+#   --headless is accepted as an alias for --no-viewer (back-compat)
 #
-# Called from: LaunchAgent plist at shim startup
+# Called from: LaunchAgent com.kevintoles.mcp-gateway-hwc-startup-test
 # ═════════════════════════════════════════════════════════════════════════════
 
-HEADLESS=false
-if [ "$1" = "--headless" ]; then
-  HEADLESS=true
-fi
+VIEWER=true
+case "$1" in
+  --no-viewer|--headless) VIEWER=false ;;
+esac
 
 PROJECT_ROOT="/Users/kevintoles/POC/mcp-gateway"
 TESTS_DIR="$PROJECT_ROOT/tests/integration"
 TEST_FILE="test_hwc_e2e_startup.py"
-LOG_FILE="/tmp/hwc_e2e_test_$(date +%Y%m%d_%H%M%S).log"
-TIER_RECOVERY_SCRIPT="/tmp/hwc_tier_recovery.sh"
+
+# Persistent log location — /tmp gets wiped on reboot, this does not.
+LOG_DIR="$HOME/Library/Logs/hwc"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/startup_test_$(date +%Y%m%d_%H%M%S).log"
+touch "$LOG_FILE"
+ln -sf "$LOG_FILE" "$LOG_DIR/latest.log"
+
+# Keep only the 20 most recent logs
+ls -t "$LOG_DIR"/startup_test_*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null
+
+# From here on, everything we print goes to the persistent log.
+# The viewer window (if open) tails this file live.
+exec >>"$LOG_FILE" 2>&1
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 1: Wait for Proxy & Gateway
+# Best-effort display channels — never gate execution
+# ─────────────────────────────────────────────────────────────────────────────
+
+open_viewer() {
+  [ "$VIEWER" = true ] || return 0
+  # Permanent script in the repo — nothing to lose on reboot, nothing to
+  # clean up. If Terminal isn't available yet (early login), open fails
+  # harmlessly and the run continues; results are in the log either way.
+  open -a Terminal "$PROJECT_ROOT/scripts/hwc_test_viewer.sh" 2>/dev/null || true
+}
+
+notify() {
+  # $1 = title, $2 = message
+  osascript -e "display notification \"$2\" with title \"$1\"" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1: Wait for core infrastructure
 # ─────────────────────────────────────────────────────────────────────────────
 
 wait_for_services() {
@@ -38,7 +71,7 @@ wait_for_services() {
   local lifecycle_up=false
   local gateway_up=false
 
-  for i in {1..30}; do
+  for _ in $(seq 1 60); do
     if [ "$lifecycle_up" = false ] && (echo > /dev/tcp/127.0.0.1/8079) 2>/dev/null; then
       echo "✓ Platform lifecycle daemon listening (:8079)"
       lifecycle_up=true
@@ -53,188 +86,96 @@ wait_for_services() {
     sleep 1
   done
 
-  [ "$lifecycle_up" = false ] && echo "✗ Platform lifecycle daemon (:8079) did not start within 30 seconds"
-  [ "$gateway_up" = false ] && echo "✗ MCP gateway (:8087) did not start within 30 seconds"
+  [ "$lifecycle_up" = false ] && echo "✗ Platform lifecycle daemon (:8079) did not start within 60 seconds"
+  [ "$gateway_up" = false ] && echo "✗ MCP gateway (:8087) did not start within 60 seconds"
   return 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 2: Run Test Suite
+# Phase 2: Run test suite
 # ─────────────────────────────────────────────────────────────────────────────
 
 run_tests() {
-  cd "$PROJECT_ROOT"
-  
+  cd "$PROJECT_ROOT" || return 1
+
   echo ""
   echo "╔════════════════════════════════════════════════════════════════╗"
   echo "║           H/W/C E2E Startup Test Suite                        ║"
-  echo "║                                                                ║"
-  echo "║  Testing: Proxy, Gateway, Platform Services                   ║"
-  echo "║  Coverage: All endpoints, tier state, stability               ║"
+  echo "║  Testing: lifecycle daemon, gateway, auto-start, SLO, tiers   ║"
   echo "╚════════════════════════════════════════════════════════════════╝"
   echo ""
   echo "Timestamp: $(date)"
-  echo "Log file: $LOG_FILE"
+  echo "Log file:  $LOG_FILE"
   echo ""
-  
-  # Use venv Python to avoid system pytest plugin conflicts (libpq/psycopg issues)
+
+  # Use venv Python to avoid system pytest plugin conflicts
   VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
-  if [ ! -f "$VENV_PYTHON" ]; then
-    VENV_PYTHON="python3"  # Fallback to system Python
-  fi
+  [ -f "$VENV_PYTHON" ] || VENV_PYTHON="python3"
 
-  # INTEGRATION=1 enables the integration test conftest guard
-  export INTEGRATION=1
-
-  # Run pytest with output to both screen and log
-  "$VENV_PYTHON" -m pytest "$TESTS_DIR/$TEST_FILE" \
+  INTEGRATION=1 "$VENV_PYTHON" -m pytest "$TESTS_DIR/$TEST_FILE" \
     -v \
     --tb=short \
-    -m integration \
-    2>&1 | tee "$LOG_FILE"
-  
-  TEST_EXIT_CODE=${PIPESTATUS[0]}
-  return $TEST_EXIT_CODE
+    -m integration
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 3: Service Tier Recovery (Transition to WARM)
+# Phase 3: Tier status report (informational)
 # ─────────────────────────────────────────────────────────────────────────────
 
-create_tier_recovery_script() {
-  cat > "$TIER_RECOVERY_SCRIPT" << 'EOFRECOVERY'
-#!/bin/bash
-
-echo ""
-echo "Transitioning services from test state to production tier..."
-echo ""
-
-# WARM tier services (stay running, but will idle timeout eventually)
-# These are the core services that benefit from being pre-warmed
-WARM_SERVICES=(
-  "mcp-gateway:8087"
-  "unified-search:8081"
-  "llm-gateway:8080"
-)
-
-# COLD tier services (stop after tests, start on-demand)
-COLD_SERVICES=(
-  "ai-agents:8082"
-  "code-orchestrator:8083"
-  "audit-service:8084"
-  "context-management:8086"
-  "struct-analyzer:8088"
-)
-
-echo "Services to keep WARM (will idle timeout eventually):"
-for svc in "${WARM_SERVICES[@]}"; do
-  name="${svc%:*}"
-  port="${svc#*:}"
-  if curl -sf http://localhost:$port/health >/dev/null 2>&1; then
-    echo "  ✓ $name (:$port) — WARM"
-  else
-    echo "  • $name (:$port) — COLD (not running)"
-  fi
-done
-
-echo ""
-echo "Services to transition to COLD (will restart on-demand):"
-for svc in "${COLD_SERVICES[@]}"; do
-  name="${svc%:*}"
-  port="${svc#*:}"
-  
-  if curl -sf http://localhost:$port/health >/dev/null 2>&1; then
-    # Could add logic here to actually stop services
-    # For now, just report they'll timeout to COLD
-    echo "  • $name (:$port) — Will transition to COLD on idle timeout"
-  else
-    echo "  ✓ $name (:$port) — Already COLD"
-  fi
-done
-
-echo ""
-echo "✓ Tier recovery complete. Services ready for development."
-echo ""
-EOFRECOVERY
-
-  chmod +x "$TIER_RECOVERY_SCRIPT"
+tier_report() {
+  echo ""
+  echo "Current tier state (:8079/slo):"
+  curl -sf --max-time 5 http://localhost:8079/slo 2>/dev/null \
+    | "$VENV_PYTHON" -c "
+import json, sys
+try:
+    for e in sorted(json.load(sys.stdin), key=lambda x: x['service']):
+        mark = '✓' if e.get('within_slo') else '✗'
+        print(f\"  {mark} {e['service']}: tier={e.get('tier','?')} uptime={e.get('uptime_ratio',0):.3f}\")
+except Exception:
+    print('  (SLO endpoint unavailable)')
+" 2>/dev/null || echo "  (SLO endpoint unavailable)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 4: Open Terminal & Run (or run headless)
+# Main
 # ─────────────────────────────────────────────────────────────────────────────
 
 main() {
-  # Ensure lifecycle daemon and gateway are running
-  wait_for_services || {
-    echo "✗ Startup failed. Check LaunchAgent configuration for com.kevintoles.mcp-gateway-shim and com.kevintoles.mcp-gateway."
+  echo "H/W/C startup validation — $(date)"
+
+  # Open the viewer FIRST so the user watches the whole run, including the
+  # wait phase. Display failure never affects the run.
+  open_viewer
+
+  if ! wait_for_services; then
+    echo ""
+    echo "✗ STARTUP FAILED: core infrastructure did not come up."
+    echo "  Check LaunchAgents: com.kevintoles.mcp-gateway-shim, com.kevintoles.mcp-gateway"
+    notify "HWC Startup Tests" "FAILED: core infrastructure did not start"
+    echo "HWC-RUN-COMPLETE status=infra-failure"
     exit 1
-  }
-  
-  # Create tier recovery script
-  create_tier_recovery_script
-  
-  if [ "$HEADLESS" = true ]; then
-    # Headless mode: just run tests
-    run_tests
-    TEST_EXIT=$?
-    bash "$TIER_RECOVERY_SCRIPT"
-    exit $TEST_EXIT
-  else
-    # Interactive mode: open Terminal and run tests
-    # This allows user to see real-time output and interact if needed
-    
-    # Create a wrapper script that runs tests and stays open
-    WRAPPER_SCRIPT="/tmp/hwc_test_wrapper_$$.sh"
-    cat > "$WRAPPER_SCRIPT" << 'EOFWRAPPER'
-#!/bin/bash
-cd "PROJECT_ROOT_PLACEHOLDER"
-
-echo ""
-echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║           H/W/C E2E Startup Test Suite                        ║"
-echo "╚════════════════════════════════════════════════════════════════╝"
-echo ""
-
-# Use venv Python to avoid pytest-postgresql plugin conflicts
-VENV_PYTHON="PROJECT_ROOT_PLACEHOLDER/.venv/bin/python"
-if [ ! -f "$VENV_PYTHON" ]; then
-  VENV_PYTHON="python3"
-fi
-
-export INTEGRATION=1
-
-"$VENV_PYTHON" -m pytest "TESTS_DIR_PLACEHOLDER/TEST_FILE_PLACEHOLDER" \
-  -v --tb=short -m integration
-
-TEST_EXIT=$?
-
-echo ""
-echo "Running service tier recovery..."
-bash "TIER_RECOVERY_SCRIPT_PLACEHOLDER"
-
-echo ""
-echo "Test suite complete. Press Enter to close this window..."
-read -r
-
-exit $TEST_EXIT
-EOFWRAPPER
-
-    # Replace placeholders
-    sed -i '' "s|PROJECT_ROOT_PLACEHOLDER|$PROJECT_ROOT|g" "$WRAPPER_SCRIPT"
-    sed -i '' "s|TESTS_DIR_PLACEHOLDER|$TESTS_DIR|g" "$WRAPPER_SCRIPT"
-    sed -i '' "s|TEST_FILE_PLACEHOLDER|$TEST_FILE|g" "$WRAPPER_SCRIPT"
-    sed -i '' "s|TIER_RECOVERY_SCRIPT_PLACEHOLDER|$TIER_RECOVERY_SCRIPT|g" "$WRAPPER_SCRIPT"
-    
-    chmod +x "$WRAPPER_SCRIPT"
-    
-    # Open in Terminal.app
-    open -a Terminal "$WRAPPER_SCRIPT"
-    
-    # Clean up wrapper script after terminal opens (Terminal has own process)
-    sleep 1
-    rm -f "$WRAPPER_SCRIPT"
   fi
+
+  run_tests
+  TEST_EXIT=$?
+
+  VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+  [ -f "$VENV_PYTHON" ] || VENV_PYTHON="python3"
+  tier_report
+
+  echo ""
+  if [ "$TEST_EXIT" -eq 0 ]; then
+    echo "✓ All startup tests passed. Platform validated."
+    notify "HWC Startup Tests" "PASSED — platform validated"
+    echo "HWC-RUN-COMPLETE status=pass"
+  else
+    echo "✗ Startup tests FAILED (exit $TEST_EXIT). See log above."
+    notify "HWC Startup Tests" "FAILED — check $LOG_FILE"
+    echo "HWC-RUN-COMPLETE status=fail exit=$TEST_EXIT"
+  fi
+
+  exit "$TEST_EXIT"
 }
 
 main "$@"

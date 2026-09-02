@@ -1,7 +1,7 @@
 """
 MCP Gateway tier-enhanced search end-to-end integration tests — WBS-TXS7.
 
-Covers the MCP gateway → unified-search-service full pipeline for
+Covers the MCP gateway → unified-search-rs full pipeline for
 taxonomy-enhanced search parameters introduced in TXS3–TXS6.
 
 Acceptance Criteria:
@@ -16,7 +16,7 @@ Run with:
 
 Requires:
     - mcp-gateway :8087 (or UNIFIED_SEARCH_URL set)
-    - unified-search-service :8081
+    - unified-search-rs :8081
     - Qdrant :6333 (with bloom_tier_level backfilled — TXS2 complete)
     - Neo4j :7687 (with TaxonomyConcept nodes — TXS1/V008 complete)
 """
@@ -53,7 +53,7 @@ def dispatcher(settings: Settings) -> ToolDispatcher:
 
 
 async def _service_ready() -> bool:
-    """Return True if unified-search-service health endpoint is reachable."""
+    """Return True if unified-search-rs health endpoint is reachable."""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{SEARCH_URL}/health", timeout=3.0)
@@ -63,7 +63,7 @@ async def _service_ready() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TXS7 e2e tests via ToolDispatcher (gateway → unified-search-service)
+# TXS7 e2e tests via ToolDispatcher (gateway → unified-search-rs)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -73,7 +73,7 @@ class TestBloomTierFilterViaGateway:
     @pytest.mark.asyncio
     async def test_bloom_tier_filter_restricts_results_to_specified_tiers(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",
@@ -104,7 +104,7 @@ class TestBloomTierFilterViaGateway:
     @pytest.mark.asyncio
     async def test_bloom_tier_filter_response_has_expected_shape(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",
@@ -130,7 +130,7 @@ class TestTierBoostViaGateway:
     @pytest.mark.asyncio
     async def test_tier_boost_endpoint_reachable_returns_200(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",
@@ -149,7 +149,7 @@ class TestTierBoostViaGateway:
     @pytest.mark.asyncio
     async def test_tier_boost_false_produces_result_without_boost_applied(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",
@@ -176,7 +176,7 @@ class TestCombinedFiltersViaGateway:
     @pytest.mark.asyncio
     async def test_combined_tier_filters_return_200(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",
@@ -200,7 +200,7 @@ class TestBackwardCompatViaGateway:
     @pytest.mark.asyncio
     async def test_hybrid_search_without_tier_params_returns_200(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",
@@ -219,7 +219,7 @@ class TestBackwardCompatViaGateway:
     @pytest.mark.asyncio
     async def test_hybrid_search_without_tier_params_latency_acceptable(self, dispatcher: ToolDispatcher) -> None:
         if not await _service_ready():
-            pytest.skip(f"unified-search-service not reachable at {SEARCH_URL}")
+            pytest.skip(f"unified-search-rs not reachable at {SEARCH_URL}")
 
         result = await dispatcher.dispatch(
             "hybrid_search",

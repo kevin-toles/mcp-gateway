@@ -4,9 +4,9 @@ Intent-level tool that surfaces code pattern search to LLM clients using
 user-friendly `examples` vocabulary ("good", "bad", "both") instead of the
 internal `pattern_type` values accepted by the `pattern_search` backend route.
 
-Translates `examples` to a Qdrant collection name that the unified-search-service
+Translates `examples` to a Qdrant collection name that the unified-search-rs
 HybridSearchRequest model accepts (avoids sending unknown fields like `pattern_type`
-which would cause a 422 Pydantic validation error).
+which would cause a 422 validation error).
 """
 
 from __future__ import annotations

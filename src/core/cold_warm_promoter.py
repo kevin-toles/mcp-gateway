@@ -232,8 +232,6 @@ class ColdWarmPromoter:
 
 _SERVICE_URL_ATTRS: dict[str, str] = {
     "semantic-search": "SEMANTIC_SEARCH_URL",
-    "unified-search-service": "UNIFIED_SEARCH_URL",
-    "unified-search-rs": "UNIFIED_SEARCH_RS_URL",
     "code-orchestrator": "CODE_ORCHESTRATOR_URL",
     "llm-gateway": "LLM_GATEWAY_URL",
     "ai-agents": "AI_AGENTS_URL",

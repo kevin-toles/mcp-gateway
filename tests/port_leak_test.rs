@@ -21,12 +21,12 @@ async fn test_port_not_leaked() {
 
 #[tokio::test]
 async fn test_check_port_free() {
-    // Try to bind the same port — if it fails, tokio tasks leaked
+    // Bind, release, then re-bind the same port — if the second bind
+    // fails, something leaked the socket after drop.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    // Just connect to verify the port is NOT already bound
-    let is_bound = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok();
-    println!("TEST2: randomly assigned port {} - already bound: {}", port, is_bound);
-    assert!(!is_bound, "PORT LEAK DETECTED: random port {} is already occupied!", port);
     drop(listener);
+    let rebind = TcpListener::bind(("127.0.0.1", port)).await;
+    println!("TEST2: port {} re-bindable after drop: {}", port, rebind.is_ok());
+    assert!(rebind.is_ok(), "PORT LEAK DETECTED: port {} still occupied after drop!", port);
 }

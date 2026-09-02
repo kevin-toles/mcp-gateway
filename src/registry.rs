@@ -82,6 +82,11 @@ pub struct ServiceEntry {
     pub health_checks_total: u64,
     /// D-5: Health checks that returned healthy.
     pub health_checks_passed: u64,
+    /// Reducer: human-readable record of the last tier transition,
+    /// e.g. "Boot→Cold (scan-found-ready)". None = no transition yet.
+    pub last_transition_reason: Option<String>,
+    /// Reducer: when the last tier transition happened.
+    pub last_transition_at: Option<Instant>,
 }
 
 impl ServiceEntry {
@@ -89,6 +94,47 @@ impl ServiceEntry {
     /// no request has ever been recorded.
     pub fn last_request_elapsed_secs(&self) -> Option<f64> {
         self.last_request.map(|t| t.elapsed().as_secs_f64())
+    }
+
+    /// The single tier-mutation primitive. Every tier change — reducer
+    /// events and the inline health-demotion path — goes through here so
+    /// the transition record is never skipped.
+    fn transition(&mut self, to: ActivationTier, reason: &str) {
+        let from = std::mem::replace(&mut self.tier, to.clone());
+        self.last_transition_reason = Some(format!("{:?}→{:?} ({})", from, to, reason));
+        self.last_transition_at = Some(Instant::now());
+    }
+}
+
+/// Lifecycle events that can change a service's tier. The transition table
+/// in [`ServiceRegistry::apply_event`] is the SOLE decision point for tier
+/// changes — the five lifecycle code paths (startup scan, boot-cold monitor,
+/// idle monitor, health monitor, activity endpoint) emit events instead of
+/// writing tiers directly, which eliminates racing read-decide-write cycles
+/// across independent writers (assessment finding #4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TierEvent {
+    /// startup_scan / boot_to_cold found the service already healthy.
+    ScanFoundReady,
+    /// A request or activity report arrived (POST /activity/{service}).
+    Activity,
+    /// spawn_service_and_promote completed a successful spawn.
+    SpawnSucceeded,
+    /// Consecutive health failures crossed the demotion threshold.
+    HealthDegraded,
+    /// The idle monitor's timeout for the current tier elapsed.
+    IdleTimeout,
+}
+
+impl TierEvent {
+    pub fn reason(&self) -> &'static str {
+        match self {
+            TierEvent::ScanFoundReady => "scan-found-ready",
+            TierEvent::Activity => "request-activity",
+            TierEvent::SpawnSucceeded => "spawn-succeeded",
+            TierEvent::HealthDegraded => "health-degraded",
+            TierEvent::IdleTimeout => "idle-timeout",
+        }
     }
 }
 
@@ -114,6 +160,52 @@ impl ServiceRegistry {
         self.entries.read().unwrap().get(name).cloned()
     }
 
+    /// Single reducer for lifecycle tier transitions. Takes an event,
+    /// computes the next tier from the transition table, and applies it
+    /// atomically under the write lock (no read-decide-write races).
+    ///
+    /// Returns `Some((from, to))` when a transition happened, `None` when
+    /// the event is a no-op for the current tier (or the service is unknown).
+    ///
+    /// Transition table (preserves the previously-scattered semantics):
+    ///   Boot + ScanFoundReady        → Cold
+    ///   Boot/Cold/Warm + Activity    → Hot
+    ///   any-non-Hot + SpawnSucceeded → Hot
+    ///   Hot  + HealthDegraded        → Warm
+    ///   Hot  + IdleTimeout           → Warm
+    ///   Warm + IdleTimeout           → Cold
+    ///   everything else              → no-op
+    pub fn apply_event(
+        &self,
+        name: &str,
+        event: TierEvent,
+    ) -> Option<(ActivationTier, ActivationTier)> {
+        use ActivationTier::*;
+        let mut entries = self.entries.write().unwrap();
+        let entry = entries.get_mut(name)?;
+        let from = entry.tier.clone();
+        let to = match (&from, event) {
+            (Boot, TierEvent::ScanFoundReady) => Cold,
+            (Boot | Cold | Warm, TierEvent::Activity) => Hot,
+            (Boot | Cold | Warm, TierEvent::SpawnSucceeded) => Hot,
+            (Hot, TierEvent::HealthDegraded) => Warm,
+            (Hot, TierEvent::IdleTimeout) => Warm,
+            (Warm, TierEvent::IdleTimeout) => Cold,
+            _ => return None,
+        };
+        entry.transition(to.clone(), event.reason());
+        tracing::info!(
+            service = %name,
+            from_tier = ?from,
+            to_tier = ?to,
+            reason = event.reason(),
+            "tier transition"
+        );
+        Some((from, to))
+    }
+
+    /// Direct tier write for STATE RESTORE ONLY (persistence load, session
+    /// cascade). Lifecycle transitions must go through [`Self::apply_event`].
     pub fn update_tier(&self, name: &str, tier: ActivationTier) {
         let mut entries = self.entries.write().unwrap();
         if let Some(entry) = entries.get_mut(name) {
@@ -179,10 +271,15 @@ impl ServiceRegistry {
                         entry.first_failure_at = Some(Instant::now());
                     }
                     entry.failure_count += 1;
-                    if entry.failure_count >= FAILURE_DEMOTION_THRESHOLD {
-                        if entry.tier == ActivationTier::Hot {
-                            entry.tier = ActivationTier::Warm;
-                        }
+                    if entry.failure_count >= FAILURE_DEMOTION_THRESHOLD
+                        && entry.tier == ActivationTier::Hot
+                    {
+                        // Same table row as apply_event(HealthDegraded);
+                        // applied inline because we already hold the lock.
+                        entry.transition(
+                            ActivationTier::Warm,
+                            TierEvent::HealthDegraded.reason(),
+                        );
                     }
                     if entry.failure_count >= CIRCUIT_OPEN_THRESHOLD
                         && entry.circuit_open_since.is_none()
@@ -284,6 +381,8 @@ mod tests {
             ready_path: None,
             health_checks_total: 0,
             health_checks_passed: 0,
+            last_transition_reason: None,
+            last_transition_at: None,
         }
     }
 
@@ -404,5 +503,99 @@ mod tests {
         // No crash = no data race
         let final_count = registry.get("shared").unwrap().failure_count;
         assert!(final_count <= 10);
+    }
+
+    // ── Tier-transition reducer (single writer, finding #4) ──────────────
+
+    #[test]
+    fn reducer_scan_promotes_boot_to_cold_only() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Boot));
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::ScanFoundReady),
+            Some((ActivationTier::Boot, ActivationTier::Cold))
+        );
+        // Second scan is a no-op — service is no longer Boot.
+        assert_eq!(registry.apply_event("svc", TierEvent::ScanFoundReady), None);
+        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Cold);
+    }
+
+    #[test]
+    fn reducer_activity_promotes_non_hot_to_hot() {
+        let registry = ServiceRegistry::new();
+        for (name, tier) in [
+            ("b", ActivationTier::Boot),
+            ("c", ActivationTier::Cold),
+            ("w", ActivationTier::Warm),
+        ] {
+            registry.register(make_entry(name, 9000, tier.clone()));
+            let result = registry.apply_event(name, TierEvent::Activity);
+            assert_eq!(result, Some((tier, ActivationTier::Hot)));
+        }
+        // Already Hot → no-op.
+        assert_eq!(registry.apply_event("b", TierEvent::Activity), None);
+    }
+
+    #[test]
+    fn reducer_health_degraded_demotes_hot_only() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("hot", 9000, ActivationTier::Hot));
+        registry.register(make_entry("cold", 9001, ActivationTier::Cold));
+        assert_eq!(
+            registry.apply_event("hot", TierEvent::HealthDegraded),
+            Some((ActivationTier::Hot, ActivationTier::Warm))
+        );
+        // Cold service can't be demoted by health failures.
+        assert_eq!(registry.apply_event("cold", TierEvent::HealthDegraded), None);
+    }
+
+    #[test]
+    fn reducer_idle_timeout_steps_hot_warm_cold() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Hot));
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::IdleTimeout),
+            Some((ActivationTier::Hot, ActivationTier::Warm))
+        );
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::IdleTimeout),
+            Some((ActivationTier::Warm, ActivationTier::Cold))
+        );
+        // Cold is terminal for idle timeouts.
+        assert_eq!(registry.apply_event("svc", TierEvent::IdleTimeout), None);
+    }
+
+    #[test]
+    fn reducer_records_transition_reason_and_time() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Boot));
+        registry.apply_event("svc", TierEvent::ScanFoundReady);
+        let entry = registry.get("svc").unwrap();
+        assert_eq!(
+            entry.last_transition_reason.as_deref(),
+            Some("Boot→Cold (scan-found-ready)")
+        );
+        assert!(entry.last_transition_at.is_some());
+    }
+
+    #[test]
+    fn reducer_unknown_service_is_noop() {
+        let registry = ServiceRegistry::new();
+        assert_eq!(registry.apply_event("ghost", TierEvent::Activity), None);
+    }
+
+    #[test]
+    fn inline_health_demotion_records_reason() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Hot));
+        for _ in 0..FAILURE_DEMOTION_THRESHOLD {
+            registry.update_health("svc", HealthState::Unreachable);
+        }
+        let entry = registry.get("svc").unwrap();
+        assert_eq!(entry.tier, ActivationTier::Warm);
+        assert_eq!(
+            entry.last_transition_reason.as_deref(),
+            Some("Hot→Warm (health-degraded)")
+        );
     }
 }

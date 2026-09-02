@@ -66,8 +66,8 @@ class TestInferenceCppRegistration:
         assert tier is not None, (
             "inference-service-cpp not found in SERVICE_TIERS"
         )
-        assert tier == "COLD", (
-            f"Expected COLD tier, got {tier}"
+        assert tier == "cold", (
+            f"Expected cold tier, got {tier}"
         )
         timeout = TIER_HEALTH_TIMEOUTS.get(tier)
         assert timeout is not None, (

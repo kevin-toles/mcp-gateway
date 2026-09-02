@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::registry::{ActivationTier, ServiceRegistry};
+use crate::registry::{ActivationTier, ServiceRegistry, TierEvent};
 use crate::spawn;
 
 pub const LLM_ROUTER_PORT: u16 = 8079;
@@ -139,6 +139,13 @@ async fn handle(mut client: TcpStream, registry: Arc<ServiceRegistry>) {
         return;
     }
 
+    if req.path == "/status" && req.method == "GET" {
+        let body = serde_json::to_string(&status_snapshot(&registry))
+            .unwrap_or_else(|_| "{\"services\":[]}".to_string());
+        let _ = simple_response(&mut client, 200, "OK", body.as_bytes()).await;
+        return;
+    }
+
     if req.path == "/slo" && req.method == "GET" {
         let mut slo_data = Vec::new();
         for entry in registry.all() {
@@ -174,20 +181,18 @@ async fn handle(mut client: TcpStream, registry: Arc<ServiceRegistry>) {
             let _ = simple_response(&mut client, 400, "Bad Request", b"{\"error\":\"missing service name\"}").await;
         } else {
             registry.record_request(service);
-            let promoted = match registry.get(service) {
-                Some(entry) if entry.tier != ActivationTier::Hot => {
-                    let from_tier = format!("{:?}", entry.tier);
-                    registry.update_tier(service, ActivationTier::Hot);
-                    tracing::info!(
-                        service = %service,
-                        from_tier = %from_tier,
-                        to_tier = "Hot",
-                        "activity: promoted service"
-                    );
-                    true
-                }
-                _ => false,
-            };
+            // The reducer logs the transition (with from/to tiers) itself.
+            let promoted = registry.apply_event(service, TierEvent::Activity).is_some();
+            // Request-driven lifecycle: if the service is dead (Native
+            // runtime, port unbound), spawn it NOW in the background —
+            // don't make the caller wait for health-monitor cadence.
+            {
+                let reg = Arc::clone(&registry);
+                let name = service.to_string();
+                tokio::spawn(async move {
+                    crate::lifecycle::ensure_running_after_activity(&reg, &name).await;
+                });
+            }
             let body = if promoted {
                 format!("{{\"service\":\"{}\",\"promoted\":true,\"tier\":\"Hot\"}}", service)
             } else {
@@ -355,4 +360,104 @@ async fn simple_response(
     );
     client.write_all(head.as_bytes()).await?;
     client.write_all(body).await
+}
+
+/// Full platform-state snapshot for GET /status (assessment finding #2).
+/// One JSON object per service with everything needed to answer
+/// "why is X stuck?" without log diving: tier, runtime, health, failure
+/// streaks, circuit state, last request, and the last tier transition.
+pub fn status_snapshot(registry: &ServiceRegistry) -> serde_json::Value {
+    let mut services = Vec::new();
+    for entry in registry.all() {
+        let runtime = match &entry.runtime {
+            crate::registry::ServiceRuntime::Auto => "auto",
+            crate::registry::ServiceRuntime::Native { .. } => "native",
+            crate::registry::ServiceRuntime::Docker { .. } => "docker",
+        };
+        let last_health = entry.last_health.as_ref().map(|h| format!("{:?}", h));
+        services.push(serde_json::json!({
+            "service": entry.name,
+            "port": entry.port,
+            "tier": format!("{:?}", entry.tier),
+            "runtime": runtime,
+            "last_health": last_health,
+            "failure_count": entry.failure_count,
+            "first_failure_elapsed_secs": entry.first_failure_at.map(|t| t.elapsed().as_secs()),
+            "circuit_open": entry.circuit_open_since.is_some(),
+            "circuit_open_elapsed_secs": entry.circuit_open_since.map(|t| t.elapsed().as_secs()),
+            "last_request_elapsed_secs": entry.last_request_elapsed_secs().map(|s| s.round()),
+            "last_transition": entry.last_transition_reason,
+            "last_transition_elapsed_secs": entry.last_transition_at.map(|t| t.elapsed().as_secs()),
+            "health_checks_total": entry.health_checks_total,
+            "health_checks_passed": entry.health_checks_passed,
+        }));
+    }
+    serde_json::json!({ "services": services })
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use crate::registry::{ActivationTier, ServiceEntry, ServiceRuntime, TierEvent};
+    use std::collections::VecDeque;
+
+    fn make_entry(name: &str, tier: ActivationTier) -> ServiceEntry {
+        ServiceEntry {
+            name: name.to_string(),
+            port: 9000,
+            health_port: 0,
+            tier,
+            runtime: ServiceRuntime::Auto,
+            health_path: "/health".to_string(),
+            last_health: None,
+            failure_count: 0,
+            hot_idle_timeout_secs: 1800,
+            warm_idle_timeout_secs: 600,
+            last_request: None,
+            request_timestamps: VecDeque::new(),
+            circuit_open_since: None,
+            last_half_open_probe: None,
+            first_failure_at: None,
+            ready_path: None,
+            health_checks_total: 0,
+            health_checks_passed: 0,
+            last_transition_reason: None,
+            last_transition_at: None,
+        }
+    }
+
+    #[test]
+    fn status_snapshot_reports_all_diagnostic_fields() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", ActivationTier::Boot));
+        registry.apply_event("svc", TierEvent::ScanFoundReady);
+
+        let snap = status_snapshot(&registry);
+        let services = snap["services"].as_array().expect("services array");
+        assert_eq!(services.len(), 1);
+        let svc = &services[0];
+        assert_eq!(svc["service"], "svc");
+        assert_eq!(svc["port"], 9000);
+        assert_eq!(svc["tier"], "Cold");
+        assert_eq!(svc["runtime"], "auto");
+        assert_eq!(svc["failure_count"], 0);
+        assert_eq!(svc["circuit_open"], false);
+        assert_eq!(svc["last_transition"], "Boot→Cold (scan-found-ready)");
+        assert!(svc["last_transition_elapsed_secs"].is_number());
+    }
+
+    #[test]
+    fn status_snapshot_reports_failure_diagnostics() {
+        use crate::registry::HealthState;
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("sick", ActivationTier::Hot));
+        for _ in 0..3 {
+            registry.update_health("sick", HealthState::Unreachable);
+        }
+        let snap = status_snapshot(&registry);
+        let svc = &snap["services"][0];
+        assert_eq!(svc["failure_count"], 3);
+        assert!(svc["first_failure_elapsed_secs"].is_number());
+        assert!(svc["last_health"].as_str().unwrap().contains("Unreachable"));
+    }
 }

@@ -1,4 +1,4 @@
-use crate::registry::{ActivationTier, ServiceEntry, ServiceRegistry, ServiceRuntime};
+use crate::registry::{ActivationTier, ServiceEntry, ServiceRegistry, ServiceRuntime, TierEvent};
 use std::sync::Arc;
 use std::time::Duration;
 use std::process::{Child, Command, Stdio};
@@ -126,7 +126,7 @@ pub async fn spawn_service_and_promote(
     // spawn_service_inner already polls health until 200 — no second poll needed.
     let pid = spawn_service_inner(entry, deployment_mode).await?;
 
-    registry.update_tier(&entry.name, ActivationTier::Hot);
+    registry.apply_event(&entry.name, TierEvent::SpawnSucceeded);
     registry.record_request(&entry.name);
 
     tracing::info!(
@@ -211,6 +211,40 @@ pub fn resolve_runtime(
 /// Check if a TCP port is bound (indicating a service is already running).
 pub async fn is_port_bound(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+}
+
+/// Kill the process(es) LISTENING on `port`. Returns how many were killed.
+///
+/// Wedged-service eviction: a service can hang with its socket still bound
+/// (accepting TCP, never answering HTTP). launchd won't restart it (the
+/// process is alive) and `spawn_service_inner` refuses to double-spawn a
+/// bound port — without eviction that wedge is a permanent outage.
+///
+/// Safety: `-sTCP:LISTEN` restricts to the listener itself. Processes that
+/// merely hold a *client* connection to the port (e.g. this daemon's own
+/// stuck health probe) are never touched.
+pub async fn kill_port_listeners(port: u16) -> usize {
+    let output = tokio::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", port), "-sTCP:LISTEN"])
+        .output()
+        .await;
+    let Ok(out) = output else {
+        return 0;
+    };
+    let mut killed = 0;
+    for pid_str in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if let Ok(pid) = pid_str.parse::<u32>() {
+            let result = tokio::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()
+                .await;
+            if matches!(result, Ok(s) if s.success()) {
+                tracing::warn!(port = port, pid = pid, "killed wedged listener");
+                killed += 1;
+            }
+        }
+    }
+    killed
 }
 
 /// Spawn a native process from a command string.
@@ -339,6 +373,63 @@ mod tests {
         };
         let result = resolve_runtime(&native, "hybrid").unwrap();
         assert_eq!(result, native);
+    }
+
+    /// A wedged service holds its port bound but never answers — the
+    /// monitor must be able to evict it. Only LISTEN holders die; processes
+    /// that merely have a client connection to the port (like the shim's
+    /// own health probe) are never touched.
+    #[tokio::test]
+    async fn test_kill_port_listeners_kills_only_the_listener() {
+        // Find a free port, then hand it to a child process to listen on.
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        // A python child that binds and sleeps — survives probe connections
+        // (unlike `nc -l`, which exits after its first connection closes).
+        let script = format!(
+            "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',{}))\ns.listen(5)\ntime.sleep(60)",
+            port
+        );
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .spawn()
+            .expect("spawn python listener");
+        // Wait for the child to bind.
+        for _ in 0..50 {
+            if is_port_bound(port).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(is_port_bound(port).await, "python listener child never bound the port");
+
+        // We are now a CLIENT of that port (like the shim probing health).
+        let _client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+
+        let killed = kill_port_listeners(port).await;
+        assert!(killed >= 1, "should have killed the python listener");
+
+        // The listener is gone and the port frees up; our own process
+        // (a mere client) is obviously still alive to run this assert.
+        let _ = child.wait().await;
+        for _ in 0..50 {
+            if !is_port_bound(port).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(!is_port_bound(port).await, "port still bound after kill");
+    }
+
+    #[tokio::test]
+    async fn test_kill_port_listeners_noop_on_free_port() {
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        assert_eq!(kill_port_listeners(port).await, 0);
     }
 
     #[test]

@@ -186,7 +186,8 @@ def create_tools_router(dispatcher: ToolDispatcher) -> APIRouter:
 
         # Intercept tools that use local handlers (not backend dispatch)
         _local_handlers = {
-              "convert_pdf_to_json": convert_pdf_to_json_tool,
+            "convert_pdf": convert_pdf_to_json_tool,
+            "convert_pdf_to_json": convert_pdf_to_json_tool,
             "batch_extract_metadata": batch_extract_metadata_tool,
             "batch_enrich_metadata": batch_enrich_metadata_tool,
         }

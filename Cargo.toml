@@ -5,13 +5,14 @@ edition = "2021"
 
 [dependencies]
 libc = "0.2"
-tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros", "test-util"] }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros", "test-util", "process"] }
 reqwest = { version = "0.12", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 shlex = "1"
 
 [profile.release]

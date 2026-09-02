@@ -15,7 +15,7 @@ tools:
 
   # ── KB Search — INTERNAL (facade tools below are the LLM-facing path) ──────
   - name: semantic_search
-    description: "[INTERNAL] Raw Qdrant semantic vector search without taxonomy expansion or collection routing. Dispatches to unified-search-rs (:8093) /v1/search/hybrid. Use ask or knowledge_search instead."
+    description: "[INTERNAL] Raw Qdrant semantic vector search without taxonomy expansion or collection routing. Dispatches to unified-search-rs (:8081) /v1/search/hybrid. Use ask or knowledge_search instead."
     when_to_use: "INTERNAL ONLY. Do not call from skills or LLM workflows. Use ask for general queries, knowledge_search for broad KB retrieval."
     tier: bronze
     tags: [search, rag, internal]
@@ -26,46 +26,46 @@ tools:
     tier: bronze
     tags: [search, rag, internal]
 
-  # ── KB Search Facade — Graph Tools (routed to unified-search-rs :8093) ──
+  # ── KB Search Facade — Graph Tools (routed to unified-search-rs :8081) ──
   - name: graph_query
-    description: "Query the Neo4j knowledge graph using read-only Cypher. Returns nodes, edges, and relationship properties. Use for precise topology lookups: service dependencies, concept links, pattern membership. Routes to unified-search-rs (:8093) /v1/graph/query. See uss_graph_query for the native Rust equivalent."
+    description: "Query the Neo4j knowledge graph using read-only Cypher. Returns nodes, edges, and relationship properties. Use for precise topology lookups: service dependencies, concept links, pattern membership. Routes to unified-search-rs (:8081) /v1/graph/query. See uss_graph_query for the native Rust equivalent."
     when_to_use: "Use when the question is relational: 'what services depend on X?', 'show all concepts linked to Y'. Pairs with graph_traverse for neighborhood expansion. Part of W-6 (Graph-Grounded KB Research)."
     tier: gold
     tags: [graph, query, neo4j]
 
   - name: graph_traverse
-    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes. BFS explores depth-first; MMR maximizes result diversity. Routes to unified-search-rs (:8093) /v1/graph/traverse. See uss_graph_traverse for the native Rust equivalent."
+    description: "Traverse the Neo4j knowledge graph via BFS or MMR diversity-aware traversal from one or more starting nodes. BFS explores depth-first; MMR maximizes result diversity. Routes to unified-search-rs (:8081) /v1/graph/traverse. See uss_graph_traverse for the native Rust equivalent."
     when_to_use: "Use when a start node is known and you need the full neighborhood. Follow with knowledge_refine to hydrate KB chunks for the nodes found. Part of W-6 (Graph-Grounded KB Research)."
     tier: silver
     tags: [graph, traversal, neo4j]
 
   # ── KB Search Facade — Direct Tools ─────────────────────────────────────────
   - name: knowledge_search
-    description: "Broad KB search across all collections (chapters, code_chunks, passages, pattern_instances, code_good_patterns, code_bad_patterns, repo_concepts) with taxonomy expansion ON by default. Hybrid semantic+keyword fusion. Dispatches to unified-search-rs (:8093)."
+    description: "Broad KB search across all collections (chapters, code_chunks, passages, pattern_instances, code_good_patterns, code_bad_patterns, repo_concepts) with taxonomy expansion ON by default. Hybrid semantic+keyword fusion. Dispatches to unified-search-rs (:8081)."
     when_to_use: "Use for broad knowledge retrieval when you don't know which collection has the answer. First-pass research. Prefer ask facade for single natural-language questions. Part of W-1, W-2, W-9."
     tier: bronze
     tags: [search, rag, knowledge]
 
   - name: knowledge_refine
-    description: "Targeted single-collection KB search with optional Bloom tier or CRE tier filter. Bypasses taxonomy expansion for precision. Dispatches to unified-search-rs (:8093)."
+    description: "Targeted single-collection KB search with optional Bloom tier or CRE tier filter. Bypasses taxonomy expansion for precision. Dispatches to unified-search-rs (:8081)."
     when_to_use: "Use after knowledge_search or graph_traverse has identified the right collection and you need depth not breadth. Part of W-1 (step 2), W-6 (step 3)."
     tier: bronze
     tags: [search, rag, knowledge]
 
   - name: pattern_search
-    description: "Code pattern and anti-pattern retrieval across pattern_instances, code_good_patterns, and code_bad_patterns collections. Broader than find_code_pattern — returns all pattern types. Dispatches to unified-search-rs (:8093)."
+    description: "Code pattern and anti-pattern retrieval across pattern_instances, code_good_patterns, and code_bad_patterns collections. Broader than find_code_pattern — returns all pattern types. Dispatches to unified-search-rs (:8081)."
     when_to_use: "Use when discovering all pattern references across the corpus, including partial matches. Use find_code_pattern for targeted good/bad example retrieval. Part of W-7."
     tier: bronze
     tags: [search, rag, patterns, code]
 
   - name: diagram_search
-    description: "Semantic search over the ascii_diagrams collection using CLIP cross-modal encoding (512-dim). Finds ASCII art, sequence diagrams, flow charts, and architecture diagrams by concept. Routes to unified-search-rs (:8093) /v1/search/hybrid with collection=ascii_diagrams."
+    description: "Semantic search over the ascii_diagrams collection using CLIP cross-modal encoding (512-dim). Finds ASCII art, sequence diagrams, flow charts, and architecture diagrams by concept. Routes to unified-search-rs (:8081) /v1/search/hybrid with collection=ascii_diagrams."
     when_to_use: "Use to find visual representations of architectural concepts, design patterns, or system interactions. Part of W-8 (Diagram-First Architecture Research)."
     tier: bronze
     tags: [search, rag, diagrams, architecture, clip]
 
   - name: foundation_search
-    description: "Search the scientific foundation layer for mathematical, statistical, or theoretical underpinnings of software concepts. Routes to unified-search-rs (:8093) /v1/search/foundation. See also uss_scientific_search for the native Rust equivalent."
+    description: "Search the scientific foundation layer for mathematical, statistical, or theoretical underpinnings of software concepts. Routes to unified-search-rs (:8081) /v1/search/foundation. See also uss_scientific_search for the native Rust equivalent."
     when_to_use: "Use when a question requires first-principles reasoning, formal proofs, convergence analysis, or theoretical grounding beyond what the software KB provides. Part of W-6."
     tier: bronze
     tags: [search, foundation, scientific]
@@ -76,7 +76,7 @@ tools:
       General software-engineering question answered from the KB.
       Default entry point — automatically selects collections and query strategy.
       Supports optional difficulty hint ("beginner", "intermediate", "advanced")
-      to constrain Bloom taxonomy tier. Dispatches to unified-search-rs (:8093).
+      to constrain Bloom taxonomy tier. Dispatches to unified-search-rs (:8081).
     when_to_use: "Default starting point for any general or cross-cutting question. Start here, narrow with search_in or knowledge_refine if needed. Part of W-1, W-9."
     tier: bronze
     tags: [search, rag, facade]
@@ -87,8 +87,8 @@ tools:
       Shelf options: "textbooks" (concept explanations from chapters/passages),
       "code" (implementation examples from code_chunks/textbook_code),
       "patterns" (design patterns from pattern_instances/code_good_patterns/code_bad_patterns),
-      "diagrams" (architecture diagrams from ascii_diagrams — still on Python USS).
-      Dispatches to unified-search-rs (:8093) except for "diagrams" shelf.
+      "diagrams" (architecture diagrams from ascii_diagrams).
+      Dispatches to unified-search-rs (:8081).
     when_to_use: "Use when the content type is known but the exact collection is not. More precise than ask, broader than knowledge_refine. Part of W-1 (step 1.5)."
     tier: bronze
     tags: [search, rag, facade]
@@ -98,7 +98,7 @@ tools:
       Find concrete code examples for a software practice or pattern.
       examples="good" returns correct implementations from code_good_patterns;
       "bad" returns anti-patterns from code_bad_patterns; "both" returns both for comparison.
-      Dispatches to unified-search-rs (:8093).
+      Dispatches to unified-search-rs (:8081).
     when_to_use: "Use when you need concrete code, not conceptual explanation. Pairs with code_pattern_audit (find the problem, find the fix). Part of W-7, W-9."
     tier: bronze
     tags: [search, rag, facade, code, patterns]
@@ -476,42 +476,42 @@ tools:
     tier: gold
     tags: [inference, llm, local, metal, gpu]
 
-  # ── unified-search-rs (Rust :8093) ────────────────────────────────────────────
+  # ── unified-search-rs (Rust :8081) ────────────────────────────────────────────
   # Routes in tool_dispatcher.py keyed to UNIFIED_SEARCH_RS_URL.
   # uss_graph_query / uss_graph_traverse remain pending — no graph API in uss-server yet.
 
   - name: uss_ring_search
-    description: "6-ring concentric search pipeline on unified-search-rs (:8093): Ring 0 (ANN primary hit) → Rings 1–5 (KF envelope, sibling, domain bridge, cross-collection, suggestion expansion) → RRF fusion → cascade enrichment → MMR re-rank → budget trim. Returns RingSearchResponse with per-ring provenance chains and cascade metadata. Higher recall than flat hybrid search."
+    description: "6-ring concentric search pipeline on unified-search-rs (:8081): Ring 0 (ANN primary hit) → Rings 1–5 (KF envelope, sibling, domain bridge, cross-collection, suggestion expansion) → RRF fusion → cascade enrichment → MMR re-rank → budget trim. Returns RingSearchResponse with per-ring provenance chains and cascade metadata. Higher recall than flat hybrid search."
     when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6."
     tier: gold
     tags: [search, rag, uss-rs, ring]
 
   - name: uss_scientific_search
-    description: "Scientific and theoretical grounding search using unified-search-rs (:8093) /v1/search/scientific. Equivalent to foundation_search but on the Rust service."
+    description: "Scientific and theoretical grounding search using unified-search-rs (:8081) /v1/search/scientific. Equivalent to foundation_search but on the Rust service."
     when_to_use: "Use for first-principles reasoning, formal proofs, or theoretical grounding. Prefer over foundation_search when on the Rust USS stack."
     tier: bronze
     tags: [search, foundation, scientific, uss-rs]
 
   - name: uss_embed
-    description: "Embed text into a vector without a search round-trip via unified-search-rs (:8093) /v1/embed. Dimension depends on active embedding model (384-dim MiniLM default; 768-dim Nomic when use_nomic=true). Returns the raw embedding for downstream Qdrant queries."
+    description: "Embed text into a vector without a search round-trip via unified-search-rs (:8081) /v1/embed. Dimension depends on active embedding model (384-dim MiniLM default; 768-dim Nomic when use_nomic=true). Returns the raw embedding for downstream Qdrant queries."
     when_to_use: "Use when downstream code needs a raw embedding for a custom Qdrant query outside the search pipeline."
     tier: silver
     tags: [embed, vector, uss-rs]
 
   - name: uss_hydrate
-    description: "Retrieve full chunk content by vector ID via unified-search-rs (:8093) /v1/hydrate. Expands truncated search result stubs into full payloads. Useful when ring search returns result IDs that need full content hydration."
+    description: "Retrieve full chunk content by vector ID via unified-search-rs (:8081) /v1/hydrate. Expands truncated search result stubs into full payloads. Useful when ring search returns result IDs that need full content hydration."
     when_to_use: "Use after uss_ring_search when results return IDs with truncated content and full payloads are needed."
     tier: silver
     tags: [hydrate, retrieval, uss-rs]
 
   - name: uss_fitness_evaluate
-    description: "Evaluate architecture fitness functions via unified-search-rs (:8093) /v1/fitness/evaluate. Same interface as sa_evaluate_fitness but does not require a local code checkout — evaluates against search results."
+    description: "Evaluate architecture fitness functions via unified-search-rs (:8081) /v1/fitness/evaluate. Same interface as sa_evaluate_fitness but does not require a local code checkout — evaluates against search results."
     when_to_use: "Use when sa_evaluate_fitness is unavailable or when fitness evaluation should run against search-derived artifacts rather than a local source tree."
     tier: gold
     tags: [fitness, architecture, uss-rs]
 
   - name: uss_fitness_batch
-    description: "Batch evaluate multiple architecture fitness functions in a single request via unified-search-rs (:8093) /v1/fitness/batch. No struct-analyzer equivalent — unique to the Rust USS."
+    description: "Batch evaluate multiple architecture fitness functions in a single request via unified-search-rs (:8081) /v1/fitness/batch. No struct-analyzer equivalent — unique to the Rust USS."
     when_to_use: "Use for CI/CD fitness gate checking multiple constraints in one call."
     tier: gold
     tags: [fitness, architecture, batch, uss-rs]

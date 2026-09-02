@@ -15,7 +15,6 @@ from src.tool_dispatcher import _TOOL_SERVICE_NAMES
 
 # Health endpoint suffix per service. URL base comes from Settings at call time.
 _HEALTH_PATHS = {
-    "unified-search-service": "/health",
     "code-orchestrator": "/health",
     "llm-gateway": "/health",
     "ai-agents": "/health",
@@ -24,7 +23,7 @@ _HEALTH_PATHS = {
     "amve": "/health",  # kept for legacy tool routing during migration
     "inference-service-cpp": "/health",
     "context-management-service": "/health",
-    "unified-search-rs": "/health",
+    "semantic-search": "/health",
 }
 
 
@@ -35,8 +34,7 @@ def _service_base_url(service: str, settings: Settings) -> str | None:
     env-overridable via the MCP_GATEWAY_ prefix (e.g. MCP_GATEWAY_LLM_GATEWAY_URL).
     """
     mapping = {
-        "unified-search-service": settings.UNIFIED_SEARCH_URL,
-        "unified-search-rs": settings.UNIFIED_SEARCH_RS_URL,
+        "semantic-search": settings.UNIFIED_SEARCH_RS_URL,
         "code-orchestrator": settings.CODE_ORCHESTRATOR_URL,
         "llm-gateway": settings.LLM_GATEWAY_URL,
         "ai-agents": settings.AI_AGENTS_URL,
