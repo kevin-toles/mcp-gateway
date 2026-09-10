@@ -330,6 +330,23 @@ class ConvertPDFInput(BaseModel):
 ConvertPDFToJsonInput = ConvertPDFInput
 
 
+class ConvertYouTubeInput(BaseModel):
+    """Input for convert_youtube tool — convert YouTube transcript JSONs to pipeline-compatible raw JSONs."""
+
+    input_path: str = Field(..., min_length=1, max_length=1000, description="Path to a YouTube JSON file or directory of them")
+    output_path: str | None = Field(
+        default=None, max_length=1000, description="Output directory. Auto-generated if omitted."
+    )
+    skip_existing: bool = Field(default=True, description="Skip videos that already have a converted JSON")
+    workers: int = Field(default=6, ge=1, le=16, description="Concurrent conversions (default: 6, max: 16)")
+    min_paragraphs: int = Field(default=3, ge=1, le=20, description="Minimum paragraphs per detected chapter segment (default: 3)")
+
+    @field_validator("input_path", mode="before")
+    @classmethod
+    def sanitize_input_path(cls, v: str) -> str:
+        return _sanitize_str_field(v)
+
+
 class ExtractBookMetadataInput(BaseModel):
     """Input for extract_book_metadata tool — extract metadata from book JSON."""
 

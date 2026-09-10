@@ -48,6 +48,7 @@ from src.models.schemas import (
     CodeAnalyzeInput,
     CodePatternAuditInput,
     ConvertPDFInput,
+    ConvertYouTubeInput,
     DiagramSearchInput,
     EnhanceGuidelineInput,
     EnrichBookMetadataInput,
@@ -110,6 +111,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "a2a_cancel_task": A2ACancelTaskInput,
     # Workflow tools (WBS-WF6)
     "convert_pdf": ConvertPDFInput,
+    "convert_youtube": ConvertYouTubeInput,
     "extract_book_metadata": ExtractBookMetadataInput,
     "batch_extract_metadata": BatchExtractMetadataInput,
     "generate_taxonomy": GenerateTaxonomyInput,
