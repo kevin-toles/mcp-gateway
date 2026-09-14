@@ -837,10 +837,26 @@ class ToolDispatcher:
         self._auto_start_failures[key] = (failures, blocked_until)
 
     def _parse_body(self, response: httpx.Response) -> dict:
-        """Safely parse a JSON response body."""
+        """Safely parse a JSON response body.
+
+        An error status with a non-JSON body (e.g. a Rust serde 422 message)
+        must never collapse to a silent ``{}`` — surface the status and the
+        error text so tool callers can see WHY the backend rejected the call.
+        """
         try:
             return response.json()
         except Exception:
+            if response.status_code >= 400:
+                error_text = response.text[:500]
+                logger.warning(
+                    "backend returned HTTP %d with non-JSON body: %s",
+                    response.status_code,
+                    error_text,
+                )
+                return {
+                    "error": f"backend returned HTTP {response.status_code}",
+                    "detail": error_text,
+                }
             return {}
 
     async def dispatch(

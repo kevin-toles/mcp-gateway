@@ -149,6 +149,12 @@ tools:
     tier: gold
     tags: [workflow, pdf, conversion]
 
+  - name: convert_youtube
+    description: "Convert YouTube transcript JSONs to pipeline-compatible raw JSONs. Videos with YouTube chapter timestamps use those directly; videos without chapters use SBERT topic-shift detection via COS /api/v1/similarity/matrix. Output matches PDFConversionResult shape. Requires code-orchestrator (:8083)."
+    when_to_use: "Use to convert raw YouTube transcript extractions into the COS enrich-book pipeline format. Input: directory of YouTube transcript JSONs. Output: structured JSONs with metadata, pages, and chapters."
+    tier: gold
+    tags: [workflow, youtube, transcript, conversion]
+
   - name: extract_book_metadata
     description: "Extract metadata, keywords, concepts, and code blocks from a book JSON file produced by convert_pdf. Requires code-orchestrator (:8083). Step 2 of book ingestion pipeline."
     when_to_use: "Use after convert_pdf. Transforms raw page JSON into structured book metadata. Feeds enrich_book_metadata. Part of /metadata-extract skill."
@@ -537,7 +543,7 @@ tools:
     tags: [validation, wbs, ascp, sdlc]
 
   - name: validate_design_doc
-    description: "Validate a design document against the ASCP-1.0 rule set. Returns a ValidationResult with verdict (PASS/FAIL), score, and structured failures list. Accepts optional phase hint. Dispatches to validation-service (${VALIDATION_SERVICE_URL}) POST /validate/design_document."
+    description: "Validate a design document against the ASCP-1.0 rule set. Returns a ValidationResult with verdict (PASS/FAIL), score, and structured failures list. Accepts optional phase hint (DRAFT | REVIEW | APPROVED). Dispatches to validation-service (${VALIDATION_SERVICE_URL}) POST /validate/design_document."
     when_to_use: "Use before accepting a design document for WBS generation. Validates BDD traceability, GHK IDs, acceptance criteria, and phase-specific completeness. Part of the ASCP-1.0 SDLC gate."
     tier: gold
     tags: [validation, design-doc, ascp, sdlc]

@@ -54,6 +54,7 @@ from src.tools import (
     code_analyze,
     code_pattern_audit,
     convert_pdf_to_json,
+    convert_youtube_to_json,
     diagram_search,
     enhance_guideline,
     enrich_book_metadata,
@@ -120,6 +121,7 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "a2a_cancel_task": a2a_cancel_task.create_handler,
     # Workflow tools (WBS-WF6)
     "convert_pdf": convert_pdf_to_json.create_handler,
+    "convert_youtube": convert_youtube_to_json.create_handler,
     "extract_book_metadata": extract_book_metadata.create_handler,
     "batch_extract_metadata": batch_extract_metadata.create_handler,
     "generate_taxonomy": generate_taxonomy.create_handler,
