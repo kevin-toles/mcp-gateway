@@ -14,9 +14,11 @@ pub const HOT_IDLE_TIMEOUT_SECS: u64 = 1800;   // 30 minutes
 pub const IDLE_CHECK_INTERVAL_SECS: u64 = 60;  // check every 1 minute
 
 // ── RS-6: WARM→COLD Shim Connection Fallback ─────────────────────────────────
-// HYBRID §4.6.4 — after 10min idle in Warm, transition to Cold (registry only).
-// The Python mcp-gateway process is NOT stopped; re-promotion from Cold→Hot
-// happens on the next MCP request via RS-3 health check.
+// HYBRID §4.6.4 — after 10min idle in Warm, transition to Cold.
+// Cold = stopped for Native services: the shim terminates the listener so an
+// idle service releases its memory. Auto (launchd KeepAlive) services are only
+// re-labelled — launchd owns their process. Re-promotion Cold→Hot happens on
+// the next request via POST /activity (ensure_running_after_activity respawns).
 
 pub const WARM_IDLE_TIMEOUT_SECS: u64 = 600;  // 10 minutes
 
@@ -166,15 +168,31 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
                             service = %current.name,
                             idle_secs = idle_secs,
                             timeout = effective_warm_timeout,
-                            "warm→cold: shim connection idle timeout reached (registry only)"
+                            "warm→cold: idle timeout reached"
                         );
                         registry.apply_event(&current.name, TierEvent::IdleTimeout);
+                        if matches!(current.runtime, ServiceRuntime::Native { .. }) {
+                            let stopped = crate::spawn::kill_port_listeners(current.port).await;
+                            tracing::info!(
+                                service = %current.name,
+                                port = current.port,
+                                stopped = stopped,
+                                "warm→cold: stopped idle Native service"
+                            );
+                        }
                         // Cold is per-entry terminal; continue checking remaining entries
                     }
                 }
             }
         }
     }
+}
+
+/// A Cold Native service has been stopped by the idle monitor, so failing its
+/// health check is expected. Auto (launchd) services are never stopped by the
+/// shim, and Hot/Warm services must be running — for those, down is an outage.
+pub fn down_is_expected(entry: &crate::registry::ServiceEntry) -> bool {
+    entry.tier == ActivationTier::Cold && matches!(entry.runtime, ServiceRuntime::Native { .. })
 }
 
 /// Platform invariant: valid requests drive service lifecycle state.
@@ -279,6 +297,13 @@ pub async fn health_failure_monitor(
                 .await
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
+
+            // Every service is checked; a Cold Native service was stopped on
+            // purpose, so being down is its expected state — not an outage to
+            // count, demote, or respawn. A real request re-spawns it.
+            if !is_healthy && down_is_expected(&entry) {
+                continue;
+            }
 
             registry.increment_health_check(&entry.name, is_healthy);
 
@@ -682,7 +707,9 @@ mod tests {
     /// RS-5: shim_idle_monitor reads HOT_IDLE_TIMEOUT_SECS from env var
     /// and uses it as the effective hot timeout. Sets env var to a value lower
     /// than the entry's field so the env var takes effect. Then checks that
-    /// the Hot entry demotes to Warm (proving the env var was used).    #[serial]    #[tokio::test]
+    /// the Hot entry demotes to Warm (proving the env var was used).
+    #[serial]
+    #[tokio::test]
     async fn test_hot_timeout_reads_env_var() {
         std::env::set_var("HOT_IDLE_TIMEOUT_SECS", "10");
 
@@ -1679,4 +1706,107 @@ mod tests {
             "D-3: ready_path should be preserved but not used for liveness"
         );
     }
+
+    // ── Cold = stopped for Native services (request-driven lifecycle) ─────
+    // Warm→Cold must release the process; the health monitor keeps checking
+    // every service but treats a stopped Cold Native service as expected.
+
+    async fn spawn_listener() -> (u16, tokio::process::Child) {
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let script = format!(
+            "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',{}))\ns.listen(5)\ntime.sleep(60)",
+            port
+        );
+        let child = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .spawn()
+            .expect("spawn python listener");
+        for _ in 0..50 {
+            if crate::spawn::is_port_bound(port).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(crate::spawn::is_port_bound(port).await, "listener never bound");
+        (port, child)
+    }
+
+    async fn port_released_within(port: u16, ms: u64) -> bool {
+        for _ in 0..(ms / 100) {
+            if !crate::spawn::is_port_bound(port).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_warm_to_cold_stops_native_service() {
+        let (port, mut child) = spawn_listener().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("native-warm", port, ActivationTier::Warm);
+        entry.runtime = ServiceRuntime::Native { spawn_cmd: "true".to_string(), pid_file: None };
+        entry.warm_idle_timeout_secs = 0;
+        entry.last_request = Some(Instant::now());
+        registry.register(entry);
+
+        let reg = registry.clone();
+        let handle = tokio::spawn(async move { shim_idle_monitor(reg).await });
+        let released = port_released_within(port, 3000).await;
+        handle.abort();
+        let _ = child.kill().await;
+
+        assert_eq!(registry.get("native-warm").unwrap().tier, ActivationTier::Cold);
+        assert!(released, "Warm→Cold must stop the Native service's listener");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_warm_to_cold_leaves_auto_runtime_running() {
+        let (port, mut child) = spawn_listener().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("auto-warm", port, ActivationTier::Warm);
+        entry.warm_idle_timeout_secs = 0;
+        entry.last_request = Some(Instant::now());
+        registry.register(entry);
+
+        let reg = registry.clone();
+        let handle = tokio::spawn(async move { shim_idle_monitor(reg).await });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        handle.abort();
+        let still_bound = crate::spawn::is_port_bound(port).await;
+        let _ = child.kill().await;
+
+        assert_eq!(registry.get("auto-warm").unwrap().tier, ActivationTier::Cold);
+        assert!(still_bound, "launchd-managed (Auto) services are never stopped by the shim");
+    }
+
+    #[test]
+    fn test_cold_native_down_is_expected() {
+        let mut entry = make_entry("cold-native", 1, ActivationTier::Cold);
+        entry.runtime = ServiceRuntime::Native { spawn_cmd: "true".to_string(), pid_file: None };
+        assert!(down_is_expected(&entry));
+    }
+
+    #[test]
+    fn test_hot_or_warm_native_down_is_an_outage() {
+        for tier in [ActivationTier::Hot, ActivationTier::Warm] {
+            let mut entry = make_entry("live-native", 1, tier.clone());
+            entry.runtime = ServiceRuntime::Native { spawn_cmd: "true".to_string(), pid_file: None };
+            assert!(!down_is_expected(&entry), "{tier:?} Native down must be treated as an outage");
+        }
+    }
+
+    #[test]
+    fn test_cold_auto_down_is_an_outage() {
+        // Auto (launchd KeepAlive) services are never stopped by the shim.
+        let entry = make_entry("cold-auto", 1, ActivationTier::Cold);
+        assert!(!down_is_expected(&entry));
+    }
+
 }

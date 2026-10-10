@@ -111,9 +111,10 @@ mod tests {
     }
 
     #[test]
-    fn manifest_parses_all_twelve_services() {
+    fn manifest_parses_all_eleven_services() {
+        // M5: Python unified-search-service retired — no H/W/C entry.
         let m = embedded();
-        assert_eq!(m.services.len(), 12, "expected 12 services in manifest");
+        assert_eq!(m.services.len(), 11, "expected 11 services in manifest");
     }
 
     #[test]
@@ -121,7 +122,6 @@ mod tests {
         let m = embedded();
         let expected = [
             ("llm-gateway", 8080),
-            ("unified-search-service", 8081),
             ("ai-agents", 8082),
             ("code-orchestrator", 8083),
             ("audit-service", 8084),
@@ -131,7 +131,7 @@ mod tests {
             ("struct-analyzer", 8088),
             ("validation-service", 8091),
             ("amve", 8092),
-            ("semantic-search", 8093),
+            ("semantic-search", 8081),
         ];
         for (name, port) in expected {
             let svc = m
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn manifest_runtimes_split_auto_and_native() {
         let m = embedded();
-        for name in ["llm-gateway", "semantic-search", "unified-search-service", "mcp-gateway"] {
+        for name in ["llm-gateway", "semantic-search", "mcp-gateway"] {
             assert_eq!(m.services[name].runtime, "auto", "{} should be auto", name);
         }
         let native: Vec<_> = m

@@ -43,8 +43,8 @@ spawn = "cd ${POC_ROOT}/mcp-gateway && (test -x .venv/bin/python || (python3 -m 
 port = 8081
 tier = "hot"
 runtime = "auto"
-aliases = ["unified-search-rs", "unified-search-service"]
-spawn = "cd ${POC_ROOT}/unified-search-rs && cargo run --release"
+aliases = ["unified-search-rs"]
+spawn = "cd ${POC_ROOT}/unified-search-rs && PORT=8081 ./target/release/uss-server"
 
 # ── Native services (Rust daemon respawns via health_failure_monitor) ────────
 

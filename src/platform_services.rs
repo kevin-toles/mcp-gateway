@@ -88,7 +88,7 @@ mod tests {
 
         seed_platform_services(&registry);
 
-        assert_eq!(registry.len(), 12);
+        assert_eq!(registry.len(), 11);
         // Managed services (Native runtime, health_failure_monitor respawns)
         for name in [
             "ai-agents",
@@ -116,7 +116,7 @@ mod tests {
             );
         }
         // KeepAlive services (Auto runtime, tier tracking only)
-        for name in ["llm-gateway", "semantic-search", "unified-search-service", "mcp-gateway"] {
+        for name in ["llm-gateway", "semantic-search", "mcp-gateway"] {
             let entry = registry
                 .get(name)
                 .unwrap_or_else(|| panic!("missing KeepAlive service: {}", name));
@@ -276,7 +276,7 @@ mod tests {
 
         // KeepAlive=true services are registered for tier tracking only.
         // Auto runtime ensures health_failure_monitor skips respawn.
-        for (name, port) in [("llm-gateway", 8080), ("semantic-search", 8093), ("unified-search-service", 8081), ("mcp-gateway", 8087)] {
+        for (name, port) in [("llm-gateway", 8080), ("semantic-search", 8081), ("mcp-gateway", 8087)] {
             let entry = registry.get(name).unwrap_or_else(|| panic!("{} should be registered", name));
             assert_eq!(entry.port, port, "{} port mismatch", name);
             assert!(matches!(entry.runtime, ServiceRuntime::Auto), "{} must have Auto runtime", name);

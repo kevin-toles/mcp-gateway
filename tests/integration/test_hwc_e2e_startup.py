@@ -147,7 +147,8 @@ def test_hwc_00_manifest_exists_and_parses():
     """The service manifest must exist — everything derives from it."""
     assert MANIFEST_PATH.is_file(), f"MANIFEST MISSING: {MANIFEST_PATH}"
     services = _load_manifest()
-    assert len(services) >= 12, f"manifest has only {len(services)} services"
+    # 11 since M5: Python unified-search-service retired (no H/W/C entry).
+    assert len(services) >= 11, f"manifest has only {len(services)} services"
     print(f"  ✓ Manifest OK: {len(services)} services")
 
 
@@ -197,38 +198,49 @@ def test_hwc_01_plist_matches_manifest(service: str):
 
 @pytest.mark.integration
 def test_hwc_00b_mcp_json_matches_manifest():
-    """~/.claude/mcp.json must point to the mcp-gateway port declared in
-    services.toml.  This is the drift that broke every Claude Code session
-    after the 2026-08-16 proxy removal: port 8090 was intentionally removed
-    from the shim, but mcp.json was never updated to point directly to 8087.
+    """The Claude Code `ai-platform` MCP server must point to the mcp-gateway
+    port declared in services.toml.  This is the drift that broke every Claude
+    Code session after the 2026-08-16 proxy removal: port 8090 was removed from
+    the shim, but the client config was never updated to point at 8087.
+
+    Claude Code keeps MCP servers in ~/.claude.json (project scope under
+    ``projects[<POC_ROOT>].mcpServers``, or user scope ``mcpServers``); the
+    legacy ~/.claude/mcp.json is still honoured if present.
     """
     import json
 
-    mcp_json_path = Path.home() / ".claude" / "mcp.json"
-    assert mcp_json_path.is_file(), f"~/.claude/mcp.json not found at {mcp_json_path}"
+    poc_root = os.environ.get("POC_ROOT", "/Users/kevintoles/POC")
+    candidates: list[tuple[str, dict]] = []
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.is_file():
+        cfg = json.loads(claude_json.read_text())
+        candidates.append((f"{claude_json} projects[{poc_root}]",
+                           cfg.get("projects", {}).get(poc_root, {}).get("mcpServers", {})))
+        candidates.append((f"{claude_json} (user scope)", cfg.get("mcpServers", {})))
+    legacy = Path.home() / ".claude" / "mcp.json"
+    if legacy.is_file():
+        candidates.append((str(legacy), json.loads(legacy.read_text()).get("mcpServers", {})))
+
+    found = [(src, servers["ai-platform"]) for src, servers in candidates if "ai-platform" in servers]
+    assert found, (
+        "no 'ai-platform' MCP server configured in ~/.claude.json (project or user scope) "
+        "or ~/.claude/mcp.json"
+    )
+    source, server = found[0]
 
     services = _load_manifest()
     assert "mcp-gateway" in services, "mcp-gateway not in services.toml — cannot validate"
     canonical_port = services["mcp-gateway"]["port"]
     expected_url = f"http://localhost:{canonical_port}/mcp/sse"
 
-    with open(mcp_json_path) as f:
-        mcp_config = json.load(f)
-
-    servers = mcp_config.get("mcpServers", {})
-    assert "ai-platform" in servers, (
-        "~/.claude/mcp.json has no 'ai-platform' server entry — "
-        "add: {\"mcpServers\": {\"ai-platform\": {\"type\": \"sse\", \"url\": \"" + expected_url + "\"}}}"
-    )
-
-    actual_url = servers["ai-platform"].get("url", "")
+    actual_url = server.get("url", "")
     assert actual_url == expected_url, (
-        f"~/.claude/mcp.json ai-platform URL is '{actual_url}' "
+        f"{source} ai-platform URL is '{actual_url}' "
         f"but services.toml declares mcp-gateway on port {canonical_port} — "
         f"expected '{expected_url}'. "
         f"Run: scripts/validate_mcp_json.py --fix"
     )
-    print(f"  ✓ mcp.json ai-platform URL matches manifest: {actual_url}")
+    print(f"  ✓ {source} ai-platform URL matches manifest: {actual_url}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
