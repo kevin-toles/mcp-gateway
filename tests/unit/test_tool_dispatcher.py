@@ -812,35 +812,18 @@ class TestTryAutoStart:
         assert spawn_calls == [], "spawn must not be called when port is already bound but unhealthy"
 
     async def test_cold_service_uses_60s_budget_not_30s(self, dispatcher, monkeypatch):
-        """COLD-tier budget is 60s; old min(..., 30) cap makes it return False at 31s."""
-        import asyncio
-        import time as time_mod
-        from unittest.mock import AsyncMock
+        """COLD-tier wait budget is 60s and is what the gateway asks the lifecycle
+        daemon to wait for (Option A: the shim spawns and waits, not the gateway)."""
+        from unittest.mock import AsyncMock, patch
 
-        async def mock_spawn(cmd, **kw):
-            class _P:
-                returncode = None
-            return _P()
+        class _R:
+            status_code = 200
 
-        # Clock: 0.0 on first call (start), 31.0 thereafter (loop checks).
-        # Old impl: min(60, 30)=30 → 31 < 30 is False → loop never runs → False.
-        # New impl: 60 → 31 < 60 is True → poll fires → 200 → True.
-        times = [0.0, 31.0]
-        def fake_clock():
-            return times.pop(0) if times else 31.0
-
-        monkeypatch.setattr(asyncio, "create_subprocess_shell", mock_spawn)
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
-        monkeypatch.setattr(time_mod, "monotonic", fake_clock)
-        monkeypatch.setattr(
-            httpx,
-            "AsyncClient",
-            _MockHTTPFactory([
-                httpx.ConnectError("refused"),  # pre-probe: port not bound → spawn
-                httpx.Response(200),             # first poll at t=31: service ready
-            ]),
-        )
-
-        result = await dispatcher._try_auto_start("inference-service-cpp", "http://localhost:8085")
-
-        assert result is True  # RED: old returns False; GREEN: new returns True
+        start = AsyncMock(return_value=_R())
+        with (
+            patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("refused")),
+            patch("httpx.AsyncClient.post", new=start),
+        ):
+            result = await dispatcher._try_auto_start("inference-service-cpp", "http://localhost:8085")
+        assert result is True
+        assert "timeout_secs=60" in str(start.call_args.args[0])

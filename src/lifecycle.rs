@@ -53,8 +53,9 @@ pub enum LifecycleError {
     InvalidTransition { from: ActivationTier, to: ActivationTier },
 }
 
-/// BOOT→COLD: Called once at shim startup for each service.
-/// Polls health for up to 120s. On success, transitions to Cold.
+/// BOOT→WARM: Called once at shim startup for each service.
+/// Polls health for up to 120s. On success, transitions to Warm (GAP-MCP-004;
+/// the function keeps its historical name).
 /// Per HYBRID §4.6.3 transition table.
 pub async fn boot_to_cold(
     registry: &ServiceRegistry,
@@ -170,8 +171,12 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
                             timeout = effective_warm_timeout,
                             "warm→cold: idle timeout reached"
                         );
-                        registry.apply_event(&current.name, TierEvent::IdleTimeout);
-                        if matches!(current.runtime, ServiceRuntime::Native { .. }) {
+                        // Stop only on a real Warm→Cold transition (a min_tier = Warm
+                        // floor makes the event a no-op and the service keeps running).
+                        let demoted = registry
+                            .apply_event(&current.name, TierEvent::IdleTimeout)
+                            .is_some();
+                        if demoted && matches!(current.runtime, ServiceRuntime::Native { .. }) {
                             let stopped = crate::spawn::kill_port_listeners(current.port).await;
                             tracing::info!(
                                 service = %current.name,
@@ -195,6 +200,124 @@ pub fn down_is_expected(entry: &crate::registry::ServiceEntry) -> bool {
     entry.tier == ActivationTier::Cold && matches!(entry.runtime, ServiceRuntime::Native { .. })
 }
 
+/// Outcome of [`ensure_ready`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnsureReady {
+    /// Service answers health; `spawned` is true when this call started it.
+    Ready { spawned: bool },
+    /// No such service in the registry.
+    NotRegistered,
+    /// Not healthy before the caller's deadline.
+    TimedOut,
+    /// The spawn itself failed (bad command, runtime unresolved, …).
+    SpawnFailed(String),
+}
+
+/// One spawn lock per service so concurrent callers never double-spawn (single flight).
+fn spawn_lock(service: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    let mut map = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(map.entry(service.to_string()).or_default())
+}
+
+/// True while some caller holds `service`'s spawn lock (a spawn is in progress).
+fn spawn_in_flight(service: &str) -> bool {
+    spawn_lock(service).try_lock().is_err()
+}
+
+fn readiness_url(entry: &crate::registry::ServiceEntry) -> String {
+    let port = if entry.health_port > 0 { entry.health_port } else { entry.port };
+    let path = entry.ready_path.as_deref().unwrap_or(&entry.health_path);
+    format!("http://127.0.0.1:{port}{path}")
+}
+
+async fn answers_health(url: &str) -> bool {
+    reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Option A — the shim is the single spawn authority. Make `service_name` ready
+/// and return only when it answers health (or `timeout` elapses).
+///
+/// Native services that are down are spawned exactly once even under concurrent
+/// callers; a service still starting (port bound, not yet healthy) is waited on;
+/// Auto (launchd) services are only waited on, never spawned. Health polling
+/// continues past the spawn helper's own 30 s window up to the caller's deadline
+/// (cold starts under load can exceed it).
+pub async fn ensure_ready(
+    registry: &Arc<ServiceRegistry>,
+    service_name: &str,
+    timeout: Duration,
+) -> EnsureReady {
+    let Some(entry) = registry.get(service_name) else {
+        return EnsureReady::NotRegistered;
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    let url = readiness_url(&entry);
+    if answers_health(&url).await {
+        return EnsureReady::Ready { spawned: false };
+    }
+
+    let mut spawned = false;
+    if matches!(entry.runtime, ServiceRuntime::Native { .. }) {
+        let lock = spawn_lock(service_name);
+        let Ok(_guard) = tokio::time::timeout_at(deadline, lock.lock()).await else {
+            return EnsureReady::TimedOut;
+        };
+        // Another caller may have finished the spawn while we waited for the lock.
+        if answers_health(&url).await {
+            return EnsureReady::Ready { spawned: false };
+        }
+        if !crate::spawn::is_port_bound(entry.port).await {
+            tracing::info!(service = %service_name, "ensure_ready: spawning (single spawn authority)");
+            match tokio::time::timeout_at(
+                deadline,
+                crate::spawn::spawn_service_and_promote(&entry, "hybrid", registry),
+            )
+            .await
+            {
+                Ok(Ok(_pid)) => return EnsureReady::Ready { spawned: true },
+                Ok(Err(crate::spawn::SpawnError::HealthTimeout { .. })) => spawned = true,
+                Ok(Err(e)) => return EnsureReady::SpawnFailed(format!("{e:?}")),
+                Err(_) => return EnsureReady::TimedOut,
+            }
+        }
+        return poll_until_ready(registry, service_name, &url, deadline, spawned).await;
+    }
+    poll_until_ready(registry, service_name, &url, deadline, spawned).await
+}
+
+async fn poll_until_ready(
+    registry: &Arc<ServiceRegistry>,
+    service_name: &str,
+    url: &str,
+    deadline: tokio::time::Instant,
+    spawned: bool,
+) -> EnsureReady {
+    loop {
+        if answers_health(url).await {
+            if spawned {
+                registry.apply_event(service_name, TierEvent::SpawnSucceeded);
+                registry.record_request(service_name);
+            }
+            return EnsureReady::Ready { spawned };
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return EnsureReady::TimedOut;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Platform invariant: valid requests drive service lifecycle state.
 /// Called from POST /activity/{service} — if the reported service has
 /// Native runtime and its port is not bound (i.e. the process is dead),
@@ -214,6 +337,9 @@ pub async fn ensure_running_after_activity(
     if !matches!(entry.runtime, ServiceRuntime::Native { .. }) {
         return false;
     }
+    // Same single-flight lock as `ensure_ready` — the shim is the only spawner.
+    let lock = spawn_lock(service_name);
+    let _guard = lock.lock().await;
     if crate::spawn::is_port_bound(entry.port).await {
         return false;
     }
@@ -234,11 +360,16 @@ pub async fn ensure_running_after_activity(
 }
 
 /// Startup scan — called once when shim starts.
-/// Transitions all Boot services that are already healthy to Cold.
+/// Transitions Boot (and restored Cold) services that are already healthy to
+/// Warm and starts every non-Boot idle clock, so an unused service idles to
+/// Cold and — if Native — is stopped (GAP-MCP-004).
 /// Implements HYBRID §4.6.4 "auto-detect running services on startup."
 pub async fn startup_scan(registry: &ServiceRegistry) {
     for entry in registry.all() {
-        if entry.tier == ActivationTier::Boot {
+        // Tiers restored from the persistence file skip Boot: a restored Cold
+        // service may still be running, and no restored entry has a
+        // last_request. Probe Boot and Cold; start every idle clock now.
+        if matches!(entry.tier, ActivationTier::Boot | ActivationTier::Cold) {
             // Non-blocking check — if already responding, promote immediately
             let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
             let check_path = entry.ready_path.as_deref().unwrap_or(&entry.health_path);
@@ -250,13 +381,19 @@ pub async fn startup_scan(registry: &ServiceRegistry) {
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
             {
-                registry.apply_event(&entry.name, TierEvent::ScanFoundReady);
-                registry.record_request(&entry.name);
-                tracing::info!(
-                    service = %entry.name,
-                    "startup scan: service already healthy, promoted Boot→Cold"
-                );
+                if let Some((from, to)) = registry.apply_event(&entry.name, TierEvent::ScanFoundReady) {
+                    tracing::info!(
+                        service = %entry.name,
+                        from = ?from,
+                        to = ?to,
+                        "startup scan: service already healthy"
+                    );
+                }
             }
+        }
+        // Entries still Boot are owned by BootColdMonitor (it starts the clock on promotion).
+        if registry.get(&entry.name).is_some_and(|e| e.tier != ActivationTier::Boot) {
+            registry.record_request(&entry.name);
         }
     }
 }
@@ -284,157 +421,177 @@ pub async fn health_failure_monitor(
         // D-8: Suppress respawn during startup grace period
         let in_grace = started_at.elapsed().as_secs() < STARTUP_GRACE_PERIOD_SECS;
 
-        let mut failed_this_cycle: Vec<String> = Vec::new();
+        health_failure_pass(&registry, &deployment_mode, in_grace).await;
+    }
+}
 
-        for entry in registry.all() {
+/// One health-monitor pass over every registry entry (see [`health_failure_monitor`]).
+pub(crate) async fn health_failure_pass(
+    registry: &Arc<ServiceRegistry>,
+    deployment_mode: &str,
+    in_grace: bool,
+) {
+    let mut failed_this_cycle: Vec<String> = Vec::new();
 
-            let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
-            let health_url = format!(
-                "http://localhost:{}{}",
-                health_port, entry.health_path
-            );
-            let is_healthy = reqwest::get(&health_url)
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false);
+    for entry in registry.all() {
 
-            // Every service is checked; a Cold Native service was stopped on
-            // purpose, so being down is its expected state — not an outage to
-            // count, demote, or respawn. A real request re-spawns it.
-            if !is_healthy && down_is_expected(&entry) {
-                continue;
+        let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
+        let health_url = format!(
+            "http://localhost:{}{}",
+            health_port, entry.health_path
+        );
+        let is_healthy = reqwest::get(&health_url)
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+
+        // Every service is checked; a Cold Native service was stopped on
+        // purpose, so being down is its expected state — not an outage to
+        // count, demote, or respawn. A real request re-spawns it.
+        if !is_healthy && down_is_expected(&entry) {
+            continue;
+        }
+
+        // Option A single flight: a spawn holding this service's lock is still
+        // starting it — not an outage to count, demote, or respawn over.
+        if !is_healthy && spawn_in_flight(&entry.name) {
+            continue;
+        }
+
+        registry.increment_health_check(&entry.name, is_healthy);
+
+        if is_healthy {
+            if entry.failure_count > 0 {
+                registry.update_health(&entry.name, HealthState::Healthy);
             }
+            continue;
+        }
 
-            registry.increment_health_check(&entry.name, is_healthy);
+        registry.update_health(&entry.name, HealthState::Unreachable);
+        failed_this_cycle.push(entry.name.clone());
 
-            if is_healthy {
-                if entry.failure_count > 0 {
-                    registry.update_health(&entry.name, HealthState::Healthy);
-                }
-                continue;
-            }
+        // Re-fetch to get updated failure_count after the update_health call.
+        let Some(current) = registry.get(&entry.name) else {
+            continue;
+        };
+        if current.failure_count < HEALTH_FAILURE_RESPAWN_THRESHOLD {
+            continue;
+        }
 
-            registry.update_health(&entry.name, HealthState::Unreachable);
-            failed_this_cycle.push(entry.name.clone());
-
-            // Re-fetch to get updated failure_count after the update_health call.
-            let Some(current) = registry.get(&entry.name) else {
-                continue;
-            };
-            if current.failure_count < HEALTH_FAILURE_RESPAWN_THRESHOLD {
-                continue;
-            }
-
-            // D-8: Duration gate — failures must persist for FAILURE_DURATION_GATE_SECS
-            if let Some(first_fail) = current.first_failure_at {
-                if first_fail.elapsed().as_secs() < FAILURE_DURATION_GATE_SECS {
-                    tracing::debug!(
-                        service = %current.name,
-                        failure_count = current.failure_count,
-                        "health_failure_monitor: within duration gate — deferring respawn"
-                    );
-                    continue;
-                }
-            }
-
-            // D-8: Startup grace — suppress respawn while shim is still booting
-            if in_grace {
+        // D-8: Duration gate — failures must persist for FAILURE_DURATION_GATE_SECS
+        if let Some(first_fail) = current.first_failure_at {
+            if first_fail.elapsed().as_secs() < FAILURE_DURATION_GATE_SECS {
                 tracing::debug!(
                     service = %current.name,
-                    "health_failure_monitor: within startup grace period — deferring respawn"
+                    failure_count = current.failure_count,
+                    "health_failure_monitor: within duration gate — deferring respawn"
                 );
                 continue;
             }
+        }
 
-            // KeepAlive services (Auto runtime) are restarted by launchd,
-            // not by us. Skip the respawn but still track health state.
-            if matches!(current.runtime, ServiceRuntime::Auto) {
-                tracing::info!(
+        // D-8: Startup grace — suppress respawn while shim is still booting
+        if in_grace {
+            tracing::debug!(
+                service = %current.name,
+                "health_failure_monitor: within startup grace period — deferring respawn"
+            );
+            continue;
+        }
+
+        // KeepAlive services (Auto runtime) are restarted by launchd,
+        // not by us. Skip the respawn but still track health state.
+        if matches!(current.runtime, ServiceRuntime::Auto) {
+            tracing::info!(
+                service = %current.name,
+                failure_count = current.failure_count,
+                "health_failure_monitor: KeepAlive service unhealthy — launchd is restart authority"
+            );
+            continue;
+        }
+
+        // D-7: Circuit breaker — skip respawn when circuit is open
+        if current.circuit_open_since.is_some() {
+            if !registry.try_half_open_probe(&current.name) {
+                tracing::debug!(
                     service = %current.name,
                     failure_count = current.failure_count,
-                    "health_failure_monitor: KeepAlive service unhealthy — launchd is restart authority"
+                    "health_failure_monitor: circuit open — skipping respawn"
                 );
                 continue;
             }
+            tracing::info!(
+                service = %current.name,
+                "health_failure_monitor: circuit half-open — attempting probe"
+            );
+        }
 
-            // D-7: Circuit breaker — skip respawn when circuit is open
-            if current.circuit_open_since.is_some() {
-                if !registry.try_half_open_probe(&current.name) {
-                    tracing::debug!(
-                        service = %current.name,
-                        failure_count = current.failure_count,
-                        "health_failure_monitor: circuit open — skipping respawn"
-                    );
-                    continue;
-                }
-                tracing::info!(
-                    service = %current.name,
-                    "health_failure_monitor: circuit half-open — attempting probe"
-                );
-            }
+        // Respawn under the same lock as ensure_ready (one spawn authority).
+        let Ok(_spawning) = spawn_lock(&current.name).try_lock_owned() else {
+            continue;
+        };
 
+        tracing::warn!(
+            service = %current.name,
+            port = current.port,
+            failure_count = current.failure_count,
+            tier = ?current.tier,
+            "health_failure_monitor: consecutive failures exceeded threshold — respawning"
+        );
+
+        // Wedged-service eviction: at this point every respawn gate has
+        // passed (failure threshold, duration gate, startup grace,
+        // circuit breaker) and the service is confirmed unhealthy. If
+        // its port is STILL bound, the process is wedged — alive enough
+        // to hold the socket, dead enough to fail health checks. launchd
+        // won't restart it and spawn refuses a bound port, so without
+        // eviction this is a permanent outage (observed: context-
+        // management-service wedged for 1.5 days, 2026-08-28).
+        if crate::spawn::is_port_bound(current.port).await {
+            let killed = crate::spawn::kill_port_listeners(current.port).await;
             tracing::warn!(
                 service = %current.name,
                 port = current.port,
-                failure_count = current.failure_count,
-                tier = ?current.tier,
-                "health_failure_monitor: consecutive failures exceeded threshold — respawning"
+                killed = killed,
+                "health_failure_monitor: evicted wedged listener before respawn"
             );
+            // Give the OS a moment to release the socket.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
 
-            // Wedged-service eviction: at this point every respawn gate has
-            // passed (failure threshold, duration gate, startup grace,
-            // circuit breaker) and the service is confirmed unhealthy. If
-            // its port is STILL bound, the process is wedged — alive enough
-            // to hold the socket, dead enough to fail health checks. launchd
-            // won't restart it and spawn refuses a bound port, so without
-            // eviction this is a permanent outage (observed: context-
-            // management-service wedged for 1.5 days, 2026-08-28).
-            if crate::spawn::is_port_bound(current.port).await {
-                let killed = crate::spawn::kill_port_listeners(current.port).await;
-                tracing::warn!(
+        match crate::spawn::spawn_service_and_promote(
+            &current,
+            deployment_mode,
+            registry,
+        )
+        .await
+        {
+            Ok(pid) => {
+                tracing::info!(
                     service = %current.name,
-                    port = current.port,
-                    killed = killed,
-                    "health_failure_monitor: evicted wedged listener before respawn"
+                    pid = pid,
+                    "health_failure_monitor: service respawned and promoted to Hot"
                 );
-                // Give the OS a moment to release the socket.
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                registry.update_health(&current.name, HealthState::Healthy);
+                registry.close_circuit(&current.name);
             }
-
-            match crate::spawn::spawn_service_and_promote(
-                &current,
-                &deployment_mode,
-                &registry,
-            )
-            .await
-            {
-                Ok(pid) => {
-                    tracing::info!(
-                        service = %current.name,
-                        pid = pid,
-                        "health_failure_monitor: service respawned and promoted to Hot"
-                    );
-                    registry.update_health(&current.name, HealthState::Healthy);
-                    registry.close_circuit(&current.name);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        service = %current.name,
-                        error = %e,
-                        "health_failure_monitor: respawn failed — will retry next interval"
-                    );
-                }
+            Err(e) => {
+                tracing::error!(
+                    service = %current.name,
+                    error = %e,
+                    "health_failure_monitor: respawn failed — will retry next interval"
+                );
             }
         }
+    }
 
-        // D-8: Per-cycle grouped failure log
-        if !failed_this_cycle.is_empty() {
-            tracing::debug!(
-                failed_services = ?failed_this_cycle,
-                count = failed_this_cycle.len(),
-                "health_failure_monitor: services unhealthy this cycle"
-            );
-        }
+    // D-8: Per-cycle grouped failure log
+    if !failed_this_cycle.is_empty() {
+        tracing::debug!(
+            failed_services = ?failed_this_cycle,
+            count = failed_this_cycle.len(),
+            "health_failure_monitor: services unhealthy this cycle"
+        );
     }
 }
 
@@ -533,6 +690,7 @@ mod tests {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: ActivationTier::Cold,
         }
     }
 
@@ -1047,8 +1205,8 @@ mod tests {
         let svc = reg.get("promotable-svc").unwrap();
         assert_eq!(
             svc.tier,
-            ActivationTier::Cold,
-            "healthy service should be promoted Boot→Cold"
+            ActivationTier::Warm,
+            "healthy service should be promoted Boot→Warm (GAP-MCP-004)"
         );
     }
 
@@ -1437,8 +1595,8 @@ mod tests {
         let svc = registry.get("rs3-healthy").unwrap();
         assert_eq!(
             svc.tier,
-            ActivationTier::Cold,
-            "RS-3: startup_scan should promote healthy Boot service to Cold"
+            ActivationTier::Warm,
+            "RS-3: startup_scan should promote healthy Boot service to Warm (GAP-MCP-004)"
         );
     }
 
@@ -1467,8 +1625,8 @@ mod tests {
         let healthy = registry.get("healthy-svc").unwrap();
         assert_eq!(
             healthy.tier,
-            ActivationTier::Cold,
-            "RS-3: reachable service should be promoted Boot→Cold"
+            ActivationTier::Warm,
+            "RS-3: reachable service should be promoted Boot→Warm (GAP-MCP-004)"
         );
 
         let down = registry.get("down-svc").unwrap();
@@ -1476,6 +1634,38 @@ mod tests {
             down.tier,
             ActivationTier::Boot,
             "RS-3: unreachable service must remain Boot"
+        );
+    }
+
+    /// GAP-MCP-004 (restore path): tiers restored from the persistence file
+    /// skip the Boot scan. A service restored as Cold but actually running must
+    /// become Warm (so it idles to Cold and is stopped), and every restored
+    /// entry's idle clock must start — a Hot entry with no `last_request` is
+    /// skipped by the idle monitor forever.
+    #[tokio::test]
+    async fn test_startup_scan_reconciles_restored_tiers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, response).await;
+            }
+        });
+
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("running-cold", live_port, ActivationTier::Cold));
+        registry.register(make_entry("stopped-cold", 29998, ActivationTier::Cold));
+        registry.register(make_entry("restored-hot", 29997, ActivationTier::Hot));
+
+        startup_scan(&registry).await;
+
+        assert_eq!(registry.get("running-cold").unwrap().tier, ActivationTier::Warm);
+        assert_eq!(registry.get("stopped-cold").unwrap().tier, ActivationTier::Cold);
+        assert!(
+            registry.get("restored-hot").unwrap().last_request.is_some(),
+            "restored Hot entry must have its idle clock started"
         );
     }
 
@@ -1677,8 +1867,8 @@ mod tests {
         );
         assert_eq!(
             registry.get("ready-svc").unwrap().tier,
-            ActivationTier::Cold,
-            "D-3: service should be promoted to Cold via ready_path"
+            ActivationTier::Warm,
+            "D-3: service should be promoted to Warm via ready_path"
         );
     }
 
@@ -1807,6 +1997,161 @@ mod tests {
         // Auto (launchd KeepAlive) services are never stopped by the shim.
         let entry = make_entry("cold-auto", 1, ActivationTier::Cold);
         assert!(!down_is_expected(&entry));
+    }
+
+
+    // ── Option A: shim is the single spawn authority; `ensure_ready` waits ──
+    // (HWC-AUTO-START-IMPLEMENTATION.md addendum, mcp-gateway GAP-MCP-005.)
+
+    /// Write a tiny HTTP server that answers 200 on every GET and, when a
+    /// counter path is given, appends one line per start (spawn counting).
+    fn ready_server_script() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join("hwc_ready_server.py");
+        std::fs::write(
+            &path,
+            "import sys,http.server\n\
+             port=int(sys.argv[1])\n\
+             if len(sys.argv)>2: open(sys.argv[2],'a').write('start\\n')\n\
+             class H(http.server.BaseHTTPRequestHandler):\n\
+             \x20   def do_GET(self):\n\
+             \x20       self.send_response(200); self.end_headers(); self.wfile.write(b'ok')\n\
+             \x20   def log_message(self,*a): pass\n\
+             http.server.HTTPServer(('127.0.0.1',port),H).serve_forever()\n",
+        )
+        .unwrap();
+        path
+    }
+
+    async fn free_port() -> u16 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    fn native_entry(name: &str, port: u16, spawn_cmd: String) -> ServiceEntry {
+        let mut entry = make_entry(name, port, ActivationTier::Cold);
+        entry.runtime = ServiceRuntime::Native { spawn_cmd, pid_file: None };
+        entry
+    }
+
+    /// Option A: one spawn authority inside the shim too. While `ensure_ready`
+    /// holds a service's spawn lock (its process is still starting), the health
+    /// monitor must not count failures, demote, or start a second respawn
+    /// (observed live 2026-10-11: the monitor evicted an in-flight struct-analyzer
+    /// spawn, so neither attempt ever became healthy).
+    #[tokio::test]
+    async fn test_health_pass_leaves_in_flight_spawn_alone() {
+        let port = free_port().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let marker = std::env::temp_dir().join(format!("hwc-inflight-{port}"));
+        let _ = std::fs::remove_file(&marker);
+        let mut entry = native_entry("inflight-svc", port, format!("touch {}", marker.display()));
+        entry.tier = ActivationTier::Hot;
+        registry.register(entry);
+
+        let lock = spawn_lock("inflight-svc");
+        let _held = lock.lock().await;
+        for _ in 0..(HEALTH_FAILURE_RESPAWN_THRESHOLD + 2) {
+            health_failure_pass(&registry, "hybrid", false).await;
+        }
+
+        let svc = registry.get("inflight-svc").unwrap();
+        assert_eq!(svc.failure_count, 0, "starting service is not failing");
+        assert_eq!(svc.tier, ActivationTier::Hot, "starting service is not demoted");
+        assert!(!marker.exists(), "monitor must not spawn while a spawn is in flight");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_ready_unknown_service() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let out = ensure_ready(&registry, "nope", Duration::from_secs(2)).await;
+        assert_eq!(out, EnsureReady::NotRegistered);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ensure_ready_healthy_service_is_not_spawned() {
+        let port = free_port().await;
+        let mut child = tokio::process::Command::new("python3")
+            .args([ready_server_script().to_str().unwrap(), &port.to_string()])
+            .spawn()
+            .unwrap();
+        for _ in 0..50 {
+            if crate::spawn::is_port_bound(port).await { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let registry = Arc::new(ServiceRegistry::new());
+        registry.register(native_entry("up-svc", port, "/usr/bin/false".to_string()));
+        let out = ensure_ready(&registry, "up-svc", Duration::from_secs(5)).await;
+        let _ = child.kill().await;
+        assert_eq!(out, EnsureReady::Ready { spawned: false });
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ensure_ready_spawns_dead_native_and_waits_until_healthy() {
+        let port = free_port().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let cmd = format!("python3 {} {}", ready_server_script().display(), port);
+        registry.register(native_entry("dead-svc", port, cmd));
+        let out = ensure_ready(&registry, "dead-svc", Duration::from_secs(20)).await;
+        let healthy = reqwest::get(format!("http://127.0.0.1:{port}/health")).await.map(|r| r.status().is_success()).unwrap_or(false);
+        crate::spawn::kill_port_listeners(port).await;
+        assert_eq!(out, EnsureReady::Ready { spawned: true });
+        assert!(healthy, "caller must only be released once the service answers health");
+        assert_eq!(registry.get("dead-svc").unwrap().tier, ActivationTier::Hot);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ensure_ready_concurrent_callers_spawn_once() {
+        let port = free_port().await;
+        let counter = std::env::temp_dir().join(format!("hwc_spawn_count_{port}"));
+        let _ = std::fs::remove_file(&counter);
+        let registry = Arc::new(ServiceRegistry::new());
+        let cmd = format!("python3 {} {} {}", ready_server_script().display(), port, counter.display());
+        registry.register(native_entry("race-svc", port, cmd));
+        let (a, b, c) = tokio::join!(
+            ensure_ready(&registry, "race-svc", Duration::from_secs(20)),
+            ensure_ready(&registry, "race-svc", Duration::from_secs(20)),
+            ensure_ready(&registry, "race-svc", Duration::from_secs(20)),
+        );
+        crate::spawn::kill_port_listeners(port).await;
+        let starts = std::fs::read_to_string(&counter).unwrap_or_default().lines().count();
+        assert!(matches!(a, EnsureReady::Ready { .. }) && matches!(b, EnsureReady::Ready { .. }) && matches!(c, EnsureReady::Ready { .. }));
+        assert_eq!(starts, 1, "single-flight: exactly one spawn for concurrent callers");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_ready_times_out_when_service_never_becomes_healthy() {
+        let port = free_port().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        registry.register(native_entry("stuck-svc", port, "/bin/sleep 30".to_string()));
+        let started = std::time::Instant::now();
+        let out = ensure_ready(&registry, "stuck-svc", Duration::from_secs(2)).await;
+        assert_eq!(out, EnsureReady::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5), "must honour the caller's deadline");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_ready_waits_for_auto_service_without_spawning() {
+        // Auto (launchd KeepAlive) services are never spawned by the shim.
+        let port = free_port().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        registry.register(make_entry("auto-down", port, ActivationTier::Cold));
+        let out = ensure_ready(&registry, "auto-down", Duration::from_secs(1)).await;
+        assert_eq!(out, EnsureReady::TimedOut);
+        assert!(!crate::spawn::is_port_bound(port).await);
+    }
+
+
+    #[test]
+    fn test_readiness_url_prefers_ready_path_over_health_path() {
+        let mut entry = make_entry("ready-svc", 8083, ActivationTier::Cold);
+        assert_eq!(readiness_url(&entry), "http://127.0.0.1:8083/health");
+        entry.ready_path = Some("/ready".to_string());
+        assert_eq!(readiness_url(&entry), "http://127.0.0.1:8083/ready");
+        entry.health_port = 9100;
+        assert_eq!(readiness_url(&entry), "http://127.0.0.1:9100/ready");
     }
 
 }

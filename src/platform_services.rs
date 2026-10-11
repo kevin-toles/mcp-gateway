@@ -73,6 +73,7 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: svc.min_tier(),
         });
     }
 }
@@ -250,11 +251,13 @@ mod tests {
         let registry = ServiceRegistry::new();
         seed_platform_services(&registry);
 
-        for name in ["code-orchestrator", "inference-service-cpp"] {
+        // inference-service-cpp runs stock llama.cpp `llama-server`: /health is its
+        // readiness probe (503 while loading); it has no /ready route.
+        for (name, path) in [("code-orchestrator", "/ready"), ("inference-service-cpp", "/health")] {
             let entry = registry.get(name).unwrap();
             assert_eq!(
                 entry.ready_path,
-                Some("/ready".to_string()),
+                Some(path.to_string()),
                 "D-3: {} must have ready_path for startup readiness",
                 name
             );

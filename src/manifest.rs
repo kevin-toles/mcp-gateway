@@ -19,6 +19,8 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
+use crate::registry::ActivationTier;
+
 /// Compile-time fallback copy of the manifest.
 const EMBEDDED_MANIFEST: &str = include_str!("../config/services.toml");
 
@@ -46,6 +48,9 @@ pub struct ManifestService {
     /// Extra Python-side lookup keys; Rust registers the primary name only.
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Idle-demotion floor: "warm" = Hot→Warm only (never Cold); absent = Cold.
+    #[serde(default)]
+    pub min_tier: Option<String>,
 }
 
 fn default_health_path() -> String {
@@ -66,6 +71,14 @@ impl ManifestService {
 
     pub fn is_native(&self) -> bool {
         self.runtime == "native"
+    }
+
+    /// The registry idle floor for this service.
+    pub fn min_tier(&self) -> ActivationTier {
+        match self.min_tier.as_deref() {
+            Some("warm") => ActivationTier::Warm,
+            _ => ActivationTier::Cold,
+        }
     }
 }
 
@@ -196,12 +209,30 @@ mod tests {
     }
 
     #[test]
+    fn launchd_services_declare_warm_floor() {
+        // Option A: "Hot→Warm only" is explicit in the manifest, not inferred
+        // from runtime = "auto".
+        let m = parse(EMBEDDED_MANIFEST).unwrap();
+        for (name, svc) in &m.services {
+            if svc.is_native() {
+                assert_eq!(svc.min_tier, None, "{name}: native services idle to Cold");
+                assert_eq!(svc.min_tier(), ActivationTier::Cold);
+            } else {
+                assert_eq!(svc.min_tier.as_deref(), Some("warm"), "{name}: launchd services floor at Warm");
+                assert_eq!(svc.min_tier(), ActivationTier::Warm);
+            }
+        }
+    }
+
+    #[test]
     fn slow_start_services_declare_ready_path() {
         let m = embedded();
-        for name in ["code-orchestrator", "inference-service-cpp"] {
+        // inference-service-cpp runs stock llama.cpp `llama-server` (run_native.sh):
+        // no /ready route (404); /health is 503 while loading, 200 when ready.
+        for (name, path) in [("code-orchestrator", "/ready"), ("inference-service-cpp", "/health")] {
             assert_eq!(
                 m.services[name].ready_path.as_deref(),
-                Some("/ready"),
+                Some(path),
                 "{} must declare ready_path",
                 name
             );

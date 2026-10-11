@@ -98,6 +98,7 @@ mod tests {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: ActivationTier::Cold,
         });
 
         registry.increment_health_check("test-svc", true);

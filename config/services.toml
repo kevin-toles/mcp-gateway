@@ -17,6 +17,8 @@
 #     `runtime = "native"` → the Rust daemon's health_failure_monitor respawns
 #                            via `spawn` when the service dies.
 #   - `tier` is the Python health-timeout classification (hot/warm/cold).
+#   - `min_tier = "warm"` → Hot→Warm only: idles to Warm, never Cold/stopped.
+#     Absent → idles Hot→Warm→Cold (Native services are stopped at Cold).
 #   - `aliases` are extra Python-side lookup keys; Rust registers the primary
 #     name only.
 #
@@ -31,18 +33,21 @@
 port = 8080
 tier = "hot"
 runtime = "auto"
+min_tier = "warm"
 spawn = "cd ${POC_ROOT}/llm-gateway && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080"
 
 [services.mcp-gateway]
 port = 8087
 tier = "hot"
 runtime = "auto"
+min_tier = "warm"
 spawn = "cd ${POC_ROOT}/mcp-gateway && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8087"
 
 [services.semantic-search]
 port = 8081
 tier = "hot"
 runtime = "auto"
+min_tier = "warm"
 aliases = ["unified-search-rs"]
 spawn = "cd ${POC_ROOT}/unified-search-rs && PORT=8081 ./target/release/uss-server"
 
@@ -72,7 +77,10 @@ spawn = "cd ${POC_ROOT}/audit-service && (test -x .venv/bin/python || (python3 -
 port = 8085
 tier = "cold"
 runtime = "native"
-ready_path = "/ready"
+# run_native.sh launches stock llama.cpp `llama-server`, which has no /ready (404):
+# its /health is the readiness probe (503 while the model loads, 200 when ready).
+# The /ready in src/http_server.cpp belongs to the custom server, which is not run.
+ready_path = "/health"
 spawn = "cd ${POC_ROOT}/inference-service-cpp && ./run_native.sh"
 
 [services.context-management-service]
@@ -87,7 +95,9 @@ spawn = "cd ${POC_ROOT}/context-management-service && (test -x .venv/bin/python 
 port = 8088
 tier = "cold"
 runtime = "native"
-spawn = "cd ${POC_ROOT}/struct-analyzer-service && go build -o /tmp/struct-analyzer ./cmd/struct-analyzer && STRUCT_ANALYZER_PORT=:8088 /tmp/struct-analyzer serve"
+# Rebuild only when sources changed (an unconditional `go build` took ~40s — longer
+# than the respawn health wait — so every on-demand start timed out, 2026-10-11).
+spawn = "cd ${POC_ROOT}/struct-analyzer-service && { test -x /tmp/struct-analyzer && test -z \"$(find cmd internal pkg go.mod go.sum -newer /tmp/struct-analyzer | head -1)\" || go build -o /tmp/struct-analyzer ./cmd/struct-analyzer; } && STRUCT_ANALYZER_PORT=:8088 exec /tmp/struct-analyzer serve"
 
 # validation-service: rewritten from Python to Rust/axum. Binary reads PORT
 # env (defaults to 8090 — PORT=8091 is required).

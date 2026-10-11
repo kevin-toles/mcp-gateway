@@ -40,6 +40,7 @@ fn make_entry(name: &str, port: u16, tier: ActivationTier) -> ServiceEntry {
         health_checks_passed: 0,
         last_transition_reason: None,
         last_transition_at: None,
+        min_tier: ActivationTier::Cold,
     }
 }
 
@@ -65,21 +66,21 @@ async fn test_boot_registry_entry_not_promoted() {
     let entry = make_entry("rs3-healthy", port, ActivationTier::Boot);
     registry.register(entry);
 
-    // Act: this should promote Boot→Cold
+    // Act: this should promote Boot→Warm
     boot_to_cold(&registry, "rs3-healthy").await.unwrap();
 
-    // Assert: GREEN — the healthy Boot service was promoted to Cold
+    // Assert: GREEN — the healthy Boot service was promoted to Warm
     let svc = registry.get("rs3-healthy").unwrap();
     assert_eq!(
         svc.tier,
-        ActivationTier::Cold,
-        "RS-3 GREEN: boot_to_cold should promote a healthy Boot service to Cold"
+        ActivationTier::Warm,
+        "RS-3 GREEN: boot_to_cold should promote a healthy Boot service to Warm (GAP-MCP-004)"
     );
 }
 
 /// RS-3/02: startup_scan should promote only reachable healthy services.
 ///
-/// GREEN — assert the reachable service IS promoted to Cold.
+/// GREEN — assert the reachable service IS promoted to Warm.
 #[tokio::test]
 async fn test_boot_scan_skips_down_services() {
     // Arrange: one healthy service with a live endpoint
@@ -104,12 +105,12 @@ async fn test_boot_scan_skips_down_services() {
     // Call boot_to_cold on the healthy service (should succeed)
     let _ = boot_to_cold(&registry, "healthy-svc").await;
 
-    // Assert: GREEN — the reachable service was promoted to Cold
+    // Assert: GREEN — the reachable service was promoted to Warm
     let healthy = registry.get("healthy-svc").unwrap();
     assert_eq!(
         healthy.tier,
-        ActivationTier::Cold,
-        "RS-3 GREEN: boot_to_cold should promote a reachable service to Cold"
+        ActivationTier::Warm,
+        "RS-3 GREEN: boot_to_cold should promote a reachable service to Warm (GAP-MCP-004)"
     );
 }
 

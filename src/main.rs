@@ -4,7 +4,7 @@
 // with KeepAlive=true, like llm-gateway. This process no longer proxies for it.
 //
 // Responsibilities:
-//   - startup_scan: promote already-healthy services Boot→Cold on startup
+//   - startup_scan: promote already-healthy Boot/restored-Cold services to Warm on startup
 //   - shim_idle_monitor: Hot→Warm→Cold demotion for idle warm-tier services
 //   - BootColdMonitor: poll Boot-tier services until healthy, then promote Cold
 //   - health_failure_monitor: respawn services that fail consecutive health checks

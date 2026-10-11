@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 /// Activation tier per HYBRID §4.6.1 4-tier model
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActivationTier {
-    Boot,  // First-start; single-use; transitions to Cold after first start
-    Cold,  // Not running; requires manual start
-    Warm,  // Not running; can auto-start on demand via shim
-    Hot,   // Running and available; zero startup cost
+    Boot,  // First-start; single-use; scan → Warm when found running
+    Cold,  // Idle past the Warm timeout; Native services are stopped (started on demand)
+    Warm,  // Running but idle; demoted to Cold after the Warm timeout unless min_tier = Warm
+    Hot,   // Running and in use
 }
 
 impl ActivationTier {
@@ -87,6 +87,10 @@ pub struct ServiceEntry {
     pub last_transition_reason: Option<String>,
     /// Reducer: when the last tier transition happened.
     pub last_transition_at: Option<Instant>,
+    /// Idle-demotion floor (manifest `min_tier`). `Warm` = "Hot→Warm only": the
+    /// service idles to Warm but is never demoted to Cold (or stopped).
+    /// `Cold` = no floor.
+    pub min_tier: ActivationTier,
 }
 
 impl ServiceEntry {
@@ -168,12 +172,13 @@ impl ServiceRegistry {
     /// the event is a no-op for the current tier (or the service is unknown).
     ///
     /// Transition table (preserves the previously-scattered semantics):
-    ///   Boot + ScanFoundReady        → Cold
+    ///   Boot/Cold + ScanFoundReady   → Warm  (running, idle clock started — GAP-MCP-004;
+    ///                                        Cold = a restored tier that is actually running)
     ///   Boot/Cold/Warm + Activity    → Hot
     ///   any-non-Hot + SpawnSucceeded → Hot
     ///   Hot  + HealthDegraded        → Warm
     ///   Hot  + IdleTimeout           → Warm
-    ///   Warm + IdleTimeout           → Cold
+    ///   Warm + IdleTimeout           → Cold  (unless min_tier = Warm)
     ///   everything else              → no-op
     pub fn apply_event(
         &self,
@@ -185,12 +190,12 @@ impl ServiceRegistry {
         let entry = entries.get_mut(name)?;
         let from = entry.tier.clone();
         let to = match (&from, event) {
-            (Boot, TierEvent::ScanFoundReady) => Cold,
+            (Boot | Cold, TierEvent::ScanFoundReady) => Warm,
             (Boot | Cold | Warm, TierEvent::Activity) => Hot,
             (Boot | Cold | Warm, TierEvent::SpawnSucceeded) => Hot,
             (Hot, TierEvent::HealthDegraded) => Warm,
             (Hot, TierEvent::IdleTimeout) => Warm,
-            (Warm, TierEvent::IdleTimeout) => Cold,
+            (Warm, TierEvent::IdleTimeout) if entry.min_tier != Warm => Cold,
             _ => return None,
         };
         entry.transition(to.clone(), event.reason());
@@ -383,6 +388,7 @@ mod tests {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: ActivationTier::Cold,
         }
     }
 
@@ -508,16 +514,45 @@ mod tests {
     // ── Tier-transition reducer (single writer, finding #4) ──────────────
 
     #[test]
-    fn reducer_scan_promotes_boot_to_cold_only() {
+    fn reducer_scan_promotes_boot_to_warm_only() {
+        // GAP-MCP-004: a service found running at boot is Warm (running, idle clock
+        // started) so it idles to Cold and is stopped unless used — never a running
+        // "Cold" that the idle monitor skips forever.
         let registry = ServiceRegistry::new();
         registry.register(make_entry("svc", 9000, ActivationTier::Boot));
         assert_eq!(
             registry.apply_event("svc", TierEvent::ScanFoundReady),
-            Some((ActivationTier::Boot, ActivationTier::Cold))
+            Some((ActivationTier::Boot, ActivationTier::Warm))
         );
         // Second scan is a no-op — service is no longer Boot.
         assert_eq!(registry.apply_event("svc", TierEvent::ScanFoundReady), None);
-        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Cold);
+        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Warm);
+    }
+
+    #[test]
+    fn reducer_scan_found_running_cold_becomes_warm() {
+        // A restored Cold entry whose service is actually running.
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Cold));
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::ScanFoundReady),
+            Some((ActivationTier::Cold, ActivationTier::Warm))
+        );
+    }
+
+    #[test]
+    fn reducer_idle_timeout_stops_at_min_tier_floor() {
+        let registry = ServiceRegistry::new();
+        let mut entry = make_entry("svc", 9000, ActivationTier::Hot);
+        entry.min_tier = ActivationTier::Warm;
+        registry.register(entry);
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::IdleTimeout),
+            Some((ActivationTier::Hot, ActivationTier::Warm))
+        );
+        // Hot→Warm only: Warm is the floor.
+        assert_eq!(registry.apply_event("svc", TierEvent::IdleTimeout), None);
+        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Warm);
     }
 
     #[test]
@@ -573,7 +608,7 @@ mod tests {
         let entry = registry.get("svc").unwrap();
         assert_eq!(
             entry.last_transition_reason.as_deref(),
-            Some("Boot→Cold (scan-found-ready)")
+            Some("Boot→Warm (scan-found-ready)")
         );
         assert!(entry.last_transition_at.is_some());
     }
