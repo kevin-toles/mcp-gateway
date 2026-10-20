@@ -61,8 +61,8 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             health_path: svc.health_path.clone(),
             last_health: None,
             failure_count: 0,
-            hot_idle_timeout_secs: 1800,
-            warm_idle_timeout_secs: 600,
+            hot_idle_timeout_secs: svc.idle_timeouts().0,
+            warm_idle_timeout_secs: svc.idle_timeouts().1,
             last_request: None,
             request_timestamps: VecDeque::new(),
             circuit_open_since: None,
@@ -244,6 +244,16 @@ mod tests {
             "amve spawn_cmd must set PORT=8092; got: {}",
             spawn_cmd
         );
+    }
+
+    #[test]
+    fn seeded_entries_carry_manifest_idle_timeouts() {
+        let registry = ServiceRegistry::new();
+        seed_platform_services(&registry);
+        let inference = registry.get("inference-service-cpp").unwrap();
+        assert_eq!((inference.hot_idle_timeout_secs, inference.warm_idle_timeout_secs), (600, 0));
+        let amve = registry.get("amve").unwrap();
+        assert_eq!((amve.hot_idle_timeout_secs, amve.warm_idle_timeout_secs), (1800, 600));
     }
 
     #[test]

@@ -19,6 +19,8 @@
 #   - `tier` is the Python health-timeout classification (hot/warm/cold).
 #   - `min_tier = "warm"` → Hot→Warm only: idles to Warm, never Cold/stopped.
 #     Absent → idles Hot→Warm→Cold (Native services are stopped at Cold).
+#   - `hot_idle_secs` / `warm_idle_secs` override the 1800 s / 600 s idle timeouts
+#     (model-heavy services: 600 / 0 → Hot 10 min, then Cold and stopped).
 #   - `aliases` are extra Python-side lookup keys; Rust registers the primary
 #     name only.
 #
@@ -63,6 +65,9 @@ spawn = "cd ${POC_ROOT}/ai-agents && (test -x .venv/bin/python || (python3 -m ve
 port = 8083
 tier = "warm"
 runtime = "native"
+# Model-heavy: release memory fast — 10 min Hot, then straight to Cold (no Warm hold).
+hot_idle_secs = 600
+warm_idle_secs = 0
 ready_path = "/ready"
 spawn = "cd ${POC_ROOT}/Code-Orchestrator-Service && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && COS_CODEBERT_START_MODE=warm COS_GRAPHCODEBERT_START_MODE=cold COS_CODET5_START_MODE=cold .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8083"
 
@@ -77,6 +82,9 @@ spawn = "cd ${POC_ROOT}/audit-service && (test -x .venv/bin/python || (python3 -
 port = 8085
 tier = "cold"
 runtime = "native"
+# Model-heavy: release memory fast — 10 min Hot, then straight to Cold (no Warm hold).
+hot_idle_secs = 600
+warm_idle_secs = 0
 # run_native.sh launches stock llama.cpp `llama-server`, which has no /ready (404):
 # its /health is the readiness probe (503 while the model loads, 200 when ready).
 # The /ready in src/http_server.cpp belongs to the custom server, which is not run.

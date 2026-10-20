@@ -90,7 +90,7 @@ async fn spawn_service_inner(entry: &ServiceEntry, deployment_mode: &str) -> Res
     // Step 3: Spawn based on resolved runtime
     match resolved {
         ServiceRuntime::Native { spawn_cmd, .. } => {
-            let child = spawn_native_process(&spawn_cmd)?;
+            let child = spawn_native_process(&spawn_cmd, &entry.name)?;
             let pid = child.id();
             let url = format!("http://127.0.0.1:{}{}", health_port, entry.health_path);
 
@@ -247,9 +247,9 @@ pub async fn kill_port_listeners(port: u16) -> usize {
     killed
 }
 
-/// Spawn a native process from a command string.
-/// Splits the command string into program and arguments by whitespace.
-fn spawn_native_process(spawn_cmd: &str) -> Result<Child, SpawnError> {
+/// Spawn a native process from a command string (shlex-split), in its own
+/// process group, logging to `/tmp/spawn-{service}.log` (appended).
+fn spawn_native_process(spawn_cmd: &str, service: &str) -> Result<Child, SpawnError> {
     let parts = shlex::split(spawn_cmd).ok_or_else(|| {
         SpawnError::ProcessFailed(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -265,14 +265,22 @@ fn spawn_native_process(spawn_cmd: &str) -> Result<Child, SpawnError> {
     let program = &parts[0];
     let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
-    let log_dir = std::path::Path::new("/tmp");
-    let stdout_file = std::fs::File::create(log_dir.join(format!("spawn-{}.log", program.replace('/', "_"))))
+    // Per-service, appended: one shared truncated log hid every crash.
+    let log_path = std::path::Path::new("/tmp").join(format!("spawn-{}.log", service.replace('/', "_")));
+    let stdout_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
         .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
     let stderr_file = stdout_file.try_clone()
         .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
 
+    use std::os::unix::process::CommandExt;
     Command::new(program)
         .args(&args)
+        // Own process group: the service must outlive a shim restart
+        // (launchd kills the shim job's process group).
+        .process_group(0)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .spawn()
@@ -300,6 +308,39 @@ fn spawn_docker_container(container_name: &str) -> Result<(), SpawnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-20: `launchctl kickstart -k` on the shim killed every service it
+    /// had spawned (same process group), taking COS down mid-use. A spawned
+    /// service must lead its own process group so it outlives the shim.
+    #[test]
+    fn test_spawned_service_leads_its_own_process_group() {
+        let mut child = spawn_native_process("sleep 5", "pgroup-test").expect("spawn");
+        let pid = child.id();
+        let pgid = |p: u32| {
+            let out = std::process::Command::new("ps").args(["-o", "pgid=", "-p", &p.to_string()]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().unwrap()
+        };
+        let child_group = pgid(pid);
+        let own_group = pgid(std::process::id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(child_group, pid, "spawned service must be its own group leader");
+        assert_ne!(child_group, own_group);
+    }
+
+    /// Every service shared `/tmp/spawn-sh.log`, truncated on each spawn — so a
+    /// crashing service's error was overwritten before anyone could read it.
+    #[test]
+    fn test_spawn_output_goes_to_a_per_service_appended_log() {
+        let log = std::path::Path::new("/tmp").join("spawn-log-test-svc.log");
+        let _ = std::fs::remove_file(&log);
+        for word in ["first", "second"] {
+            let mut child = spawn_native_process(&format!("sh -c 'echo {word}'"), "log-test-svc").unwrap();
+            child.wait().unwrap();
+        }
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("first") && text.contains("second"), "{text}");
+    }
 
     #[test]
     fn test_spawn_error_display_already_running() {

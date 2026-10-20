@@ -128,6 +128,11 @@ pub enum TierEvent {
     HealthDegraded,
     /// The idle monitor's timeout for the current tier elapsed.
     IdleTimeout,
+    /// A Native service nobody is using failed its health checks; it is stopped
+    /// and left Cold for the next real request (request-driven lifecycle).
+    DownWhileIdle,
+    /// A startup-test probe started the service, verified it, and stopped it.
+    ProbeStopped,
 }
 
 impl TierEvent {
@@ -138,6 +143,8 @@ impl TierEvent {
             TierEvent::SpawnSucceeded => "spawn-succeeded",
             TierEvent::HealthDegraded => "health-degraded",
             TierEvent::IdleTimeout => "idle-timeout",
+            TierEvent::DownWhileIdle => "down-while-idle",
+            TierEvent::ProbeStopped => "probe-stopped",
         }
     }
 }
@@ -179,6 +186,7 @@ impl ServiceRegistry {
     ///   Hot  + HealthDegraded        → Warm
     ///   Hot  + IdleTimeout           → Warm
     ///   Warm + IdleTimeout           → Cold  (unless min_tier = Warm)
+    ///   Hot/Warm + DownWhileIdle     → Cold  (unused service failed; not respawned)
     ///   everything else              → no-op
     pub fn apply_event(
         &self,
@@ -196,6 +204,8 @@ impl ServiceRegistry {
             (Hot, TierEvent::HealthDegraded) => Warm,
             (Hot, TierEvent::IdleTimeout) => Warm,
             (Warm, TierEvent::IdleTimeout) if entry.min_tier != Warm => Cold,
+            (Hot | Warm, TierEvent::DownWhileIdle) => Cold,
+            (Hot | Warm, TierEvent::ProbeStopped) => Cold,
             _ => return None,
         };
         entry.transition(to.clone(), event.reason());
@@ -237,6 +247,15 @@ impl ServiceRegistry {
                 }
             }
         }
+    }
+
+    /// Requests recorded for `name` at or after `since`.
+    pub fn requests_since(&self, name: &str, since: Instant) -> usize {
+        self.entries
+            .read()
+            .unwrap()
+            .get(name)
+            .map_or(0, |e| e.request_timestamps.iter().filter(|&&t| t >= since).count())
     }
 
     /// Count request timestamps within the given sliding window.

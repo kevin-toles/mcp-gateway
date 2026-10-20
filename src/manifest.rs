@@ -51,6 +51,12 @@ pub struct ManifestService {
     /// Idle-demotion floor: "warm" = Hot→Warm only (never Cold); absent = Cold.
     #[serde(default)]
     pub min_tier: Option<String>,
+    /// Seconds idle before Hot→Warm (default `HOT_IDLE_TIMEOUT_SECS`).
+    #[serde(default)]
+    pub hot_idle_secs: Option<u64>,
+    /// Seconds idle before Warm→Cold (default `WARM_IDLE_TIMEOUT_SECS`; 0 = no Warm hold).
+    #[serde(default)]
+    pub warm_idle_secs: Option<u64>,
 }
 
 fn default_health_path() -> String {
@@ -71,6 +77,14 @@ impl ManifestService {
 
     pub fn is_native(&self) -> bool {
         self.runtime == "native"
+    }
+
+    /// `(hot, warm)` idle timeouts in seconds, manifest values over the defaults.
+    pub fn idle_timeouts(&self) -> (u64, u64) {
+        (
+            self.hot_idle_secs.unwrap_or(crate::lifecycle::HOT_IDLE_TIMEOUT_SECS),
+            self.warm_idle_secs.unwrap_or(crate::lifecycle::WARM_IDLE_TIMEOUT_SECS),
+        )
     }
 
     /// The registry idle floor for this service.
@@ -221,6 +235,23 @@ mod tests {
                 assert_eq!(svc.min_tier.as_deref(), Some("warm"), "{name}: launchd services floor at Warm");
                 assert_eq!(svc.min_tier(), ActivationTier::Warm);
             }
+        }
+    }
+
+    #[test]
+    fn model_heavy_services_release_memory_fast() {
+        // 2026-10-20: llama-server (~4.8 GB) held 30 min Hot + 10 min Warm after
+        // every wake. Model-heavy services idle 10 min Hot → straight to Cold;
+        // every other service keeps the 30 + 10 min defaults.
+        let m = parse(EMBEDDED_MANIFEST).unwrap();
+        for (name, svc) in &m.services {
+            let heavy = matches!(name.as_str(), "inference-service-cpp" | "code-orchestrator");
+            let expected = if heavy {
+                (600, 0)
+            } else {
+                (crate::lifecycle::HOT_IDLE_TIMEOUT_SECS, crate::lifecycle::WARM_IDLE_TIMEOUT_SECS)
+            };
+            assert_eq!(svc.idle_timeouts(), expected, "{name}");
         }
     }
 

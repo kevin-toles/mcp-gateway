@@ -181,6 +181,39 @@ async fn handle(mut client: TcpStream, registry: Arc<ServiceRegistry>) {
             return;
         };
         let service = target.service.as_str();
+
+        if target.probe {
+            // Startup-test probe: no activity recorded, service left as it was found.
+            let outcome = crate::lifecycle::probe(&registry, service, target.timeout).await;
+            let (code, reason, body) = match outcome {
+                crate::lifecycle::Probe::Ready { spawned, stopped } => (
+                    200,
+                    "OK",
+                    format!("{{\"service\":\"{service}\",\"ready\":true,\"spawned\":{spawned},\"stopped\":{stopped}}}"),
+                ),
+                crate::lifecycle::Probe::NotRegistered => (
+                    404,
+                    "Not Found",
+                    format!("{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"not_registered\"}}"),
+                ),
+                crate::lifecycle::Probe::TimedOut => (
+                    503,
+                    "Service Unavailable",
+                    format!("{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"timeout\"}}"),
+                ),
+                crate::lifecycle::Probe::SpawnFailed(e) => (
+                    503,
+                    "Service Unavailable",
+                    format!(
+                        "{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"spawn_failed\",\"detail\":{}}}",
+                        serde_json::to_string(&e).unwrap_or_else(|_| "\"\"".to_string())
+                    ),
+                ),
+            };
+            let _ = simple_response(&mut client, code, reason, body.as_bytes()).await;
+            return;
+        }
+
         registry.record_request(service);
         // The reducer logs the transition (with from/to tiers) itself.
         let promoted = registry.apply_event(service, TierEvent::Activity).is_some();
@@ -438,6 +471,8 @@ pub const ACTIVITY_WAIT_MAX_SECS: u64 = 300;
 pub struct ActivityTarget {
     pub service: String,
     pub wait: bool,
+    /// Startup-test probe: verify the service starts, record no use, leave it stopped.
+    pub probe: bool,
     pub timeout: Duration,
 }
 
@@ -449,11 +484,13 @@ pub fn parse_activity_target(path: &str) -> Option<ActivityTarget> {
         return None;
     }
     let mut wait = false;
+    let mut probe = false;
     let mut timeout_secs = ACTIVITY_WAIT_DEFAULT_SECS;
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         match key {
             "wait" => wait = matches!(value, "true" | "1" | ""),
+            "probe" => probe = matches!(value, "true" | "1" | ""),
             "timeout_secs" => {
                 if let Ok(v) = value.parse::<u64>() {
                     timeout_secs = v.min(ACTIVITY_WAIT_MAX_SECS);
@@ -462,7 +499,12 @@ pub fn parse_activity_target(path: &str) -> Option<ActivityTarget> {
             _ => {}
         }
     }
-    Some(ActivityTarget { service: service.to_string(), wait, timeout: Duration::from_secs(timeout_secs) })
+    Some(ActivityTarget {
+        service: service.to_string(),
+        wait: wait || probe,
+        probe,
+        timeout: Duration::from_secs(timeout_secs),
+    })
 }
 
 #[cfg(test)]
@@ -556,6 +598,14 @@ mod status_tests {
         assert_eq!(t.timeout, std::time::Duration::from_secs(30));
         let capped = parse_activity_target("/activity/x?wait=true&timeout_secs=99999").unwrap();
         assert_eq!(capped.timeout, std::time::Duration::from_secs(ACTIVITY_WAIT_MAX_SECS));
+    }
+
+    #[test]
+    fn activity_target_probe_implies_wait() {
+        let t = parse_activity_target("/activity/inference-service-cpp?probe=true&timeout_secs=90").unwrap();
+        assert!(t.probe && t.wait);
+        assert_eq!(t.timeout, Duration::from_secs(90));
+        assert!(!parse_activity_target("/activity/x?wait=true").unwrap().probe);
     }
 
     #[test]

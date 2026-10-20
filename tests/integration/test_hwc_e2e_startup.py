@@ -20,6 +20,7 @@ import time
 from datetime import datetime
 
 import httpx
+from pathlib import Path
 import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,15 +89,34 @@ async def poll_health(
     )
 
 
-async def trigger_auto_start(service: str) -> None:
-    """Report activity to the lifecycle daemon to trigger tier promotion.
+async def probe_service(service: str) -> dict:
+    """Probe via the lifecycle daemon: start if stopped, verify, stop again.
 
-    POST /activity/{service} on :8079 records a request and promotes
-    Cold/Warm → Hot. For Native-runtime services, health_failure_monitor
-    will detect the unhealthy state and respawn via spawn_cmd.
+    ``?probe=true`` records no activity, so the startup test never leaves a
+    service (e.g. llama-server, ~4.8 GB) running (2026-10-20).
     """
-    async with httpx.AsyncClient(timeout=5) as client:
-        await client.post(f"http://localhost:{LIFECYCLE_DAEMON_PORT}/activity/{service}")
+    async with httpx.AsyncClient(timeout=AUTO_START_TIMEOUT_SECS + 10) as client:
+        r = await client.post(
+            f"http://localhost:{LIFECYCLE_DAEMON_PORT}/activity/{service}"
+            f"?probe=true&timeout_secs={AUTO_START_TIMEOUT_SECS}"
+        )
+        return r.json()
+
+
+def runner_probe_result(service: str) -> dict | None:
+    """The runner's probe result for ``service`` (HWC_PROBE_RESULTS), if any."""
+    path = os.environ.get("HWC_PROBE_RESULTS")
+    if not path or not Path(path).exists():
+        return None
+    found = None
+    for line in Path(path).read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("service") == service:
+            found = rec
+    return found
 
 
 async def is_service_up(port: int, health_path: str) -> bool:
@@ -337,27 +357,15 @@ async def test_hwc_20_ondemand_service_auto_starts(service: str, endpoint: tuple
     A Cold service that refuses to start is a FAILURE, not a skip.
     """
     port, health_path = endpoint
+    _ = (port, health_path)
 
-    # Fast path: already running
-    if await is_service_up(port, health_path):
-        print(f"  ✓ {service} (:{port}): already healthy")
-        return
-
-    # Trigger auto-start via activity report to lifecycle daemon
-    print(f"  → {service} (:{port}): not running, triggering auto-start...")
-    await trigger_auto_start(service)
-
-    # Poll until healthy
-    try:
-        elapsed = await poll_health(port, health_path)
-        print(f"  ✓ {service} (:{port}): auto-started in {elapsed:.1f}s")
-    except AssertionError:
-        pytest.fail(
-            f"{service} (:{port}): FAILED TO AUTO-START within {AUTO_START_TIMEOUT_SECS}s. "
-            f"HWC lifecycle is broken for this service. "
-            f"Check: spawn_cmd in platform_services.rs, "
-            f"SERVICE_STARTUP_COMMANDS in health_config.py"
-        )
+    # The runner already probed it (start → verify → stop); don't re-wake it.
+    result = runner_probe_result(service) or await probe_service(service)
+    assert result.get("ready") is True, (
+        f"{service}: FAILED TO START via the lifecycle daemon probe: {result}. "
+        f"HWC lifecycle is broken for this service — check its spawn in config/services.toml"
+    )
+    print(f"  ✓ {service}: started and verified (spawned={result.get('spawned')}, stopped={result.get('stopped')})")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

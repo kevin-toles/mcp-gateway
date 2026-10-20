@@ -124,47 +124,34 @@ service_healthy() {
   curl -sf --max-time 2 "http://localhost:$1$2" >/dev/null 2>&1
 }
 
+# Probe results (one JSON object per line) for the test suite — it must not
+# re-wake services itself.
+export HWC_PROBE_RESULTS="${HWC_PROBE_RESULTS:-$PROJECT_ROOT/logs/hwc_probe_results.jsonl}"
+
+# Probe each service one at a time: the shim starts it if stopped, verifies it
+# is ready, then stops it again (?probe=true records no use — 2026-10-20).
 start_group() {
   local group_no="$1"; shift
-  local started_at=$SECONDS
   echo ""
   echo "── Startup group $group_no: $* ──"
-
-  local svc port path
+  local svc result
   for svc in "$@"; do
-    read -r port path < <(manifest_endpoint "$svc")
-    if service_healthy "$port" "$path"; then
-      echo "  ✓ $svc (:$port) already healthy"
-    else
-      echo "  → $svc (:$port) requesting start"
-      curl -sf --max-time 5 -X POST "http://localhost:8079/activity/$svc" >/dev/null 2>&1 \
-        || echo "  ✗ $svc: activity request to :8079 failed"
-    fi
-  done
-
-  local pending=("$@")
-  while [ "${#pending[@]}" -gt 0 ] && [ $((SECONDS - started_at)) -lt "$GROUP_TIMEOUT_SECS" ]; do
-    local still=()
-    for svc in "${pending[@]}"; do
-      read -r port path < <(manifest_endpoint "$svc")
-      if service_healthy "$port" "$path"; then
-        echo "  ✓ $svc (:$port) healthy after $((SECONDS - started_at))s"
-      else
-        still+=("$svc")
-      fi
-    done
-    pending=("${still[@]}")
-    [ "${#pending[@]}" -gt 0 ] && sleep 2
-  done
-
-  for svc in "${pending[@]}"; do
-    echo "  ✗ $svc not healthy after ${GROUP_TIMEOUT_SECS}s — continuing; test suite will report it"
+    result=$(curl -s --max-time $((GROUP_TIMEOUT_SECS + 10)) -X POST \
+      "http://localhost:8079/activity/$svc?probe=true&timeout_secs=$GROUP_TIMEOUT_SECS" 2>/dev/null)
+    [ -n "$result" ] || result="{\"service\":\"$svc\",\"ready\":false,\"reason\":\"shim_unreachable\"}"
+    echo "$result" >> "$HWC_PROBE_RESULTS"
+    case "$result" in
+      *'"ready":true'*) echo "  ✓ $svc: $result" ;;
+      *) echo "  ✗ $svc: $result — test suite will report it" ;;
+    esac
   done
 }
 
 sequenced_startup() {
   echo ""
   echo "Sequenced startup of on-demand services (${#STARTUP_GROUPS[@]} groups)..."
+  mkdir -p "$(dirname "$HWC_PROBE_RESULTS")"
+  : > "$HWC_PROBE_RESULTS"
   local i=1 group
   for group in "${STARTUP_GROUPS[@]}"; do
     # shellcheck disable=SC2086  # word-split the group into service names

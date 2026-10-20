@@ -155,7 +155,8 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
             // RS-6: Warm→Cold check
             // Re-fetch the entry to pick up any Hot→Warm transition above
             if let Some(current) = registry.get(&entry.name) {
-                if current.tier == ActivationTier::Warm {
+                // Never stop a service whose spawn is in flight.
+                if current.tier == ActivationTier::Warm && !spawn_in_flight(&current.name) {
                     let Some(idle_secs) = current
                         .last_request_elapsed_secs()
                         .map(|s| s as u64)
@@ -213,6 +214,50 @@ pub enum EnsureReady {
     SpawnFailed(String),
 }
 
+/// Outcome of [`probe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Probe {
+    /// Ready; `spawned` = the probe started it, `stopped` = and stopped it again.
+    Ready { spawned: bool, stopped: bool },
+    NotRegistered,
+    TimedOut,
+    SpawnFailed(String),
+}
+
+/// Stop a probed service only when the probe started it, it is Native, and the
+/// only request since the probe began is the spawn's own (no real traffic).
+fn stop_after_probe(spawned: bool, native: bool, requests_since_start: usize) -> bool {
+    spawned && native && requests_since_start <= 1
+}
+
+/// Startup-test probe: prove `service_name` starts and becomes ready without
+/// counting as use. A running service is left untouched (no activity recorded);
+/// a stopped Native service is started under the single-flight lock, verified,
+/// stopped and left Cold; an Auto (launchd) service is only waited on.
+pub async fn probe(registry: &Arc<ServiceRegistry>, service_name: &str, timeout: Duration) -> Probe {
+    let Some(entry) = registry.get(service_name) else {
+        return Probe::NotRegistered;
+    };
+    if answers_health(&readiness_url(&entry)).await {
+        return Probe::Ready { spawned: false, stopped: false };
+    }
+    let started = std::time::Instant::now();
+    match ensure_ready(registry, service_name, timeout).await {
+        EnsureReady::Ready { spawned } => {
+            let native = matches!(entry.runtime, ServiceRuntime::Native { .. });
+            let stopped = stop_after_probe(spawned, native, registry.requests_since(service_name, started));
+            if stopped {
+                crate::spawn::kill_port_listeners(entry.port).await;
+                registry.apply_event(service_name, TierEvent::ProbeStopped);
+            }
+            Probe::Ready { spawned, stopped }
+        }
+        EnsureReady::NotRegistered => Probe::NotRegistered,
+        EnsureReady::TimedOut => Probe::TimedOut,
+        EnsureReady::SpawnFailed(e) => Probe::SpawnFailed(e),
+    }
+}
+
 /// One spawn lock per service so concurrent callers never double-spawn (single flight).
 fn spawn_lock(service: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
@@ -222,6 +267,13 @@ fn spawn_lock(service: &str) -> Arc<tokio::sync::Mutex<()>> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     Arc::clone(map.entry(service.to_string()).or_default())
+}
+
+/// A service is in use when real activity arrived within its Hot idle timeout.
+fn in_use(entry: &crate::registry::ServiceEntry) -> bool {
+    entry
+        .last_request_elapsed_secs()
+        .is_some_and(|secs| secs < entry.hot_idle_timeout_secs as f64)
 }
 
 /// True while some caller holds `service`'s spawn lock (a spawn is in progress).
@@ -506,6 +558,22 @@ pub(crate) async fn health_failure_pass(
                 service = %current.name,
                 failure_count = current.failure_count,
                 "health_failure_monitor: KeepAlive service unhealthy — launchd is restart authority"
+            );
+            continue;
+        }
+
+        // Request-driven lifecycle: only a service in use is respawned. One nobody
+        // has called within its Hot timeout is stopped (a wedged listener still
+        // holds its memory) and left Cold for the next real request.
+        if !in_use(&current) {
+            if crate::spawn::is_port_bound(current.port).await {
+                crate::spawn::kill_port_listeners(current.port).await;
+            }
+            registry.apply_event(&current.name, TierEvent::DownWhileIdle);
+            tracing::info!(
+                service = %current.name,
+                failure_count = current.failure_count,
+                "health_failure_monitor: unused service failed — stopped, left Cold (no respawn)"
             );
             continue;
         }
@@ -2031,6 +2099,147 @@ mod tests {
         let mut entry = make_entry(name, port, ActivationTier::Cold);
         entry.runtime = ServiceRuntime::Native { spawn_cmd, pid_file: None };
         entry
+    }
+
+    /// Request-driven lifecycle (2026-10-20): a failing service nobody is using
+    /// is not an outage. The monitor must not respawn it; it frees the port (a
+    /// wedged listener still holds its memory — llama-server held 4.8 GB) and the
+    /// service goes Cold, to be started by the next real request.
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_does_not_respawn_an_unused_service() {
+        let (port, mut child) = spawn_listener().await; // bound, never answers HTTP
+        let marker = std::env::temp_dir().join(format!("hwc-unused-{port}"));
+        let _ = std::fs::remove_file(&marker);
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = native_entry("unused-svc", port, format!("touch {}", marker.display()));
+        entry.tier = ActivationTier::Warm;
+        entry.last_request = Instant::now().checked_sub(Duration::from_secs(3600));
+        entry.failure_count = HEALTH_FAILURE_RESPAWN_THRESHOLD;
+        entry.first_failure_at = Instant::now().checked_sub(Duration::from_secs(FAILURE_DURATION_GATE_SECS + 60));
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let released = port_released_within(port, 3000).await;
+        let _ = child.kill().await;
+
+        assert!(!marker.exists(), "an unused service must not be respawned by the monitor");
+        assert_eq!(registry.get("unused-svc").unwrap().tier, ActivationTier::Cold);
+        assert!(released, "the wedged listener must be stopped to free its memory");
+    }
+
+    /// A service in active use (activity within its Hot timeout) that dies is an
+    /// outage: the monitor still respawns it.
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_respawns_a_service_in_use() {
+        let port = free_port().await;
+        let marker = std::env::temp_dir().join(format!("hwc-inuse-{port}"));
+        let _ = std::fs::remove_file(&marker);
+        let script = ready_server_script();
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = native_entry(
+            "inuse-svc",
+            port,
+            format!("python3 {} {} {}", script.display(), port, marker.display()),
+        );
+        entry.tier = ActivationTier::Hot;
+        entry.last_request = Some(Instant::now());
+        entry.failure_count = HEALTH_FAILURE_RESPAWN_THRESHOLD;
+        entry.first_failure_at = Instant::now().checked_sub(Duration::from_secs(FAILURE_DURATION_GATE_SECS + 60));
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        crate::spawn::kill_port_listeners(port).await;
+
+        assert!(marker.exists(), "a dead service in use must be respawned");
+    }
+
+    /// The idle monitor must not stop a service whose spawn is in flight
+    /// (2026-10-20: Warm→Cold killed llama-server 9 s into a monitor respawn).
+    #[tokio::test]
+    #[serial]
+    async fn test_idle_monitor_does_not_stop_a_service_mid_spawn() {
+        let (port, mut child) = spawn_listener().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = native_entry("spawning-svc", port, "true".to_string());
+        entry.tier = ActivationTier::Warm;
+        entry.warm_idle_timeout_secs = 0;
+        entry.last_request = Some(Instant::now());
+        registry.register(entry);
+
+        let lock = spawn_lock("spawning-svc");
+        let _held = lock.lock().await;
+        let reg = registry.clone();
+        let handle = tokio::spawn(async move { shim_idle_monitor(reg).await });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        handle.abort();
+        let still_bound = crate::spawn::is_port_bound(port).await;
+        let _ = child.kill().await;
+
+        assert!(still_bound, "a service being spawned must not be stopped by the idle monitor");
+        assert_eq!(registry.get("spawning-svc").unwrap().tier, ActivationTier::Warm);
+    }
+
+    // ── Startup-test probes (2026-10-20): verify a service starts, leave it stopped ──
+
+    #[tokio::test]
+    #[serial]
+    async fn test_probe_starts_a_stopped_native_service_verifies_it_and_stops_it() {
+        let port = free_port().await;
+        let script = ready_server_script();
+        let registry = Arc::new(ServiceRegistry::new());
+        registry.register(native_entry("probe-svc", port, format!("python3 {} {}", script.display(), port)));
+
+        let outcome = probe(&registry, "probe-svc", Duration::from_secs(20)).await;
+
+        assert_eq!(outcome, Probe::Ready { spawned: true, stopped: true });
+        assert!(port_released_within(port, 3000).await, "probe must leave the service stopped");
+        assert_eq!(registry.get("probe-svc").unwrap().tier, ActivationTier::Cold);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_probe_leaves_a_running_service_alone_and_records_no_use() {
+        let port = free_port().await;
+        let script = ready_server_script();
+        let mut server = tokio::process::Command::new("python3")
+            .args([script.to_str().unwrap(), &port.to_string()])
+            .spawn()
+            .unwrap();
+        for _ in 0..50 {
+            if crate::spawn::is_port_bound(port).await { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = native_entry("running-svc", port, "true".to_string());
+        entry.tier = ActivationTier::Warm;
+        registry.register(entry);
+
+        let outcome = probe(&registry, "running-svc", Duration::from_secs(5)).await;
+        let still_bound = crate::spawn::is_port_bound(port).await;
+        let _ = server.kill().await;
+
+        assert_eq!(outcome, Probe::Ready { spawned: false, stopped: false });
+        assert!(still_bound);
+        let svc = registry.get("running-svc").unwrap();
+        assert_eq!(svc.tier, ActivationTier::Warm, "a probe is not a request");
+        assert!(svc.last_request.is_none(), "a probe must not count as activity");
+    }
+
+    #[tokio::test]
+    async fn test_probe_unknown_service() {
+        let registry = Arc::new(ServiceRegistry::new());
+        assert_eq!(probe(&registry, "nope", Duration::from_secs(1)).await, Probe::NotRegistered);
+    }
+
+    #[test]
+    fn test_probe_keeps_a_service_that_real_traffic_reached_meanwhile() {
+        // The spawn itself records one request; any more came from real callers.
+        assert!(stop_after_probe(true, true, 1));
+        assert!(!stop_after_probe(true, true, 2), "real traffic arrived — keep it running");
+        assert!(!stop_after_probe(false, true, 1), "the probe did not start it");
+        assert!(!stop_after_probe(true, false, 1), "launchd (Auto) services are never stopped");
     }
 
     /// Option A: one spawn authority inside the shim too. While `ensure_ready`
