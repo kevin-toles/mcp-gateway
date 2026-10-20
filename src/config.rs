@@ -103,6 +103,11 @@ impl DeploymentMode {
     /// 2. If `/var/run/docker.sock` exists → `Docker`.
     /// 3. Otherwise → `Hybrid` (default).
     pub fn detect_from_env() -> Self {
+        Self::detect_with_sock(Path::new(DOCKER_SOCK))
+    }
+
+    /// [`Self::detect_from_env`] with the Docker socket path injected (tests).
+    fn detect_with_sock(docker_sock: &Path) -> Self {
         // Check if DEPLOYMENT_MODE is explicitly set to a concrete (non-auto) value
         match std::env::var("DEPLOYMENT_MODE")
             .ok()
@@ -115,7 +120,7 @@ impl DeploymentMode {
         }
 
         // Probe for Docker environment
-        if Path::new("/var/run/docker.sock").exists() {
+        if docker_sock.exists() {
             DeploymentMode::Docker
         } else {
             DeploymentMode::Hybrid
@@ -135,15 +140,23 @@ impl DeploymentMode {
 /// - **Auto**: Resolved concrete mode's checks apply (POC_ROOT for Hybrid,
 ///   docker.sock for Docker).
 pub fn validate_config(mode: &DeploymentMode) -> Result<(), String> {
+    validate_config_with_sock(mode, Path::new(DOCKER_SOCK))
+}
+
+/// Docker socket probed for `Docker` / `Auto` deployment detection.
+const DOCKER_SOCK: &str = "/var/run/docker.sock";
+
+/// [`validate_config`] with the Docker socket path injected (tests).
+fn validate_config_with_sock(mode: &DeploymentMode, docker_sock: &Path) -> Result<(), String> {
     // Resolve Auto before validating
     let concrete = match mode {
-        DeploymentMode::Auto => DeploymentMode::detect_from_env(),
+        DeploymentMode::Auto => DeploymentMode::detect_with_sock(docker_sock),
         other => other.clone(),
     };
 
     match concrete {
         DeploymentMode::Docker => {
-            if !Path::new("/var/run/docker.sock").exists() {
+            if !docker_sock.exists() {
                 return Err("Docker mode requires /var/run/docker.sock".to_string());
             }
         }
@@ -294,9 +307,23 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_as_deployment_str_auto_resolves() {
-        // Auto resolves; on this machine docker.sock exists → Docker
+        // Auto resolves to whatever the environment probe detects.
         unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-        assert_eq!(DeploymentMode::Auto.as_deployment_str(), "docker");
+        assert_eq!(
+            DeploymentMode::Auto.as_deployment_str(),
+            DeploymentMode::detect_from_env().as_deployment_str()
+        );
+    }
+
+    /// A socket path that exists / does not — tests never depend on whether
+    /// Docker Desktop is running on the machine.
+    fn present_sock() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join("hwc-test-docker.sock");
+        std::fs::write(&p, b"").unwrap();
+        p
+    }
+    fn absent_sock() -> std::path::PathBuf {
+        std::env::temp_dir().join("hwc-test-no-docker.sock-absent")
     }
 
     // ── validate_config tests ────────────────────────────────────────────
@@ -331,24 +358,26 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_validate_config_auto_no_poc_root() {
-        // Auto → detect_from_env → docker.sock exists → Docker → no POC_ROOT check
-        // So this should succeed (Docker mode doesn't check POC_ROOT)
+        // Auto + docker.sock present → Docker → no POC_ROOT check;
+        // Auto + no docker.sock → Hybrid → POC_ROOT required.
         unsafe {
             std::env::remove_var("DEPLOYMENT_MODE");
             std::env::remove_var("POC_ROOT");
         }
-        assert!(validate_config(&DeploymentMode::Auto).is_ok());
+        assert!(validate_config_with_sock(&DeploymentMode::Auto, &present_sock()).is_ok());
+        assert!(validate_config_with_sock(&DeploymentMode::Auto, &absent_sock()).unwrap_err().contains("POC_ROOT"));
     }
 
     #[test]
     #[serial_test::serial]
     fn test_validate_config_docker_succeeds() {
-        // Docker mode checks docker.sock only (exists on this machine)
+        // Docker mode checks docker.sock only.
         unsafe {
             std::env::remove_var("POC_ROOT");
             std::env::remove_var("DEPLOYMENT_MODE");
         }
-        assert!(validate_config(&DeploymentMode::Docker).is_ok());
+        assert!(validate_config_with_sock(&DeploymentMode::Docker, &present_sock()).is_ok());
+        assert!(validate_config_with_sock(&DeploymentMode::Docker, &absent_sock()).unwrap_err().contains("docker.sock"));
     }
 
     // ── detect_from_env tests (sequential env var) ──────────────────────
@@ -380,17 +409,19 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_from_env_auto_falls_back() {
-        // Auto env → falls through to docker.sock probe → Docker (exists on this machine)
+        // Auto env → falls through to the docker.sock probe.
         unsafe { std::env::set_var("DEPLOYMENT_MODE", "auto"); }
-        assert_eq!(DeploymentMode::detect_from_env(), DeploymentMode::Docker);
+        assert_eq!(DeploymentMode::detect_with_sock(&present_sock()), DeploymentMode::Docker);
+        assert_eq!(DeploymentMode::detect_with_sock(&absent_sock()), DeploymentMode::Hybrid);
         unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
     }
 
     #[test]
     #[serial_test::serial]
     fn test_detect_from_env_no_env_falls_back() {
-        // No env → docker.sock probe → Docker (exists on this machine)
+        // No env → docker.sock probe.
         unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-        assert_eq!(DeploymentMode::detect_from_env(), DeploymentMode::Docker);
+        assert_eq!(DeploymentMode::detect_with_sock(&present_sock()), DeploymentMode::Docker);
+        assert_eq!(DeploymentMode::detect_with_sock(&absent_sock()), DeploymentMode::Hybrid);
     }
 }
