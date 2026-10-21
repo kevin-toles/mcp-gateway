@@ -458,7 +458,10 @@ pub fn status_snapshot(registry: &ServiceRegistry) -> serde_json::Value {
             "health_checks_passed": entry.health_checks_passed,
         }));
     }
-    serde_json::json!({ "services": services })
+    let deployment = crate::config::resolved().map(|r| {
+        serde_json::json!({ "mode": r.mode.as_deployment_str(), "source": r.source })
+    });
+    serde_json::json!({ "services": services, "deployment": deployment })
 }
 
 /// Default `?wait=true` deadline: covers measured cold starts (~100 s under load).
@@ -557,6 +560,17 @@ mod status_tests {
         assert_eq!(svc["circuit_open"], false);
         assert_eq!(svc["last_transition"], "Boot→Warm (scan-found-ready)");
         assert!(svc["last_transition_elapsed_secs"].is_number());
+    }
+
+    #[test]
+    fn status_snapshot_exposes_the_resolved_deployment_mode() {
+        // The only test that records a resolution (process-wide, write-once).
+        crate::config::record(crate::config::Resolution {
+            mode: crate::config::DeploymentMode::Hybrid,
+            source: crate::config::ModeSource::Configured,
+        });
+        let snap = status_snapshot(&ServiceRegistry::new());
+        assert_eq!(snap["deployment"], serde_json::json!({"mode": "hybrid", "source": "configured"}));
     }
 
     #[test]

@@ -269,6 +269,17 @@ fn spawn_lock(service: &str) -> Arc<tokio::sync::Mutex<()>> {
     Arc::clone(map.entry(service.to_string()).or_default())
 }
 
+/// At least this many failing services, and more than half of those checked,
+/// means a shared outage rather than independent failures.
+pub const SHARED_OUTAGE_MIN_FAILING: usize = 3;
+
+/// Upper bound for one health probe in the health monitor.
+pub const HEALTH_PROBE_TIMEOUT_SECS: u64 = 5;
+
+fn is_shared_outage(failing: usize, checked: usize) -> bool {
+    failing >= SHARED_OUTAGE_MIN_FAILING && failing * 2 > checked
+}
+
 /// A service is in use when real activity arrived within its Hot idle timeout.
 fn in_use(entry: &crate::registry::ServiceEntry) -> bool {
     entry
@@ -485,17 +496,47 @@ pub(crate) async fn health_failure_pass(
 ) {
     let mut failed_this_cycle: Vec<String> = Vec::new();
 
+    // Phase 1: probe every service before acting on any of them. Each probe is
+    // bounded: a wedged service (accepts, never answers) must not stall the pass.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_default();
+    let mut probed = Vec::new();
     for entry in registry.all() {
-
         let health_port = if entry.health_port > 0 { entry.health_port } else { entry.port };
         let health_url = format!(
             "http://localhost:{}{}",
             health_port, entry.health_path
         );
-        let is_healthy = reqwest::get(&health_url)
+        let is_healthy = client
+            .get(&health_url)
+            .send()
             .await
             .map(|r| r.status().is_success())
             .unwrap_or(false);
+        probed.push((entry, is_healthy));
+    }
+
+    // Fleet-wide guard: when most services fail together the cause is shared
+    // (network, disk, a common dependency) — stopping or respawning them would
+    // only widen the outage. Failures are still counted; no action is taken.
+    let checked: Vec<bool> = probed
+        .iter()
+        .filter(|(e, healthy)| *healthy || !(down_is_expected(e) || spawn_in_flight(&e.name)))
+        .map(|(_, healthy)| *healthy)
+        .collect();
+    let shared_outage = is_shared_outage(checked.iter().filter(|h| !**h).count(), checked.len());
+    if shared_outage {
+        tracing::error!(
+            failing = checked.iter().filter(|h| !**h).count(),
+            checked = checked.len(),
+            "health_failure_monitor: shared outage suspected — no stop/respawn this pass"
+        );
+    }
+
+    // Phase 2: count failures and act per service.
+    for (entry, is_healthy) in probed {
 
         // Every service is checked; a Cold Native service was stopped on
         // purpose, so being down is its expected state — not an outage to
@@ -559,6 +600,10 @@ pub(crate) async fn health_failure_pass(
                 failure_count = current.failure_count,
                 "health_failure_monitor: KeepAlive service unhealthy — launchd is restart authority"
             );
+            continue;
+        }
+
+        if shared_outage {
             continue;
         }
 
@@ -2126,6 +2171,76 @@ mod tests {
         assert!(!marker.exists(), "an unused service must not be respawned by the monitor");
         assert_eq!(registry.get("unused-svc").unwrap().tier, ActivationTier::Cold);
         assert!(released, "the wedged listener must be stopped to free its memory");
+    }
+
+    fn failing_unused_entry(name: &str, port: u16) -> ServiceEntry {
+        let mut entry = native_entry(name, port, "true".to_string());
+        entry.tier = ActivationTier::Warm;
+        entry.last_request = Instant::now().checked_sub(Duration::from_secs(3600));
+        entry.failure_count = HEALTH_FAILURE_RESPAWN_THRESHOLD;
+        entry.first_failure_at = Instant::now().checked_sub(Duration::from_secs(FAILURE_DURATION_GATE_SECS + 60));
+        entry
+    }
+
+    /// Fleet-wide guard (2026-10-20; cf. OpenAI "Scaling Kubernetes to 2,500 nodes":
+    /// an etcd limit failed every node's health check and the autoscaler terminated
+    /// all workers). When most services fail in the same pass the cause is shared —
+    /// the monitor keeps counting but stops/respawns nothing.
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_takes_no_action_during_a_shared_outage() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut listeners = Vec::new();
+        for i in 0..4 {
+            let (port, child) = spawn_listener().await; // bound, never answers HTTP
+            registry.register(failing_unused_entry(&format!("outage-{i}"), port));
+            listeners.push((port, child));
+        }
+
+        health_failure_pass(&registry, "hybrid", false).await;
+
+        for (i, (port, mut child)) in listeners.into_iter().enumerate() {
+            let still_bound = crate::spawn::is_port_bound(port).await;
+            let _ = child.kill().await;
+            assert!(still_bound, "outage-{i} must not be stopped during a shared outage");
+            assert_eq!(registry.get(&format!("outage-{i}")).unwrap().tier, ActivationTier::Warm);
+        }
+    }
+
+    /// Below the threshold, failures are local and acted on as before.
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_still_acts_on_an_isolated_failure() {
+        let registry = Arc::new(ServiceRegistry::new());
+        let script = ready_server_script();
+        let mut servers = Vec::new();
+        for i in 0..3 {
+            let port = free_port().await;
+            let server = tokio::process::Command::new("python3")
+                .args([script.to_str().unwrap(), &port.to_string()])
+                .spawn()
+                .unwrap();
+            for _ in 0..50 {
+                if crate::spawn::is_port_bound(port).await { break; }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let mut healthy = native_entry(&format!("ok-{i}"), port, "true".to_string());
+            healthy.tier = ActivationTier::Warm;
+            registry.register(healthy);
+            servers.push(server);
+        }
+        let (port, mut child) = spawn_listener().await;
+        registry.register(failing_unused_entry("isolated", port));
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let released = port_released_within(port, 3000).await;
+        let _ = child.kill().await;
+        for mut server in servers {
+            let _ = server.kill().await;
+        }
+
+        assert!(released, "an isolated unused failure is still stopped");
+        assert_eq!(registry.get("isolated").unwrap().tier, ActivationTier::Cold);
     }
 
     /// A service in active use (activity within its Hot timeout) that dies is an

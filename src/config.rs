@@ -1,427 +1,284 @@
 // config.rs
-// Deployment mode detection and configuration validation for the mcp-gateway shim.
+// Deployment mode resolution and configuration validation for the lifecycle shim.
 //
-// Supports four modes:
-//   - Docker:   Everything runs in containers. Python gateway managed by Docker.
-//               Validation checks /var/run/docker.sock exists.
-//   - Hybrid:   Infrastructure in Docker, services run natively (default).
-//               Validation checks POC_ROOT env var is set.
-//   - Native:   Everything runs natively.
-//               Validation checks POC_ROOT env var is set.
-//   - Auto:     Auto-detect Docker vs local. Detects Docker by checking
-//               /var/run/docker.sock; falls back to Hybrid.
+// `DEPLOYMENT_MODE` is required (twelve-factor config, fail fast):
+//   - docker | hybrid | native  → used as configured.
+//   - auto                      → opt-in detection: Docker if the Docker API answers a
+//                                 ping, otherwise Hybrid. The result and how it was
+//                                 decided are logged and exposed in `/status`.
+//   - unset / empty / unknown   → startup error (no silent default).
+//
+// The decision logic is pure (`resolve_mode`, `validate`); the shell (`load`) reads the
+// environment and pings the Docker API. The ping is a startup check only — it is never
+// part of the health/respawn path (a dependency check there causes restart cascades).
 
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::str::FromStr;
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use serde::Serialize;
 
-/// Deployment mode for the mcp-gateway shim.
-///
-/// Determines how the shim discovers and manages the Python gateway process:
-/// - `Docker`: Gateway is managed by Docker (always running), shim should NOT
-///   attempt to spawn it.
-/// - `Hybrid`: Gateway is spawned natively. Infrastructure runs in Docker.
-/// - `Native`: Everything runs natively.
-/// - `Auto`:   Auto-detect based on environment (Docker if /var/run/docker.sock
-///             exists, otherwise Hybrid).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// Docker API socket pinged for `docker` / `auto` modes.
+pub const DOCKER_SOCK: &str = "/var/run/docker.sock";
+/// Upper bound for the startup Docker API ping.
+pub const DOCKER_PING_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How the shim runs and manages the Python gateway process:
+/// - `Docker`: gateway managed by Docker; the shim does not spawn it.
+/// - `Hybrid`: services spawned natively; infrastructure runs in Docker.
+/// - `Native`: everything runs natively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum DeploymentMode {
     Docker,
     Hybrid,
     Native,
-    Auto,
 }
 
 impl std::fmt::Display for DeploymentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DeploymentMode::Docker => write!(f, "docker"),
-            DeploymentMode::Hybrid => write!(f, "hybrid"),
-            DeploymentMode::Native => write!(f, "native"),
-            DeploymentMode::Auto => write!(f, "auto"),
-        }
-    }
-}
-
-impl FromStr for DeploymentMode {
-    type Err = String;
-
-    /// Parse a deployment mode string (case-insensitive).
-    ///
-    /// Accepts: `"docker"`, `"hybrid"`, `"native"`, `"auto"`.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "docker" => Ok(DeploymentMode::Docker),
-            "hybrid" => Ok(DeploymentMode::Hybrid),
-            "native" => Ok(DeploymentMode::Native),
-            "auto" => Ok(DeploymentMode::Auto),
-            other => Err(format!(
-                "unknown deployment mode '{}': expected one of docker, hybrid, native, auto",
-                other
-            )),
-        }
+        f.write_str(self.as_deployment_str())
     }
 }
 
 impl DeploymentMode {
-    /// Detect deployment mode from the `DEPLOYMENT_MODE` environment variable.
-    ///
-    /// Defaults to `Hybrid` when the env var is unset or empty.
-    /// Acceptable values (case-insensitive): `"docker"`, `"hybrid"`, `"native"`, `"auto"`.
-    pub fn from_env() -> Self {
-        match std::env::var("DEPLOYMENT_MODE")
-            .ok()
-            .as_deref()
-        {
-            Some("docker") => DeploymentMode::Docker,
-            Some("hybrid") => DeploymentMode::Hybrid,
-            Some("native") => DeploymentMode::Native,
-            Some("auto") => DeploymentMode::Auto,
-            _ => DeploymentMode::Hybrid, // default
-        }
-    }
-
-    /// Return the concrete `ServiceRuntime` string for `Auto` resolution.
-    ///
-    /// This maps `DeploymentMode` back to the string that `spawn::resolve_runtime`
-    /// expects: `"docker"`, `"hybrid"`, or `"native"`.
-    ///
-    /// For `Auto`, this resolves to the detected mode's string.
+    /// The string `spawn::resolve_runtime` expects: `docker`, `hybrid` or `native`.
     pub fn as_deployment_str(&self) -> &'static str {
         match self {
             DeploymentMode::Docker => "docker",
             DeploymentMode::Hybrid => "hybrid",
             DeploymentMode::Native => "native",
-            DeploymentMode::Auto => Self::detect_from_env().as_deployment_str(),
-        }
-    }
-
-    /// Resolve `Auto` to a concrete mode by probing the environment.
-    ///
-    /// Detection logic:
-    /// 1. If `DEPLOYMENT_MODE` is explicitly set to a concrete value, use it.
-    /// 2. If `/var/run/docker.sock` exists → `Docker`.
-    /// 3. Otherwise → `Hybrid` (default).
-    pub fn detect_from_env() -> Self {
-        Self::detect_with_sock(Path::new(DOCKER_SOCK))
-    }
-
-    /// [`Self::detect_from_env`] with the Docker socket path injected (tests).
-    fn detect_with_sock(docker_sock: &Path) -> Self {
-        // Check if DEPLOYMENT_MODE is explicitly set to a concrete (non-auto) value
-        match std::env::var("DEPLOYMENT_MODE")
-            .ok()
-            .as_deref()
-        {
-            Some("docker") => return DeploymentMode::Docker,
-            Some("hybrid") => return DeploymentMode::Hybrid,
-            Some("native") => return DeploymentMode::Native,
-            _ => {}
-        }
-
-        // Probe for Docker environment
-        if docker_sock.exists() {
-            DeploymentMode::Docker
-        } else {
-            DeploymentMode::Hybrid
         }
     }
 }
 
-/// Validate the environment is consistent with the detected deployment mode.
-///
-/// Returns `Ok(())` if validation passes, or `Err(String)` with a description
-/// of what's missing or misconfigured.
-///
-/// # Checks
-///
-/// - **Docker**: `/var/run/docker.sock` must exist.
-/// - **Hybrid / Native**: `POC_ROOT` environment variable must be set.
-/// - **Auto**: Resolved concrete mode's checks apply (POC_ROOT for Hybrid,
-///   docker.sock for Docker).
-pub fn validate_config(mode: &DeploymentMode) -> Result<(), String> {
-    validate_config_with_sock(mode, Path::new(DOCKER_SOCK))
+/// Whether the mode was configured explicitly or detected (`DEPLOYMENT_MODE=auto`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeSource {
+    Configured,
+    AutoDetected,
 }
 
-/// Docker socket probed for `Docker` / `Auto` deployment detection.
-const DOCKER_SOCK: &str = "/var/run/docker.sock";
+/// The resolved deployment mode and how it was decided.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Resolution {
+    pub mode: DeploymentMode,
+    pub source: ModeSource,
+}
 
-/// [`validate_config`] with the Docker socket path injected (tests).
-fn validate_config_with_sock(mode: &DeploymentMode, docker_sock: &Path) -> Result<(), String> {
-    // Resolve Auto before validating
-    let concrete = match mode {
-        DeploymentMode::Auto => DeploymentMode::detect_with_sock(docker_sock),
-        other => other.clone(),
+/// Resolve `DEPLOYMENT_MODE` (pure). `docker_reachable` is called only for `auto`.
+///
+/// # Errors
+///
+/// Unset, empty or unknown values — there is no silent default.
+pub fn resolve_mode(
+    configured: Option<&str>,
+    docker_reachable: impl FnOnce() -> bool,
+) -> Result<Resolution, String> {
+    let value = configured.map(str::trim).filter(|v| !v.is_empty()).ok_or_else(|| {
+        "DEPLOYMENT_MODE is not set: expected one of docker, hybrid, native, auto".to_string()
+    })?;
+    let configured_mode = |mode| Ok(Resolution { mode, source: ModeSource::Configured });
+    match value.to_ascii_lowercase().as_str() {
+        "docker" => configured_mode(DeploymentMode::Docker),
+        "hybrid" => configured_mode(DeploymentMode::Hybrid),
+        "native" => configured_mode(DeploymentMode::Native),
+        "auto" => Ok(Resolution {
+            mode: if docker_reachable() { DeploymentMode::Docker } else { DeploymentMode::Hybrid },
+            source: ModeSource::AutoDetected,
+        }),
+        other => Err(format!(
+            "unknown DEPLOYMENT_MODE '{other}': expected one of docker, hybrid, native, auto"
+        )),
+    }
+}
+
+/// Check what `mode` actually needs (pure).
+///
+/// # Errors
+///
+/// Docker without a reachable Docker API; Hybrid/Native without `POC_ROOT`.
+pub fn validate(mode: &DeploymentMode, docker_reachable: bool, poc_root: Option<&str>) -> Result<(), String> {
+    match mode {
+        DeploymentMode::Docker if !docker_reachable => Err(format!(
+            "docker mode requires the Docker API, but {DOCKER_SOCK} did not answer a ping"
+        )),
+        DeploymentMode::Hybrid | DeploymentMode::Native if poc_root.is_none_or(str::is_empty) => {
+            Err("POC_ROOT env var required in hybrid/native mode".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `GET /_ping` over the Docker socket; true only for an HTTP 200 within `timeout`.
+pub fn docker_api_reachable(sock: &Path, timeout: Duration) -> bool {
+    let ping = || -> std::io::Result<bool> {
+        let mut stream = UnixStream::connect(sock)?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
+        stream.write_all(b"GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")?;
+        let mut buf = [0u8; 64];
+        let n = stream.read(&mut buf)?;
+        let status_line = String::from_utf8_lossy(&buf[..n]);
+        Ok(status_line.starts_with("HTTP/1.") && status_line.split_whitespace().nth(1) == Some("200"))
     };
+    ping().unwrap_or(false)
+}
 
-    match concrete {
-        DeploymentMode::Docker => {
-            if !docker_sock.exists() {
-                return Err("Docker mode requires /var/run/docker.sock".to_string());
-            }
-        }
-        DeploymentMode::Hybrid | DeploymentMode::Native => {
-            if std::env::var("POC_ROOT").is_err() {
-                return Err("POC_ROOT env var required in hybrid/native mode".to_string());
-            }
-        }
-        DeploymentMode::Auto => {
-            // Should not reach here since Auto is resolved above
-            unreachable!("Auto mode should have been resolved before validation");
-        }
-    }
-    Ok(())
+/// Shell: read the environment, ping Docker only when the mode needs it, validate.
+///
+/// # Errors
+///
+/// Any `resolve_mode` / `validate` error.
+pub fn load() -> Result<Resolution, String> {
+    let ping = || docker_api_reachable(Path::new(DOCKER_SOCK), DOCKER_PING_TIMEOUT);
+    let resolution = resolve_mode(std::env::var("DEPLOYMENT_MODE").ok().as_deref(), ping)?;
+    // Auto only resolves to Docker after a successful ping; a configured Docker mode is pinged now.
+    let docker_reachable = match (&resolution.mode, resolution.source) {
+        (DeploymentMode::Docker, ModeSource::AutoDetected) => true,
+        (DeploymentMode::Docker, ModeSource::Configured) => ping(),
+        _ => false,
+    };
+    validate(&resolution.mode, docker_reachable, std::env::var("POC_ROOT").ok().as_deref())?;
+    Ok(resolution)
+}
+
+static RESOLVED: OnceLock<Resolution> = OnceLock::new();
+
+/// Record the startup resolution (first call wins) so `/status` can expose it.
+pub fn record(resolution: Resolution) {
+    let _ = RESOLVED.set(resolution);
+}
+
+/// The resolution recorded at startup, if any.
+pub fn resolved() -> Option<&'static Resolution> {
+    RESOLVED.get()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
 
-    // ── Display tests (no env races) ─────────────────────────────────────
+    fn never_probed() -> bool {
+        panic!("the Docker probe must only run for DEPLOYMENT_MODE=auto")
+    }
+
+    // ── resolve_mode: explicit by default, fail fast, `auto` opt-in ──────
 
     #[test]
-    fn test_display_docker() {
-        assert_eq!(format!("{}", DeploymentMode::Docker), "docker");
+    fn unset_or_empty_mode_fails_fast() {
+        for configured in [None, Some(""), Some("  ")] {
+            let err = resolve_mode(configured, never_probed).unwrap_err();
+            assert!(err.contains("DEPLOYMENT_MODE"), "{err}");
+        }
     }
 
     #[test]
-    fn test_display_hybrid() {
-        assert_eq!(format!("{}", DeploymentMode::Hybrid), "hybrid");
+    fn invalid_mode_fails_fast_instead_of_defaulting() {
+        let err = resolve_mode(Some("dokcer"), never_probed).unwrap_err();
+        assert!(err.contains("dokcer") && err.contains("docker, hybrid, native, auto"), "{err}");
     }
 
     #[test]
-    fn test_display_native() {
-        assert_eq!(format!("{}", DeploymentMode::Native), "native");
+    fn explicit_modes_resolve_without_probing_docker() {
+        for (raw, mode) in [
+            ("docker", DeploymentMode::Docker),
+            ("hybrid", DeploymentMode::Hybrid),
+            ("NATIVE", DeploymentMode::Native),
+        ] {
+            assert_eq!(
+                resolve_mode(Some(raw), never_probed).unwrap(),
+                Resolution { mode, source: ModeSource::Configured }
+            );
+        }
     }
 
     #[test]
-    fn test_display_auto() {
-        assert_eq!(format!("{}", DeploymentMode::Auto), "auto");
-    }
-
-    // ── FromStr tests (no env races) ─────────────────────────────────────
-
-    #[test]
-    fn test_from_str_docker() {
-        assert_eq!("docker".parse::<DeploymentMode>().unwrap(), DeploymentMode::Docker);
-    }
-
-    #[test]
-    fn test_from_str_hybrid() {
-        assert_eq!("hybrid".parse::<DeploymentMode>().unwrap(), DeploymentMode::Hybrid);
-    }
-
-    #[test]
-    fn test_from_str_native() {
-        assert_eq!("native".parse::<DeploymentMode>().unwrap(), DeploymentMode::Native);
-    }
-
-    #[test]
-    fn test_from_str_auto() {
-        assert_eq!("auto".parse::<DeploymentMode>().unwrap(), DeploymentMode::Auto);
-    }
-
-    #[test]
-    fn test_from_str_case_insensitive() {
-        assert_eq!("DOCKER".parse::<DeploymentMode>().unwrap(), DeploymentMode::Docker);
-        assert_eq!("Hybrid".parse::<DeploymentMode>().unwrap(), DeploymentMode::Hybrid);
-        assert_eq!("NATIVE".parse::<DeploymentMode>().unwrap(), DeploymentMode::Native);
-        assert_eq!("AuTo".parse::<DeploymentMode>().unwrap(), DeploymentMode::Auto);
-    }
-
-    #[test]
-    fn test_from_str_invalid() {
-        let result = "unknown".parse::<DeploymentMode>();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown deployment mode"));
-    }
-
-    #[test]
-    fn test_from_str_empty() {
-        let result = "".parse::<DeploymentMode>();
-        assert!(result.is_err());
-    }
-
-    // ── Env-dependent tests ──────────────────────────────────────────────
-    // These mutate global env vars and must run sequentially (serial_test).
-
-    #[test]
-    #[serial_test::serial]
-    fn test_from_env_default_to_hybrid() {
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-        assert_eq!(DeploymentMode::from_env(), DeploymentMode::Hybrid);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_from_env_docker() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "docker"); }
-        assert_eq!(DeploymentMode::from_env(), DeploymentMode::Docker);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_from_env_hybrid() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "hybrid"); }
-        assert_eq!(DeploymentMode::from_env(), DeploymentMode::Hybrid);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_from_env_native() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "native"); }
-        assert_eq!(DeploymentMode::from_env(), DeploymentMode::Native);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_from_env_auto() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "auto"); }
-        assert_eq!(DeploymentMode::from_env(), DeploymentMode::Auto);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_as_deployment_str_docker() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "docker"); }
-        assert_eq!(DeploymentMode::Docker.as_deployment_str(), "docker");
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_as_deployment_str_hybrid() {
-        assert_eq!(DeploymentMode::Hybrid.as_deployment_str(), "hybrid");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_as_deployment_str_native() {
-        assert_eq!(DeploymentMode::Native.as_deployment_str(), "native");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_as_deployment_str_auto_resolves() {
-        // Auto resolves to whatever the environment probe detects.
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
+    fn auto_is_opt_in_and_uses_the_docker_probe() {
         assert_eq!(
-            DeploymentMode::Auto.as_deployment_str(),
-            DeploymentMode::detect_from_env().as_deployment_str()
+            resolve_mode(Some("auto"), || true).unwrap(),
+            Resolution { mode: DeploymentMode::Docker, source: ModeSource::AutoDetected }
+        );
+        assert_eq!(
+            resolve_mode(Some("auto"), || false).unwrap(),
+            Resolution { mode: DeploymentMode::Hybrid, source: ModeSource::AutoDetected }
         );
     }
 
-    /// A socket path that exists / does not — tests never depend on whether
-    /// Docker Desktop is running on the machine.
-    fn present_sock() -> std::path::PathBuf {
-        let p = std::env::temp_dir().join("hwc-test-docker.sock");
-        std::fs::write(&p, b"").unwrap();
-        p
-    }
-    fn absent_sock() -> std::path::PathBuf {
-        std::env::temp_dir().join("hwc-test-no-docker.sock-absent")
-    }
-
-    // ── validate_config tests ────────────────────────────────────────────
+    // ── validate: what each mode actually needs ─────────────────────────
 
     #[test]
-    #[serial_test::serial]
-    fn test_validate_config_fails_without_poc_root_in_hybrid() {
-        unsafe { std::env::remove_var("POC_ROOT"); }
-        let result = validate_config(&DeploymentMode::Hybrid);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("POC_ROOT"));
+    fn docker_mode_requires_a_reachable_docker_api() {
+        assert!(validate(&DeploymentMode::Docker, true, None).is_ok());
+        let err = validate(&DeploymentMode::Docker, false, None).unwrap_err();
+        assert!(err.contains("Docker API"), "{err}");
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_validate_config_fails_without_poc_root_in_native() {
-        unsafe { std::env::remove_var("POC_ROOT"); }
-        let result = validate_config(&DeploymentMode::Native);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("POC_ROOT"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_config_succeeds_with_poc_root_in_hybrid() {
-        unsafe { std::env::set_var("POC_ROOT", "/tmp"); }
-        let result = validate_config(&DeploymentMode::Hybrid);
-        assert!(result.is_ok());
-        unsafe { std::env::remove_var("POC_ROOT"); }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_config_auto_no_poc_root() {
-        // Auto + docker.sock present → Docker → no POC_ROOT check;
-        // Auto + no docker.sock → Hybrid → POC_ROOT required.
-        unsafe {
-            std::env::remove_var("DEPLOYMENT_MODE");
-            std::env::remove_var("POC_ROOT");
+    fn hybrid_and_native_require_poc_root() {
+        for mode in [DeploymentMode::Hybrid, DeploymentMode::Native] {
+            assert!(validate(&mode, false, Some("/tmp")).is_ok());
+            assert!(validate(&mode, false, None).unwrap_err().contains("POC_ROOT"));
+            assert!(validate(&mode, false, Some("")).unwrap_err().contains("POC_ROOT"));
         }
-        assert!(validate_config_with_sock(&DeploymentMode::Auto, &present_sock()).is_ok());
-        assert!(validate_config_with_sock(&DeploymentMode::Auto, &absent_sock()).unwrap_err().contains("POC_ROOT"));
+    }
+
+    // ── docker_api_reachable: a real ping, not a file-exists check ──────
+
+    fn fake_docker(reply: Option<&'static [u8]>) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("hwc-fake-docker-{}-{}.sock", std::process::id(), reply.map_or(0, <[u8]>::len)));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf);
+                match reply {
+                    Some(bytes) => { let _ = stream.write_all(bytes); }
+                    None => std::thread::sleep(Duration::from_secs(5)), // accepts, never answers
+                }
+            }
+        });
+        path
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_validate_config_docker_succeeds() {
-        // Docker mode checks docker.sock only.
-        unsafe {
-            std::env::remove_var("POC_ROOT");
-            std::env::remove_var("DEPLOYMENT_MODE");
-        }
-        assert!(validate_config_with_sock(&DeploymentMode::Docker, &present_sock()).is_ok());
-        assert!(validate_config_with_sock(&DeploymentMode::Docker, &absent_sock()).unwrap_err().contains("docker.sock"));
-    }
-
-    // ── detect_from_env tests (sequential env var) ──────────────────────
-
-    #[test]
-    #[serial_test::serial]
-    fn test_detect_from_env_explicit_docker() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "docker"); }
-        assert_eq!(DeploymentMode::detect_from_env(), DeploymentMode::Docker);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
+    fn docker_ping_ok_is_reachable() {
+        let sock = fake_docker(Some(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"));
+        assert!(docker_api_reachable(&sock, Duration::from_secs(2)));
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_detect_from_env_explicit_hybrid() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "hybrid"); }
-        assert_eq!(DeploymentMode::detect_from_env(), DeploymentMode::Hybrid);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
+    fn missing_socket_is_unreachable() {
+        assert!(!docker_api_reachable(std::path::Path::new("/tmp/hwc-no-such-docker.sock"), Duration::from_secs(1)));
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_detect_from_env_explicit_native() {
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "native"); }
-        assert_eq!(DeploymentMode::detect_from_env(), DeploymentMode::Native);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
+    fn socket_that_never_answers_times_out_as_unreachable() {
+        let sock = fake_docker(None);
+        let started = std::time::Instant::now();
+        assert!(!docker_api_reachable(&sock, Duration::from_millis(300)));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_detect_from_env_auto_falls_back() {
-        // Auto env → falls through to the docker.sock probe.
-        unsafe { std::env::set_var("DEPLOYMENT_MODE", "auto"); }
-        assert_eq!(DeploymentMode::detect_with_sock(&present_sock()), DeploymentMode::Docker);
-        assert_eq!(DeploymentMode::detect_with_sock(&absent_sock()), DeploymentMode::Hybrid);
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
+    fn non_ok_ping_is_unreachable() {
+        let sock = fake_docker(Some(b"HTTP/1.1 500 Internal Server Error\r\n\r\n"));
+        assert!(!docker_api_reachable(&sock, Duration::from_secs(2)));
     }
 
+    // ── concrete-mode helpers ───────────────────────────────────────────
+
     #[test]
-    #[serial_test::serial]
-    fn test_detect_from_env_no_env_falls_back() {
-        // No env → docker.sock probe.
-        unsafe { std::env::remove_var("DEPLOYMENT_MODE"); }
-        assert_eq!(DeploymentMode::detect_with_sock(&present_sock()), DeploymentMode::Docker);
-        assert_eq!(DeploymentMode::detect_with_sock(&absent_sock()), DeploymentMode::Hybrid);
+    fn deployment_strings_match_spawn_resolve_runtime() {
+        assert_eq!(DeploymentMode::Docker.as_deployment_str(), "docker");
+        assert_eq!(DeploymentMode::Hybrid.as_deployment_str(), "hybrid");
+        assert_eq!(DeploymentMode::Native.as_deployment_str(), "native");
+        assert_eq!(DeploymentMode::Hybrid.to_string(), "hybrid");
     }
 }
