@@ -1493,7 +1493,7 @@ mod tests {
         let mut entry = make_entry("act-spawn-svc", entry_port, ActivationTier::Hot);
         entry.health_port = health_port;
         entry.runtime = ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
+            spawn_cmd: "/bin/sleep 120".to_string(), // outlives the 30 s health wait
             pid_file: None,
         };
         registry.register(entry);
@@ -1520,7 +1520,7 @@ mod tests {
         let registry = Arc::new(ServiceRegistry::new());
         let mut entry = make_entry("act-alive-svc", bound_port, ActivationTier::Hot);
         entry.runtime = ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
+            spawn_cmd: "/bin/sleep 120".to_string(), // a process that stays alive
             pid_file: None,
         };
         registry.register(entry);
@@ -1555,7 +1555,7 @@ mod tests {
         entry.health_path = "/health".to_string();
         entry.health_port = health_port;
         entry.runtime = ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
+            spawn_cmd: "/bin/sleep 120".to_string(), // a process that stays alive
             pid_file: None,
         };
         registry.register(entry);
@@ -1642,7 +1642,7 @@ mod tests {
         // Set a valid spawn command so spawn_native_process succeeds;
         // /bin/sleep 30 keeps the process alive during health poll timeout
         entry.runtime = ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
+            spawn_cmd: "/bin/sleep 120".to_string(), // outlives the 30 s health wait
             pid_file: None,
         };
         registry.register(entry);
@@ -1793,7 +1793,7 @@ mod tests {
         let registry = Arc::new(ServiceRegistry::new());
         let mut entry = make_entry("cb-open-svc", 29001, ActivationTier::Cold);
         entry.runtime = ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
+            spawn_cmd: "/bin/sleep 120".to_string(), // a process that stays alive
             pid_file: None,
         };
         entry.failure_count = 0;
@@ -1835,7 +1835,7 @@ mod tests {
         let registry = Arc::new(ServiceRegistry::new());
         let mut entry = make_entry("cb-halfopen-svc", 29002, ActivationTier::Cold);
         entry.runtime = ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
+            spawn_cmd: "/bin/sleep 120".to_string(), // a process that stays alive
             pid_file: None,
         };
         entry.failure_count = 12;
@@ -2382,6 +2382,54 @@ mod tests {
         assert_eq!(svc.failure_count, 0, "starting service is not failing");
         assert_eq!(svc.tier, ActivationTier::Hot, "starting service is not demoted");
         assert!(!marker.exists(), "monitor must not spawn while a spawn is in flight");
+    }
+
+    /// 2026-10-27: struct-analyzer's spawn died instantly (`sh: go: command not
+    /// found`, exit 127) but the shim waited the full health timeout, reported
+    /// `HealthTimeout`, and the MCP call hung. An early exit must be reported at
+    /// once, with the exit status and the spawn-log tail.
+    #[tokio::test]
+    #[serial]
+    async fn test_spawn_reports_an_early_exit_with_status_and_log_tail() {
+        let port = free_port().await;
+        let entry = native_entry(
+            "early-exit-svc",
+            port,
+            "sh -c 'echo early-exit-svc: missing-tool >&2; exit 127'".to_string(),
+        );
+        let started = std::time::Instant::now();
+        let err = crate::spawn::spawn_service(&entry, "hybrid").await.unwrap_err();
+
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        match err {
+            crate::spawn::SpawnError::ExitedEarly { code, log_tail } => {
+                assert_eq!(code, Some(127));
+                assert!(log_tail.contains("early-exit-svc: missing-tool"), "{log_tail}");
+            }
+            other => panic!("expected ExitedEarly, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ensure_ready_fails_fast_with_the_reason_when_the_spawn_dies() {
+        let port = free_port().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        registry.register(native_entry(
+            "dies-svc",
+            port,
+            "sh -c 'echo dies-svc: go: command not found >&2; exit 127'".to_string(),
+        ));
+        let started = std::time::Instant::now();
+        let outcome = ensure_ready(&registry, "dies-svc", Duration::from_secs(60)).await;
+
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        match outcome {
+            EnsureReady::SpawnFailed(detail) => {
+                assert!(detail.contains("127") && detail.contains("go: command not found"), "{detail}");
+            }
+            other => panic!("expected SpawnFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test]

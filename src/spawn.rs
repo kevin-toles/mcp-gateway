@@ -20,6 +20,13 @@ pub enum SpawnError {
     },
     /// Could not determine how to deploy this service (Auto + unknown mode)
     RuntimeUnresolved,
+    /// The spawned process exited before becoming healthy.
+    ExitedEarly {
+        /// Exit code (`None` when killed by a signal).
+        code: Option<i32>,
+        /// Last lines of `/tmp/spawn-<service>.log`.
+        log_tail: String,
+    },
 }
 
 impl PartialEq for SpawnError {
@@ -30,6 +37,7 @@ impl PartialEq for SpawnError {
             (SpawnError::DockerFailed(a), SpawnError::DockerFailed(b)) => a == b,
             (SpawnError::HealthTimeout { elapsed_secs: a }, SpawnError::HealthTimeout { elapsed_secs: b }) => a == b,
             (SpawnError::RuntimeUnresolved, SpawnError::RuntimeUnresolved) => true,
+            (SpawnError::ExitedEarly { code: a, .. }, SpawnError::ExitedEarly { code: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -45,6 +53,10 @@ impl std::fmt::Display for SpawnError {
                 write!(f, "health check timed out after {}s", elapsed_secs)
             }
             SpawnError::RuntimeUnresolved => write!(f, "could not resolve deployment runtime"),
+            SpawnError::ExitedEarly { code, log_tail } => {
+                let status = code.map_or_else(|| "a signal".to_string(), |c| format!("code {c}"));
+                write!(f, "process exited with {status} before becoming healthy; log tail:\n{log_tail}")
+            }
         }
     }
 }
@@ -90,12 +102,12 @@ async fn spawn_service_inner(entry: &ServiceEntry, deployment_mode: &str) -> Res
     // Step 3: Spawn based on resolved runtime
     match resolved {
         ServiceRuntime::Native { spawn_cmd, .. } => {
-            let child = spawn_native_process(&spawn_cmd, &entry.name)?;
+            let mut child = spawn_native_process(&spawn_cmd, &entry.name)?;
             let pid = child.id();
             let url = format!("http://127.0.0.1:{}{}", health_port, entry.health_path);
 
-            // Step 4: Poll health
-            poll_health(&url, Duration::from_secs(30), Duration::from_millis(500)).await?;
+            // Step 4: Poll health — failing fast if the process dies first.
+            poll_health_or_exit(&mut child, &entry.name, &url, Duration::from_secs(30)).await?;
 
             Ok(pid)
         }
@@ -148,6 +160,50 @@ pub async fn spawn_service_and_promote(
 /// the service isn't listening and can return immediately rather than waiting
 /// for the full timeout. This is critical for unit tests that test timeout
 /// behavior against unreachable ports.
+/// Where a service's spawn output goes (`/tmp/spawn-<service>.log`, appended).
+pub fn spawn_log_path(service: &str) -> std::path::PathBuf {
+    std::path::Path::new("/tmp").join(format!("spawn-{}.log", service.replace('/', "_")))
+}
+
+/// Last `lines` lines of a service's spawn log (empty if unreadable).
+fn spawn_log_tail(service: &str, lines: usize) -> String {
+    let text = std::fs::read_to_string(spawn_log_path(service)).unwrap_or_default();
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
+/// Poll `url` until healthy, but stop as soon as `child` exits: a spawn that
+/// dies (missing tool, crash on import) is reported at once with its exit
+/// status and log tail instead of after the full health timeout.
+async fn poll_health_or_exit(
+    child: &mut Child,
+    service: &str,
+    url: &str,
+    timeout: Duration,
+) -> Result<(), SpawnError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
+    let start = tokio::time::Instant::now();
+    let mut interval = Duration::from_millis(250);
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(SpawnError::ExitedEarly { code: status.code(), log_tail: spawn_log_tail(service, 20) });
+        }
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status().is_success() {
+                return Ok(());
+            }
+        }
+        if start.elapsed() >= timeout {
+            return Err(SpawnError::HealthTimeout { elapsed_secs: start.elapsed().as_secs() });
+        }
+        sleep(interval).await;
+        interval = std::cmp::min(interval * 2, Duration::from_millis(1600));
+    }
+}
+
 pub async fn poll_health(
     url: &str,
     timeout: Duration,
@@ -188,10 +244,9 @@ pub fn resolve_runtime(
 ) -> Result<ServiceRuntime, SpawnError> {
     match runtime {
         ServiceRuntime::Auto => match deployment_mode {
-            "hybrid" | "native" => Ok(ServiceRuntime::Native {
-                spawn_cmd: "/bin/sleep".to_string(),
-                pid_file: None,
-            }),
+            // launchd (KeepAlive) is the restart authority for Auto services;
+            // there is no spawn command to run natively.
+            "hybrid" | "native" => Err(SpawnError::RuntimeUnresolved),
             "docker" | "auto" => {
                 // For "auto", probe Docker availability. Since we're at the
                 // service level and the caller should have resolved "auto" by
@@ -266,7 +321,7 @@ fn spawn_native_process(spawn_cmd: &str, service: &str) -> Result<Child, SpawnEr
     let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
     // Per-service, appended: one shared truncated log hid every crash.
-    let log_path = std::path::Path::new("/tmp").join(format!("spawn-{}.log", service.replace('/', "_")));
+    let log_path = spawn_log_path(service);
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -375,20 +430,16 @@ mod tests {
 
     #[test]
     fn test_resolve_runtime_auto_hybrid() {
-        let result = resolve_runtime(&ServiceRuntime::Auto, "hybrid").unwrap();
-        assert_eq!(result, ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
-            pid_file: None,
-        });
+        // launchd (KeepAlive) owns Auto services; the shim never invents a spawn
+        // command for them (was a `/bin/sleep` placeholder).
+        assert_eq!(resolve_runtime(&ServiceRuntime::Auto, "hybrid"), Err(SpawnError::RuntimeUnresolved));
     }
 
     #[test]
     fn test_resolve_runtime_auto_native() {
-        let result = resolve_runtime(&ServiceRuntime::Auto, "native").unwrap();
-        assert_eq!(result, ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
-            pid_file: None,
-        });
+        // launchd (KeepAlive) owns Auto services; the shim never invents a spawn
+        // command for them (was a `/bin/sleep` placeholder).
+        assert_eq!(resolve_runtime(&ServiceRuntime::Auto, "native"), Err(SpawnError::RuntimeUnresolved));
     }
 
     #[test]
