@@ -1646,6 +1646,8 @@ class USSRingSearchInput(BaseModel):
     q: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="")
     mmr_strategy: str = Field(default="")
+    # ETDI-1.0 v0.22 BEH-11.08: se (default) | theory | all; "" leaves the service default (se).
+    scope: Literal["", "se", "theory", "all"] = Field(default="")
 
 
 class USSScientificSearchInput(BaseModel):

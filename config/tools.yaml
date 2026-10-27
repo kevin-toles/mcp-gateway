@@ -488,7 +488,7 @@ tools:
 
   - name: uss_ring_search
     description: "6-ring concentric search pipeline on unified-search-rs (:8081): Ring 0 (ANN primary hit) → Rings 1–5 (KF envelope, sibling, domain bridge, cross-collection, suggestion expansion) → RRF fusion → cascade enrichment → MMR re-rank → budget trim. Returns RingSearchResponse with per-ring provenance chains and cascade metadata. Higher recall than flat hybrid search."
-    when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6."
+    when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6. An SE search also returns an 'Underlying theory' section — the mathematics, statistics, control, queueing or other theory the hit is built on, each with the concept that connects it. Pass scope='theory' for a question that is itself about mathematics, statistics, physics, control, economics or other theory; scope='all' searches both and leads with the better match."
     tier: gold
     tags: [search, rag, uss-rs, ring]
 

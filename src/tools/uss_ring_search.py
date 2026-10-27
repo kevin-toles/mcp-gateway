@@ -9,6 +9,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         q: str,
         collection: str = "",
         mmr_strategy: str = "",
+        scope: str = "",
     ) -> dict:
         """[PENDING] 6-ring concentric search pipeline on unified-search-rs."""
         payload: dict = {"q": q}
@@ -16,6 +17,8 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             payload["collection"] = collection
         if mmr_strategy:
             payload["mmr_strategy"] = mmr_strategy
+        if scope:
+            payload["scope"] = scope
         result = await dispatcher.dispatch(TOOL_NAME, payload, method="GET")
         return sanitizer.sanitize(result.body)
     return uss_ring_search
