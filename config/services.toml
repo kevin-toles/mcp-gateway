@@ -103,9 +103,10 @@ spawn = "cd ${POC_ROOT}/context-management-service && (test -x .venv/bin/python 
 port = 8088
 tier = "cold"
 runtime = "native"
-# Rebuild only when sources changed (an unconditional `go build` took ~40s — longer
-# than the respawn health wait — so every on-demand start timed out, 2026-10-11).
-spawn = "cd ${POC_ROOT}/struct-analyzer-service && { test -x /tmp/struct-analyzer && test -z \"$(find cmd internal pkg go.mod go.sum -newer /tmp/struct-analyzer | head -1)\" || go build -o /tmp/struct-analyzer ./cmd/struct-analyzer; } && STRUCT_ANALYZER_PORT=:8088 exec /tmp/struct-analyzer serve"
+# Runs the prebuilt binary like every other service (venv / target/release): no
+# compiler at spawn. Rebuild after source changes:
+#   cd struct-analyzer-service && go build -o ./struct-analyzer ./cmd/struct-analyzer
+spawn = "cd ${POC_ROOT}/struct-analyzer-service && STRUCT_ANALYZER_PORT=:8088 exec ./struct-analyzer serve"
 
 # validation-service: rewritten from Python to Rust/axum. Binary reads PORT
 # env (defaults to 8090 — PORT=8091 is required).

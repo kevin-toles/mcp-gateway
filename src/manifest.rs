@@ -256,6 +256,29 @@ mod tests {
     }
 
     #[test]
+    fn spawn_commands_do_not_keep_binaries_in_tmp() {
+        // macOS periodically deletes /tmp files: struct-analyzer's /tmp binary
+        // vanished, forcing a rebuild the shim's PATH could not run (2026-10-27).
+        let m = parse(EMBEDDED_MANIFEST).unwrap();
+        for (name, svc) in &m.services {
+            assert!(!svc.spawn.contains("/tmp/"), "{name}: spawn must not use /tmp: {}", svc.spawn);
+        }
+    }
+
+    #[test]
+    fn spawn_commands_run_prebuilt_artifacts_without_compiling() {
+        // Every service starts a prebuilt artifact (venv, target/release, repo
+        // binary). Compiling at spawn needs a toolchain on the shim's launchd PATH
+        // and ~40 s per cold start — struct-analyzer failed on both (2026-10-27).
+        let m = parse(EMBEDDED_MANIFEST).unwrap();
+        for (name, svc) in &m.services {
+            for compiler in ["go build", "cargo build", "rustc ", "cmake ", "make "] {
+                assert!(!svc.spawn.contains(compiler), "{name}: spawn must not compile ({compiler}): {}", svc.spawn);
+            }
+        }
+    }
+
+    #[test]
     fn slow_start_services_declare_ready_path() {
         let m = embedded();
         // inference-service-cpp runs stock llama.cpp `llama-server` (run_native.sh):

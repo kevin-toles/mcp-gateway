@@ -216,6 +216,26 @@ def test_hwc_01_plist_matches_manifest(service: str):
     print(f"  ✓ {service}: plist agrees with manifest")
 
 
+SHIM_PLIST = LAUNCH_AGENTS / "com.kevintoles.mcp-gateway-shim.plist"
+
+
+@pytest.mark.integration
+def test_hwc_00c_spawn_toolchain_is_on_the_shim_path():
+    """Every build tool a spawn command invokes resolves on the shim's launchd PATH.
+
+    2026-10-27: struct-analyzer's binary had to be rebuilt, but the shim's PATH
+    lacked /opt/homebrew/bin — `sh: go: command not found` on every
+    request-driven start, so MCP struct-analyzer calls hung until timeout.
+    """
+    import shutil
+
+    env = plistlib.loads(SHIM_PLIST.read_bytes()).get("EnvironmentVariables", {})
+    shim_path = env.get("PATH", "")
+    tools = {"go"} if any("go build" in svc["spawn"] for svc in _load_manifest().values()) else set()
+    missing = [t for t in sorted(tools) if shutil.which(t, path=shim_path) is None]
+    assert not missing, f"not on the shim PATH ({shim_path}): {missing}"
+
+
 @pytest.mark.integration
 def test_hwc_00b_mcp_json_matches_manifest():
     """The Claude Code `ai-platform` MCP server must point to the mcp-gateway
