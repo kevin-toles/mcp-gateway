@@ -15,6 +15,7 @@ Usage:
 """
 
 import asyncio
+import json
 import os
 import time
 from datetime import datetime
@@ -234,6 +235,27 @@ def test_hwc_00c_spawn_toolchain_is_on_the_shim_path():
     tools = {"go"} if any("go build" in svc["spawn"] for svc in _load_manifest().values()) else set()
     missing = [t for t in sorted(tools) if shutil.which(t, path=shim_path) is None]
     assert not missing, f"not on the shim PATH ({shim_path}): {missing}"
+
+
+@pytest.mark.integration
+def test_hwc_00d_runner_probe_results_are_read_back(tmp_path, monkeypatch):
+    """The runner's probe results file is parsed; the last record per service wins.
+
+    2026-10-27: the first real run raised NameError (json not imported) in all
+    eight test_hwc_20 cases even though every probe had succeeded.
+    """
+    results = tmp_path / "hwc_probe_results.jsonl"
+    results.write_text(
+        '{"service":"amve","ready":false,"spawned":false,"stopped":false}\n'
+        "not json\n"
+        '{"service":"amve","ready":true,"spawned":true,"stopped":true}\n'
+    )
+    monkeypatch.setenv("HWC_PROBE_RESULTS", str(results))
+
+    assert runner_probe_result("amve") == {
+        "service": "amve", "ready": True, "spawned": True, "stopped": True,
+    }
+    assert runner_probe_result("audit-service") is None
 
 
 @pytest.mark.integration
