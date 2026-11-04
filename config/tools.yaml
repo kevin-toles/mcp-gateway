@@ -319,7 +319,7 @@ tools:
     tags: [struct-analyzer, architecture, messaging, async, broker]
 
   - name: sa_build_call_graph
-    description: "Build a call graph from source files. Returns nodes (functions/methods) and edges (call relationships) with fan-in/fan-out metrics. Accepts source_paths[], include_external, repo_id. Requires struct-analyzer (:8088)."
+    description: "Build a call graph from source files. Returns nodes (functions/methods) and edges (call relationships) with fan-in/fan-out metrics. Accepts source_paths[], include_external, min_confidence (high|medium|low|unknown — drops weaker edges), repo_id, reference_paths[] (dependency sources read for what their macros inject, e.g. an Elixir deps/ checkout; never graphed). The response carries coverage notes, warnings and measured_accuracy per language. Requires struct-analyzer (:8088)."
     when_to_use: "Trace execution paths. Required prerequisite for sa_detect_dead_code — provides reachability context. Reveals coupling hotspots. Part of W-2 (step 3), W-3, W-4 (step 1). Replaces amve_build_call_graph."
     tier: gold
     tags: [struct-analyzer, architecture, call-graph, analysis]
@@ -488,7 +488,7 @@ tools:
 
   - name: uss_ring_search
     description: "6-ring concentric search pipeline on unified-search-rs (:8081): Ring 0 (ANN primary hit) → Rings 1–5 (KF envelope, sibling, domain bridge, cross-collection, suggestion expansion) → RRF fusion → cascade enrichment → MMR re-rank → budget trim. Returns RingSearchResponse with per-ring provenance chains and cascade metadata. Higher recall than flat hybrid search."
-    when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6."
+    when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6. An SE search also returns an 'Underlying theory' section — the mathematics, statistics, control, queueing or other theory the hit is built on, each with the concept that connects it. Pass scope='theory' for a question that is itself about mathematics, statistics, physics, control, economics or other theory; scope='all' searches both and leads with the better match."
     tier: gold
     tags: [search, rag, uss-rs, ring]
 

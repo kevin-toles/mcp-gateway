@@ -981,9 +981,16 @@ class AuditCodebaseScanInput(BaseModel):
     """Input for audit_codebase_scan — walk a local codebase and return findings.
 
     Walks *source_path* recursively, runs the full 4-layer detection pipeline
-    on each scannable file (.py .js .ts .tsx .jsx .go .java), deduplicates by
-    (pattern_id, file), and enriches any SEC* findings with VRE exploit
-    evidence and advisory context from Qdrant :6336.
+    on each scannable file, deduplicates by (pattern_id, file), and enriches
+    any SEC* findings with VRE exploit evidence and advisory context from
+    Qdrant :6336.
+
+    Scannable files: 20 tree-sitter languages (Python, Go, Java, JavaScript,
+    TypeScript, C#, Rust, Kotlin, Scala, Ruby, C, C++, Elixir, PHP, Groovy,
+    Objective-C, Lua, Zig, Haskell, OCaml) get language-specific tree-sitter
+    rules plus language-agnostic regex SEC rules; shell (.sh .bash .zsh .fish)
+    and Swift (.swift) get the regex SEC rules only. Every scanned file is also
+    checked against the VRE vulnerability corpus by embedding similarity.
 
     Note:
         ``confidence_threshold`` and ``max_findings`` are deliberately omitted
@@ -1509,7 +1516,11 @@ class SACallGraphInput(BaseModel):
 
     source_paths: list[str] = Field(..., min_length=1)
     include_external: bool = Field(default=False)
+    # Drop edges below this confidence; "" keeps every edge.
+    min_confidence: Literal["", "high", "medium", "low", "unknown"] = Field(default="")
     repo_id: str = Field(default="")
+    # Dependency sources read for what their macros inject, never graphed.
+    reference_paths: list[str] = Field(default_factory=list)
 
 
 class SAExtractArchitectureInput(BaseModel):
@@ -1646,6 +1657,8 @@ class USSRingSearchInput(BaseModel):
     q: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="")
     mmr_strategy: str = Field(default="")
+    # ETDI-1.0 v0.22 BEH-11.08: se (default) | theory | all; "" leaves the service default (se).
+    scope: Literal["", "se", "theory", "all"] = Field(default="")
 
 
 class USSScientificSearchInput(BaseModel):

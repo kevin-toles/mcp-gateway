@@ -60,19 +60,25 @@ def create_call_graph_handler(
     dispatcher: ToolDispatcher,
     sanitizer: OutputSanitizer,
 ):
-    """Factory for sa_build_call_graph — source_paths[] + include_external + repo_id."""
+    """Factory for sa_build_call_graph — source_paths[] + include_external + min_confidence + repo_id + reference_paths[]."""
 
     async def handler(
         source_paths: list[str],
         include_external: bool = False,
+        min_confidence: str = "",
         repo_id: str = "",
+        reference_paths: list[str] | None = None,
     ) -> dict:
         payload: dict = {
             "source_paths": source_paths,
             "include_external": include_external,
         }
+        if min_confidence:
+            payload["min_confidence"] = min_confidence
         if repo_id:
             payload["repo_id"] = repo_id
+        if reference_paths:
+            payload["reference_paths"] = reference_paths
         result = await dispatcher.dispatch(tool_name, payload)
         return sanitizer.sanitize(result.body)
 
