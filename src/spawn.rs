@@ -278,6 +278,12 @@ pub async fn is_port_bound(port: u16) -> bool {
 /// Safety: `-sTCP:LISTEN` restricts to the listener itself. Processes that
 /// merely hold a *client* connection to the port (e.g. this daemon's own
 /// stuck health probe) are never touched.
+///
+/// The listener's whole process group is stopped, not just the listener:
+/// SIGTERM first (so a service can shut its worker pool down), then SIGKILL
+/// for whatever is left. Every native spawn leads its own group, as does
+/// every launchd job. 2026-11-10: killing only the listener orphaned COS's
+/// pool workers on every stop until the machine ran out of memory.
 pub async fn kill_port_listeners(port: u16) -> usize {
     let output = tokio::process::Command::new("lsof")
         .args(["-ti", &format!(":{}", port), "-sTCP:LISTEN"])
@@ -288,18 +294,39 @@ pub async fn kill_port_listeners(port: u16) -> usize {
     };
     let mut killed = 0;
     for pid_str in String::from_utf8_lossy(&out.stdout).split_whitespace() {
-        if let Ok(pid) = pid_str.parse::<u32>() {
-            let result = tokio::process::Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .status()
-                .await;
-            if matches!(result, Ok(s) if s.success()) {
-                tracing::warn!(port = port, pid = pid, "killed wedged listener");
+        if let Ok(pid) = pid_str.parse::<i32>() {
+            if stop_process_group_of(pid).await {
+                tracing::warn!(port = port, pid = pid, "stopped listener and its process group");
                 killed += 1;
             }
         }
     }
     killed
+}
+
+/// How long a service gets between SIGTERM and SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+
+/// Stop `pid` together with its process group. Falls back to SIGKILL of
+/// `pid` alone when the group is this daemon's own (or init's) — signalling
+/// it would take the shim down with the service.
+async fn stop_process_group_of(pid: i32) -> bool {
+    // SAFETY: getpgid/kill/killpg take plain integers and touch no memory.
+    let pgid = unsafe { libc::getpgid(pid) };
+    let own = unsafe { libc::getpgid(0) };
+    if pgid <= 1 || pgid == own {
+        return unsafe { libc::kill(pid, libc::SIGKILL) } == 0;
+    }
+    if unsafe { libc::killpg(pgid, libc::SIGTERM) } != 0 {
+        return false;
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < STOP_GRACE && unsafe { libc::kill(pid, 0) } == 0 {
+        sleep(Duration::from_millis(100)).await;
+    }
+    // Children that ignored or outlived the SIGTERM; ESRCH (group gone) is fine.
+    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    true
 }
 
 /// Spawn a native process from a command string (shlex-split), in its own
@@ -513,6 +540,91 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(!is_port_bound(port).await, "port still bound after kill");
+    }
+
+    /// Spawn, in its own process group (as `spawn_native_process` does), a
+    /// python listener on `port` that first forks a non-listening child.
+    /// Returns the listener's child handle and the forked child's pid.
+    async fn spawn_listener_with_forked_child(port: u16, dir: &std::path::Path, on_term: &str) -> (tokio::process::Child, i32) {
+        let pid_file = dir.join("child.pid");
+        let script = format!(
+            "import os,signal,socket,sys,time\n\
+             pid=os.fork()\n\
+             if pid==0:\n    time.sleep(120); os._exit(0)\n\
+             open({pid_file:?},'w').write(str(pid))\n\
+             def term(*_):\n{on_term}\n    sys.exit(0)\n\
+             signal.signal(signal.SIGTERM,term)\n\
+             s=socket.socket(); s.bind(('127.0.0.1',{port})); s.listen(5)\n\
+             time.sleep(120)",
+            pid_file = pid_file.to_str().unwrap(),
+        );
+        let child = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .process_group(0)
+            .spawn()
+            .expect("spawn python listener");
+        for _ in 0..50 {
+            if is_port_bound(port).await && pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(is_port_bound(port).await, "listener never bound the port");
+        let forked: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        (child, forked)
+    }
+
+    fn process_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks existence/permission; nothing is sent.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    async fn free_port() -> u16 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    /// 2026-11-10 kernel panic: every stop SIGKILLed only the port's listener,
+    /// so COS's process-pool workers (non-listening children) were orphaned —
+    /// 28 × ~1.6 GB accumulated until the machine ran out of memory.
+    #[tokio::test]
+    async fn test_stopping_a_service_also_stops_its_non_listening_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        let (mut child, forked) = spawn_listener_with_forked_child(port, dir.path(), "    pass").await;
+
+        assert!(kill_port_listeners(port).await >= 1);
+        let _ = child.wait().await;
+
+        let mut gone = false;
+        for _ in 0..50 {
+            if !process_alive(forked) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !gone {
+            unsafe { libc::kill(forked, libc::SIGKILL) };
+        }
+        assert!(gone, "forked child {forked} outlived its service's stop");
+    }
+
+    /// The stop asks first (SIGTERM) so a service can shut its pool down
+    /// cleanly; SIGKILL is only the fallback for a wedged one.
+    #[tokio::test]
+    async fn test_stopping_a_service_lets_it_shut_down_gracefully_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("terminated");
+        let port = free_port().await;
+        let on_term = format!("    open({:?},'w').write('ok')", marker.to_str().unwrap());
+        let (mut child, forked) = spawn_listener_with_forked_child(port, dir.path(), &on_term).await;
+
+        assert!(kill_port_listeners(port).await >= 1);
+        let _ = child.wait().await;
+        unsafe { libc::kill(forked, libc::SIGKILL) };
+
+        assert!(marker.exists(), "service got SIGKILL without a SIGTERM first");
     }
 
     #[tokio::test]
