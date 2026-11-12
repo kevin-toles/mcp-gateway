@@ -97,6 +97,9 @@ pub async fn boot_to_cold(
 ///   RS-5: If Hot and idle >= hot_idle_timeout_secs → transitions to Warm (continue to next entry)
 ///   RS-6: If Warm and idle >= WARM_IDLE_TIMEOUT_SECS → transitions to Cold (per-entry terminal)
 ///
+/// Before either demotion, an inbound connection still open on the service port
+/// counts as activity (see [`request_in_flight`]) and the entry is not demoted.
+///
 /// The upstream gateway process is NEVER stopped; this is a registry-only state change.
 /// Per HYBRID §4.6.4: demoted registration means the next request triggers reconnection
 /// rather than live forwarding. Re-promotion from Cold→Hot happens on the next MCP
@@ -136,6 +139,9 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
                 };
 
                 let effective_hot_timeout = entry.hot_idle_timeout_secs.min(hot_timeout);
+                if idle_secs >= effective_hot_timeout && request_in_flight(&registry, &entry).await {
+                    continue;
+                }
                 if idle_secs >= effective_hot_timeout {
                     tracing::info!(
                         service = %entry.name,
@@ -165,6 +171,9 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
                     };
 
                     let effective_warm_timeout = current.warm_idle_timeout_secs.min(warm_timeout);
+                    if idle_secs >= effective_warm_timeout && request_in_flight(&registry, &current).await {
+                        continue;
+                    }
                     if idle_secs >= effective_warm_timeout {
                         tracing::info!(
                             service = %current.name,
@@ -192,6 +201,25 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
             }
         }
     }
+}
+
+/// Request-driven lifecycle: a request still open on the service port is
+/// activity, even when no /activity call arrived within the idle timeout (a
+/// long scan calls /activity once, then holds one request open). Records the
+/// open request as activity so the idle clock restarts from now, and returns
+/// true so the caller skips demotion. 2026-11-10: struct-analyzer was stopped
+/// twice mid-request after ~1850 s.
+async fn request_in_flight(registry: &ServiceRegistry, entry: &crate::registry::ServiceEntry) -> bool {
+    if !crate::spawn::has_inbound_connections(entry.port).await {
+        return false;
+    }
+    tracing::info!(
+        service = %entry.name,
+        port = entry.port,
+        "idle timeout reached but a request is in flight — counted as activity, not demoted"
+    );
+    registry.record_request(&entry.name);
+    true
 }
 
 /// A Cold Native service has been stopped by the idle monitor, so failing its
@@ -961,6 +989,58 @@ mod tests {
         assert_eq!(svc.tier, ActivationTier::Cold);
 
         handle.abort();
+    }
+
+    /// 2026-11-10: struct-analyzer was stopped twice while a single
+    /// call-graph request was still open (client saw "Remote end closed
+    /// connection" after ~1850 s). Idleness counted only /activity calls, so
+    /// any request longer than hot_idle_secs got its service stopped mid-
+    /// request. An open inbound connection is activity: the monitor must
+    /// neither demote the entry nor stop it, and it refreshes last_request.
+    #[tokio::test]
+    #[serial]
+    async fn test_open_request_blocks_idle_demotion() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A client in another process holds a request open on the port.
+        let script = format!(
+            "import socket,time\ns=socket.create_connection(('127.0.0.1',{port}))\ntime.sleep(30)"
+        );
+        let mut client = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python client");
+        let (_conn, _) = listener.accept().await.unwrap();
+
+        let registry = Arc::new(ServiceRegistry::new());
+        // Auto runtime: a wrongly demoted entry is only relabelled, never
+        // killed — the listener here belongs to the test process itself.
+        let mut entry = make_entry("busy-svc", port, ActivationTier::Hot);
+        entry.hot_idle_timeout_secs = 0;
+        entry.warm_idle_timeout_secs = 0;
+        let stale = Instant::now() - Duration::from_secs(1850);
+        entry.last_request = Some(stale);
+        registry.register(entry);
+
+        let reg_clone = registry.clone();
+        let handle = tokio::spawn(async move {
+            shim_idle_monitor(reg_clone).await;
+        });
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        handle.abort();
+        let _ = client.kill().await;
+
+        let svc = registry.get("busy-svc").unwrap();
+        assert_eq!(
+            svc.tier,
+            ActivationTier::Hot,
+            "an open request must keep the service Hot (not demoted/stopped)"
+        );
+        assert!(
+            svc.last_request.unwrap() > stale,
+            "an open request must count as activity (last_request refreshed)"
+        );
     }
 
     // ── GAP-2: RED phase ──────────────────────────────────────────────────

@@ -268,6 +268,48 @@ pub async fn is_port_bound(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port)).await.is_ok()
 }
 
+/// Count in-flight inbound connections to `port` from `lsof -Fpn` output.
+///
+/// Only server-side sockets count (local endpoint port == `port`). A server
+/// socket whose client end is a socket owned by `own_pid` (this daemon's own
+/// health probe) is excluded, so the shim never keeps a service alive by
+/// probing it.
+fn count_inbound_connections(lsof_fields: &str, port: u16, own_pid: u32) -> usize {
+    let mut pid = 0u32;
+    let mut server_peers: Vec<&str> = Vec::new();
+    let mut own_locals: Vec<&str> = Vec::new();
+    for line in lsof_fields.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.parse().unwrap_or(0);
+        } else if let Some(name) = line.strip_prefix('n') {
+            let Some((local, remote)) = name.split_once("->") else { continue };
+            if pid == own_pid {
+                own_locals.push(local);
+            }
+            let local_port = local.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+            if local_port == Some(port) {
+                server_peers.push(remote);
+            }
+        }
+    }
+    server_peers.iter().filter(|peer| !own_locals.contains(peer)).count()
+}
+
+/// True when some client holds an ESTABLISHED connection to the service on
+/// `port` — a request still in flight. Request-driven lifecycle: an open
+/// request is activity, so the idle monitor must not demote or stop the
+/// service while one exists (2026-11-10 struct-analyzer mid-request stops).
+pub async fn has_inbound_connections(port: u16) -> bool {
+    let output = tokio::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED", "-Fpn"])
+        .output()
+        .await;
+    let Ok(out) = output else {
+        return false;
+    };
+    count_inbound_connections(&String::from_utf8_lossy(&out.stdout), port, std::process::id()) > 0
+}
+
 /// Kill the process(es) LISTENING on `port`. Returns how many were killed.
 ///
 /// Wedged-service eviction: a service can hang with its socket still bound
@@ -644,5 +686,56 @@ mod tests {
         };
         let result = resolve_runtime(&docker, "docker").unwrap();
         assert_eq!(result, docker);
+    }
+
+    /// 2026-11-10: struct-analyzer was stopped twice mid-request (a ~1850 s
+    /// call-graph scan) because idleness only counted /activity calls. An open
+    /// inbound connection on the service port is a request still in flight.
+    /// `lsof -Fpn` lists both ends of loopback connections; only server-side
+    /// sockets (local port == service port) count, and a connection whose
+    /// client end belongs to this daemon (its own health probe) does not.
+    #[test]
+    fn test_count_inbound_connections_counts_server_side_sockets_only() {
+        let lsof = "\
+p500
+f4
+n127.0.0.1:8088->127.0.0.1:61001
+f5
+n[::1]:8088->[::1]:61002
+p900
+f7
+n127.0.0.1:61001->127.0.0.1:8088
+p42
+f9
+n127.0.0.1:61003->127.0.0.1:8088
+p500
+f6
+n127.0.0.1:8088->127.0.0.1:61003
+";
+        // pid 42 is this daemon: its client socket 61003 is excluded, so the
+        // matching server socket does not count. 61001 (pid 900) and 61002
+        // (remote client, not in the listing) are real requests.
+        assert_eq!(count_inbound_connections(lsof, 8088, 42), 2);
+        assert_eq!(count_inbound_connections(lsof, 9999, 42), 0);
+        assert_eq!(count_inbound_connections("", 8088, 42), 0);
+    }
+
+    /// The live helper sees an established connection held by another process.
+    #[tokio::test]
+    async fn test_has_inbound_connections_sees_external_client() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(!has_inbound_connections(port).await, "no client yet");
+        let script = format!(
+            "import socket,time\ns=socket.create_connection(('127.0.0.1',{port}))\ntime.sleep(30)"
+        );
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python client");
+        let (_conn, _) = listener.accept().await.unwrap();
+        assert!(has_inbound_connections(port).await, "open request must be seen");
+        let _ = child.kill().await;
     }
 }
