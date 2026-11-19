@@ -2,7 +2,7 @@
 
 Standalone MCP-compliant API gateway for the AI Platform.
 
-Exposes 9 platform tools (semantic search, code analysis, LLM completion, agent execution, etc.) to VS Code/Copilot, external LLMs (Claude, GPT, Gemini), and in Phase 3, external tenant agents — all through the Model Context Protocol (MCP).
+Exposes 79 platform tools (retrieval, code-structure analysis, code audit, validation, context management, LLM completion, agent execution and A2A delegation) to VS Code/Copilot, external LLMs (Claude, GPT, Gemini), and in Phase 3, external tenant agents — all through the Model Context Protocol (MCP).
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ mcp-gateway :8087 — FastMCP SSE/HTTP
     ├── RequestID middleware (UUID v4)
     ├── OIDCAuthMiddleware (JWT RS256/ES256)
     ├── RateLimitMiddleware (Redis token bucket)
-    ├── ToolRegistry (YAML-driven, 9 tools)
+    ├── ToolRegistry (YAML-driven, 79 tools)
     ├── Input Validation (Pydantic per tool)
     ├── Injection Prevention (path traversal + Cypher)
     ├── ToolDispatcher (HTTP POST to backends, connection pooling)
@@ -56,7 +56,7 @@ Backend Services
 The gateway implements the [Model Context Protocol](https://modelcontextprotocol.io/) via SSE/HTTP transport at `/mcp`.
 
 **Supported operations:**
-- `tools/list` — returns all 9 registered tools with schemas
+- `tools/list` — returns all 79 registered tools with schemas
 - `tools/call` — validates input → dispatches → sanitizes → returns result
 
 **Connecting from a client:**
@@ -74,17 +74,17 @@ async with Client("http://localhost:8087/mcp") as client:
 
 ## Tools
 
-| Tool | Backend | Tier | Description |
-|------|---------|------|-------------|
-| `semantic_search` | semantic-search :8081 | bronze | Semantic similarity search across code, docs, textbooks |
-| `hybrid_search` | semantic-search :8081 | bronze | Combined semantic + keyword search |
-| `code_analyze` | code-orchestrator :8083 | silver | Code complexity, dependency, and quality analysis |
-| `code_pattern_audit` | code-orchestrator :8083 | silver | Detect anti-patterns with dual-net detection |
-| `graph_query` | ai-agents :8082 | gold | Neo4j Cypher queries (read-only, injection-protected) |
-| `llm_complete` | llm-gateway :8080 | gold | LLM completion with tiered fallback |
-| `run_agent_function` | ai-agents :8082 | gold | Execute single-purpose agent functions |
-| `run_discussion` | ai-agents :8082 | enterprise | Multi-LLM Kitchen Brigade discussions |
-| `agent_execute` | ai-agents :8082 | enterprise | Execute autonomous agent tasks |
+79 tools, grouped by the backend family they front. Each entry in `config/tools.yaml` carries a description, a `when_to_use` hint for agents, a tier and tags.
+
+| Family | Tools | Examples |
+|--------|------:|----------|
+| Structural analysis (`sa_*`, `amve_*`) | 22 | `sa_build_call_graph`, `sa_detect_boundaries`, `amve_detect_drift` |
+| Unified search (`uss_*`, search tools) | 19 | `uss_ring_search`, `hybrid_search`, `semantic_search`, `graph_traverse`, `diagram_search` |
+| Code audit (`audit_*`, code tools) | 11 | `audit_security_scan`, `audit_dependency_assess`, `audit_search_cves`, `code_pattern_audit` |
+| Context management (`cms_*`) | 8 | `cms_chunk`, `cms_optimize`, `cms_validate` |
+| Knowledge pipeline (metadata, taxonomy, conversion, publishing) | 10 | `extract_book_metadata`, `generate_taxonomy`, `convert_pdf`, `push_to_github` |
+| Validation | 2 | `validate_wbs`, `validate_design_doc` |
+| LLM and agents | 7 | `llm_complete`, `inference`, `ask`, `sdlc_execute`, `a2a_send_message` |
 
 Tool definitions are loaded from `config/tools.yaml`.
 
