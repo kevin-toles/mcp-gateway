@@ -103,6 +103,10 @@ spawn = "cd ${POC_ROOT}/context-management-service && (test -x .venv/bin/python 
 port = 8088
 tier = "cold"
 runtime = "native"
+# A scan holds one request open for its whole run; rescan.py allows up to
+# RESCAN_TIMEOUT=3600 s, so an open request may block idle demotion for up to
+# 90 min before it is treated as stuck (DEV-MCP-023; default 600, ceiling 7200).
+max_request_secs = 5400
 # Runs the prebuilt binary like every other service (venv / target/release): no
 # compiler at spawn. Rebuild after source changes:
 #   cd struct-analyzer-service && go build -o ./struct-analyzer ./cmd/struct-analyzer

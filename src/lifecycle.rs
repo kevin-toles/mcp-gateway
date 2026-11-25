@@ -22,6 +22,21 @@ pub const IDLE_CHECK_INTERVAL_SECS: u64 = 60;  // check every 1 minute
 
 pub const WARM_IDLE_TIMEOUT_SECS: u64 = 600;  // 10 minutes
 
+// ── DEV-MCP-023: open-request limit ─────────────────────────────────────────
+// An open inbound connection blocks idle demotion for at most the service's
+// manifest `max_request_secs` (this default when absent); past it the request
+// is treated as stuck. Manifest values above the ceiling are rejected.
+// Design: HWC-AUTO-START-IMPLEMENTATION.md, addendum 2026-11-12.
+
+pub const DEFAULT_MAX_REQUEST_SECS: u64 = 600;
+pub const MAX_REQUEST_SECS_CEILING: u64 = 7200;
+
+// On the health path an open inbound connection defers a health-failure stop
+// or eviction for at most the service's `health_kill_grace_secs` (this default
+// when absent), counted from the first failing pass that saw it. Independent of
+// `max_request_secs` (decision 2026-11-24); same ceiling.
+pub const DEFAULT_HEALTH_KILL_GRACE_SECS: u64 = 120;
+
 // ── RS-4: COLD→WARM Auto-Promotion ─────────────────────────────────────────
 // HYBRID §4.6.3 — N requests in M minutes (N=5, M=10min)
 // Env var overrides: COLD_PROMOTION_REQUESTS, COLD_PROMOTION_WINDOW_SECS
@@ -94,16 +109,17 @@ pub async fn boot_to_cold(
 /// Iterates all registry entries every `IDLE_CHECK_INTERVAL_SECS`.
 ///
 /// Two-stage detection per entry:
-///   RS-5: If Hot and idle >= hot_idle_timeout_secs → transitions to Warm (continue to next entry)
-///   RS-6: If Warm and idle >= WARM_IDLE_TIMEOUT_SECS → transitions to Cold (per-entry terminal)
+///   RS-5: If Hot and idle >= hot_idle_timeout_secs → transitions to Warm, then falls
+///         through to the Warm check in the same tick
+///   RS-6: If Warm and idle >= warm_idle_timeout_secs → transitions to Cold (per-entry terminal)
 ///
 /// Before either demotion, an inbound connection still open on the service port
 /// counts as activity (see [`request_in_flight`]) and the entry is not demoted.
 ///
-/// The upstream gateway process is NEVER stopped; this is a registry-only state change.
-/// Per HYBRID §4.6.4: demoted registration means the next request triggers reconnection
-/// rather than live forwarding. Re-promotion from Cold→Hot happens on the next MCP
-/// request via RS-3 health check.
+/// On a real Warm→Cold transition a Native service is stopped (its whole process
+/// group, via `kill_port_listeners`); Auto (launchd) services are only relabelled.
+/// A `min_tier = "warm"` floor makes the Cold event a no-op, so nothing is stopped.
+/// The next real request starts a Cold service again (`ensure_ready`).
 pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
     let mut interval = tokio::time::interval(Duration::from_secs(IDLE_CHECK_INTERVAL_SECS));
     loop {
@@ -205,20 +221,92 @@ pub async fn shim_idle_monitor(registry: Arc<ServiceRegistry>) {
 
 /// Request-driven lifecycle: a request still open on the service port is
 /// activity, even when no /activity call arrived within the idle timeout (a
-/// long scan calls /activity once, then holds one request open). Records the
-/// open request as activity so the idle clock restarts from now, and returns
-/// true so the caller skips demotion. 2026-11-10: struct-analyzer was stopped
-/// twice mid-request after ~1850 s.
+/// long scan calls /activity once, then holds one request open). Returns true
+/// when the caller must skip the demotion. Guards idle demotion only; the
+/// health path's stops use [`health_grace_holds`] with its own, shorter limit.
+/// 2026-11-10: struct-analyzer was stopped twice mid-request after ~1850 s.
+///
+/// DEV-MCP-023 bounds the protection (design: HWC-AUTO-START-IMPLEMENTATION.md,
+/// addendum 2026-11-12):
+/// - open, younger than `max_request_secs` (age from `in_flight_since`, the
+///   first pass that saw it) → true. `last_request` is left as the last
+///   reported activity.
+/// - open, at or past the limit → treated as stuck: warning, false.
+/// - not open, but one was seen before → the request has finished: the idle
+///   clock restarts now (`record_request`, which also resets
+///   `in_flight_since`), true for this pass.
+/// - not open, none seen → false.
 async fn request_in_flight(registry: &ServiceRegistry, entry: &crate::registry::ServiceEntry) -> bool {
     if !crate::spawn::has_inbound_connections(entry.port).await {
+        if registry.clear_in_flight(&entry.name) {
+            tracing::info!(
+                service = %entry.name,
+                port = entry.port,
+                "open request finished — idle clock restarts now"
+            );
+            registry.record_request(&entry.name);
+            return true;
+        }
+        return false;
+    }
+    let Some(since) = registry.mark_in_flight(&entry.name) else {
+        return false;
+    };
+    let open_secs = since.elapsed().as_secs();
+    if open_secs >= entry.max_request_secs {
+        tracing::warn!(
+            service = %entry.name,
+            port = entry.port,
+            open_secs = open_secs,
+            max_request_secs = entry.max_request_secs,
+            "open request exceeded max_request_secs — treated as stuck; not protecting it"
+        );
         return false;
     }
     tracing::info!(
         service = %entry.name,
         port = entry.port,
-        "idle timeout reached but a request is in flight — counted as activity, not demoted"
+        open_secs = open_secs,
+        max_request_secs = entry.max_request_secs,
+        "request in flight — service not demoted or stopped"
     );
-    registry.record_request(&entry.name);
+    true
+}
+
+/// Health path counterpart of [`request_in_flight`] (DEV-MCP-023; design:
+/// HWC-AUTO-START-IMPLEMENTATION.md addendum 2026-11-12, decision 2026-11-24).
+/// A failing service with an open inbound connection is left alone for at most
+/// `health_kill_grace_secs`, counted from the first failing pass that saw the
+/// connection (`health_grace_since`). Independent of `max_request_secs` and of
+/// the idle monitor's `in_flight_since`; never counted as activity, because a
+/// failing health check is itself the sign the service may be wedged.
+/// Returns true when the caller must skip the stop / eviction this pass.
+async fn health_grace_holds(registry: &ServiceRegistry, entry: &crate::registry::ServiceEntry) -> bool {
+    if !crate::spawn::has_inbound_connections(entry.port).await {
+        registry.clear_health_grace(&entry.name);
+        return false;
+    }
+    let Some(since) = registry.mark_health_grace(&entry.name) else {
+        return false;
+    };
+    let deferred_secs = since.elapsed().as_secs();
+    if deferred_secs >= entry.health_kill_grace_secs {
+        tracing::warn!(
+            service = %entry.name,
+            port = entry.port,
+            deferred_secs = deferred_secs,
+            health_kill_grace_secs = entry.health_kill_grace_secs,
+            "health_failure_monitor: failing with a request open past its grace — acting"
+        );
+        return false;
+    }
+    tracing::info!(
+        service = %entry.name,
+        port = entry.port,
+        deferred_secs = deferred_secs,
+        health_kill_grace_secs = entry.health_kill_grace_secs,
+        "health_failure_monitor: failing with a request open — stop deferred within grace"
+    );
     true
 }
 
@@ -585,6 +673,8 @@ pub(crate) async fn health_failure_pass(
             if entry.failure_count > 0 {
                 registry.update_health(&entry.name, HealthState::Healthy);
             }
+            // DEV-MCP-023: a healthy pass ends any health grace.
+            registry.clear_health_grace(&entry.name);
             continue;
         }
 
@@ -632,6 +722,13 @@ pub(crate) async fn health_failure_pass(
         }
 
         if shared_outage {
+            continue;
+        }
+
+        // Request-driven lifecycle: a request still open on the port defers
+        // both the unused-failure stop and the wedged-listener eviction, for at
+        // most the service's health grace (DEV-MCP-023).
+        if health_grace_holds(registry, &current).await {
             continue;
         }
 
@@ -832,6 +929,10 @@ mod tests {
             last_transition_reason: None,
             last_transition_at: None,
             min_tier: ActivationTier::Cold,
+            max_request_secs: crate::lifecycle::DEFAULT_MAX_REQUEST_SECS,
+            in_flight_since: None,
+            health_kill_grace_secs: crate::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS,
+            health_grace_since: None,
         }
     }
 
@@ -901,7 +1002,7 @@ mod tests {
         });
 
         // Give it one tick interval to run
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Check: hot-svc should now be Warm
         let svc = registry.get("hot-svc").unwrap();
@@ -929,7 +1030,7 @@ mod tests {
             shim_idle_monitor(reg_clone).await;
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
         let svc = registry.get("warm-svc").unwrap();
         assert_eq!(
@@ -959,7 +1060,7 @@ mod tests {
         // With both timeouts = 0, the monitor transitions Hot→Warm→Cold in a
         // single tick (the Warm→Cold check re-fetches the entry after the
         // Hot→Warm update). So the entry should land at Cold immediately.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
         let svc = registry.get("two-stage").unwrap();
         assert_eq!(
             svc.tier,
@@ -982,7 +1083,7 @@ mod tests {
             shim_idle_monitor(reg_clone).await;
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Should still be Cold — monitor skips Cold entries entirely
         let svc = registry.get("cold-svc").unwrap();
@@ -1037,10 +1138,123 @@ mod tests {
             ActivationTier::Hot,
             "an open request must keep the service Hot (not demoted/stopped)"
         );
-        assert!(
-            svc.last_request.unwrap() > stale,
-            "an open request must count as activity (last_request refreshed)"
+        // DEV-MCP-023: last_request stays the last REPORTED activity so the
+        // open request's age can be judged against max_request_secs; the open
+        // request is tracked by in_flight_since instead.
+        assert_eq!(svc.last_request, Some(stale), "an open request is not reported activity");
+        assert!(svc.in_flight_since.is_some(), "the first pass that sees it records in_flight_since");
+    }
+
+    /// Hold an inbound connection open on a fresh listener from another
+    /// process (so the shim's own-pid exclusion does not hide it).
+    async fn hold_open_connection() -> (u16, tokio::net::TcpListener, tokio::net::TcpStream, tokio::process::Child) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let script = format!(
+            "import socket,time\ns=socket.create_connection(('127.0.0.1',{port}))\ntime.sleep(30)"
         );
+        let client = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python client");
+        let (conn, _) = listener.accept().await.unwrap();
+        (port, listener, conn, client)
+    }
+
+    async fn run_one_idle_pass(registry: &Arc<ServiceRegistry>) {
+        let reg_clone = registry.clone();
+        let handle = tokio::spawn(async move { shim_idle_monitor(reg_clone).await });
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        handle.abort();
+    }
+
+    // DEV-MCP-023 — design: "Past the limit the request is treated as stuck:
+    // a warning names the service, port and open duration, and demotion
+    // proceeds normally."
+    #[tokio::test]
+    async fn test_open_request_past_max_request_secs_is_demoted() {
+        let (port, _listener, _conn, mut client) = hold_open_connection().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("stuck-svc", port, ActivationTier::Hot);
+        entry.hot_idle_timeout_secs = 0;
+        entry.warm_idle_timeout_secs = 0;
+        entry.max_request_secs = 60;
+        entry.last_request = Some(Instant::now() - Duration::from_secs(1850));
+        entry.in_flight_since = Some(Instant::now() - Duration::from_secs(100));
+        registry.register(entry);
+
+        run_one_idle_pass(&registry).await;
+        let _ = client.kill().await;
+
+        let svc = registry.get("stuck-svc").unwrap();
+        assert_eq!(svc.tier, ActivationTier::Cold, "a request open past its limit no longer blocks demotion");
+    }
+
+    // Same pass, Hot→Warm then Warm→Cold: the Warm check must not treat the
+    // stuck request as newly seen.
+    #[tokio::test]
+    async fn test_open_request_under_max_request_secs_blocks_demotion() {
+        let (port, _listener, _conn, mut client) = hold_open_connection().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("busy-svc", port, ActivationTier::Hot);
+        entry.hot_idle_timeout_secs = 0;
+        entry.warm_idle_timeout_secs = 0;
+        entry.max_request_secs = 600;
+        entry.last_request = Some(Instant::now() - Duration::from_secs(1850));
+        let seen = Instant::now() - Duration::from_secs(100);
+        entry.in_flight_since = Some(seen);
+        registry.register(entry);
+
+        run_one_idle_pass(&registry).await;
+        let _ = client.kill().await;
+
+        let svc = registry.get("busy-svc").unwrap();
+        assert_eq!(svc.tier, ActivationTier::Hot);
+        assert_eq!(svc.in_flight_since, Some(seen), "a still-open request keeps its first-seen time");
+    }
+
+    // Design: in_flight_since "resets on the first pass that sees none" — the
+    // request just finished, so the idle clock restarts instead of stopping
+    // the service the moment its long request completes.
+    #[tokio::test]
+    async fn test_finished_request_restarts_idle_clock() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("done-svc", port, ActivationTier::Hot);
+        entry.hot_idle_timeout_secs = 0;
+        entry.warm_idle_timeout_secs = 0;
+        let stale = Instant::now() - Duration::from_secs(1850);
+        entry.last_request = Some(stale);
+        entry.in_flight_since = Some(Instant::now() - Duration::from_secs(100));
+        registry.register(entry);
+
+        run_one_idle_pass(&registry).await;
+
+        let svc = registry.get("done-svc").unwrap();
+        assert_eq!(svc.tier, ActivationTier::Hot, "not demoted on the pass the request is seen finished");
+        assert!(svc.in_flight_since.is_none());
+        assert!(svc.last_request.unwrap() > stale, "idle clock restarts from the end of the request");
+        drop(listener);
+    }
+
+    // With no open request and none seen before, demotion is unchanged.
+    #[tokio::test]
+    async fn test_no_open_request_demotes_as_before() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = make_entry("idle-svc", port, ActivationTier::Hot);
+        entry.hot_idle_timeout_secs = 0;
+        entry.warm_idle_timeout_secs = 0;
+        entry.last_request = Some(Instant::now() - Duration::from_secs(1850));
+        registry.register(entry);
+
+        run_one_idle_pass(&registry).await;
+
+        assert_eq!(registry.get("idle-svc").unwrap().tier, ActivationTier::Cold);
+        drop(listener);
     }
 
     // ── GAP-2: RED phase ──────────────────────────────────────────────────
@@ -2348,6 +2562,188 @@ mod tests {
         crate::spawn::kill_port_listeners(port).await;
 
         assert!(marker.exists(), "a dead service in use must be respawned");
+    }
+
+    /// A service that fails health (503) while another process holds a request
+    /// open on it — a busy service mid-request. Returns (port, server, client).
+    async fn spawn_busy_unhealthy_service() -> (u16, tokio::process::Child, tokio::process::Child) {
+        let port = free_port().await;
+        let server_script = format!(
+            "import http.server\n\
+             class H(http.server.BaseHTTPRequestHandler):\n\
+             \x20   def do_GET(self):\n\
+             \x20       self.send_response(503); self.end_headers()\n\
+             \x20   def log_message(self,*a): pass\n\
+             http.server.ThreadingHTTPServer(('127.0.0.1',{port}),H).serve_forever()\n"
+        );
+        let server = tokio::process::Command::new("python3")
+            .args(["-c", &server_script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python server");
+        for _ in 0..50 {
+            if crate::spawn::is_port_bound(port).await { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let client_script = format!(
+            "import socket,time\ns=socket.create_connection(('127.0.0.1',{port}))\ntime.sleep(30)"
+        );
+        let client = tokio::process::Command::new("python3")
+            .args(["-c", &client_script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python client");
+        for _ in 0..50 {
+            if crate::spawn::has_inbound_connections(port).await { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(crate::spawn::has_inbound_connections(port).await, "client never connected");
+        (port, server, client)
+    }
+
+    /// Request-driven lifecycle: an open request is activity on the health path
+    /// too. A busy service failing health, with no /activity call within its Hot
+    /// timeout, must not be stopped as "unused" while a request is in flight
+    /// (same failure class as the 2026-11-10 struct-analyzer mid-request stops).
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_does_not_stop_an_unused_service_mid_request() {
+        let (port, mut server, mut client) = spawn_busy_unhealthy_service().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let stale = Instant::now() - Duration::from_secs(3600);
+        let mut entry = failing_unused_entry("busy-unused", port);
+        entry.last_request = Some(stale);
+        // DEV-MCP-023 (decision 2026-11-24): the health grace is independent of
+        // max_request_secs — a zero idle limit must not end the health grace.
+        entry.max_request_secs = 0;
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let still_bound = !port_released_within(port, 1000).await;
+        let _ = client.kill().await;
+        let _ = server.kill().await;
+
+        let svc = registry.get("busy-unused").unwrap();
+        assert!(still_bound, "a service with a request in flight must not be stopped within its grace");
+        assert_eq!(svc.tier, ActivationTier::Warm, "must not be demoted to Cold mid-request");
+        // Design: grace "counted from the first failing health pass that saw the
+        // open connection (`health_grace_since`, kept separately from the idle
+        // monitor's `in_flight_since`)"; "The health path never counts the open
+        // connection as activity."
+        assert!(svc.health_grace_since.is_some(), "the first failing pass with an open connection starts the grace");
+        assert!(svc.in_flight_since.is_none(), "the health path does not touch the idle monitor's timer");
+        assert_eq!(svc.last_request, Some(stale), "an open request is not reported activity");
+    }
+
+    /// DEV-MCP-023 — design: "`health_kill_grace_secs` | 120 for every service";
+    /// "then the existing stop / evict-and-respawn path runs".
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_stops_an_unused_service_once_its_grace_expires() {
+        let (port, mut server, mut client) = spawn_busy_unhealthy_service().await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = failing_unused_entry("grace-over", port);
+        assert_eq!(entry.health_kill_grace_secs, DEFAULT_HEALTH_KILL_GRACE_SECS);
+        assert_eq!(DEFAULT_HEALTH_KILL_GRACE_SECS, 120);
+        // Independent of the idle limit: a long max_request_secs does not extend it.
+        entry.max_request_secs = MAX_REQUEST_SECS_CEILING;
+        entry.health_grace_since = Instant::now().checked_sub(Duration::from_secs(DEFAULT_HEALTH_KILL_GRACE_SECS + 30));
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let released = port_released_within(port, 5000).await;
+        let _ = client.kill().await;
+        let _ = server.kill().await;
+
+        assert!(released, "past its grace a failing unused service is stopped despite the open connection");
+        assert_eq!(registry.get("grace-over").unwrap().tier, ActivationTier::Cold);
+    }
+
+    /// Design: "The timer resets on a healthy pass".
+    #[tokio::test]
+    #[serial]
+    async fn test_healthy_pass_resets_health_grace() {
+        let (port, mut server) = spawn_http_server(200).await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = native_entry("recovered", port, "true".to_string());
+        entry.tier = ActivationTier::Hot;
+        entry.last_request = Some(Instant::now());
+        entry.health_grace_since = Instant::now().checked_sub(Duration::from_secs(30));
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let _ = server.kill().await;
+
+        assert!(registry.get("recovered").unwrap().health_grace_since.is_none());
+    }
+
+    /// Design: the timer resets "on a failing pass with no open connection", and
+    /// "A failing service with no open connection is acted on as before".
+    #[tokio::test]
+    #[serial]
+    async fn test_failing_pass_without_open_connection_resets_grace_and_acts() {
+        let (port, mut server) = spawn_http_server(503).await;
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = failing_unused_entry("closed-now", port);
+        entry.health_grace_since = Instant::now().checked_sub(Duration::from_secs(30));
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let released = port_released_within(port, 5000).await;
+        let _ = server.kill().await;
+
+        let svc = registry.get("closed-now").unwrap();
+        assert!(svc.health_grace_since.is_none(), "no open connection ends the grace");
+        assert!(released, "with no open connection the unused failing service is stopped as before");
+        assert_eq!(svc.tier, ActivationTier::Cold);
+    }
+
+    /// A Python HTTP server on a free port that answers every GET with `code`.
+    async fn spawn_http_server(code: u16) -> (u16, tokio::process::Child) {
+        let port = free_port().await;
+        let server_script = format!(
+            "import http.server\n\
+             class H(http.server.BaseHTTPRequestHandler):\n\
+             \x20   def do_GET(self):\n\
+             \x20       self.send_response({code}); self.end_headers()\n\
+             \x20   def log_message(self,*a): pass\n\
+             http.server.ThreadingHTTPServer(('127.0.0.1',{port}),H).serve_forever()\n"
+        );
+        let server = tokio::process::Command::new("python3")
+            .args(["-c", &server_script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python server");
+        for _ in 0..50 {
+            if crate::spawn::is_port_bound(port).await { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        (port, server)
+    }
+
+    /// The respawn path evicts a bound-but-unhealthy listener before respawning;
+    /// that eviction must not kill a service with a request in flight either.
+    #[tokio::test]
+    #[serial]
+    async fn test_health_pass_does_not_evict_a_service_mid_request() {
+        let (port, mut server, mut client) = spawn_busy_unhealthy_service().await;
+        let marker = std::env::temp_dir().join(format!("hwc-busy-inuse-{port}"));
+        let _ = std::fs::remove_file(&marker);
+        let registry = Arc::new(ServiceRegistry::new());
+        let mut entry = native_entry("busy-inuse", port, format!("touch {}", marker.display()));
+        entry.tier = ActivationTier::Hot;
+        entry.last_request = Some(Instant::now());
+        entry.failure_count = HEALTH_FAILURE_RESPAWN_THRESHOLD;
+        entry.first_failure_at = Instant::now().checked_sub(Duration::from_secs(FAILURE_DURATION_GATE_SECS + 60));
+        registry.register(entry);
+
+        health_failure_pass(&registry, "hybrid", false).await;
+        let still_bound = !port_released_within(port, 1000).await;
+        let _ = client.kill().await;
+        let _ = server.kill().await;
+
+        assert!(still_bound, "a service with a request in flight must not be evicted");
+        assert!(!marker.exists(), "a service with a request in flight must not be respawned");
     }
 
     /// The idle monitor must not stop a service whose spawn is in flight

@@ -57,6 +57,16 @@ pub struct ManifestService {
     /// Seconds idle before Warm→Cold (default `WARM_IDLE_TIMEOUT_SECS`; 0 = no Warm hold).
     #[serde(default)]
     pub warm_idle_secs: Option<u64>,
+    /// Seconds an open inbound connection may block idle demotion before it is
+    /// treated as stuck (default `DEFAULT_MAX_REQUEST_SECS`, at most
+    /// `MAX_REQUEST_SECS_CEILING`). DEV-MCP-023.
+    #[serde(default)]
+    pub max_request_secs: Option<u64>,
+    /// Seconds an open inbound connection may defer a health-failure stop or
+    /// eviction (default `DEFAULT_HEALTH_KILL_GRACE_SECS`, at most
+    /// `MAX_REQUEST_SECS_CEILING`; no fallback to `max_request_secs`). DEV-MCP-023.
+    #[serde(default)]
+    pub health_kill_grace_secs: Option<u64>,
 }
 
 fn default_health_path() -> String {
@@ -87,6 +97,16 @@ impl ManifestService {
         )
     }
 
+    /// The open-request limit in seconds, manifest value over the default.
+    pub fn max_request_secs(&self) -> u64 {
+        self.max_request_secs.unwrap_or(crate::lifecycle::DEFAULT_MAX_REQUEST_SECS)
+    }
+
+    /// The health-failure grace in seconds, manifest value over the default.
+    pub fn health_kill_grace_secs(&self) -> u64 {
+        self.health_kill_grace_secs.unwrap_or(crate::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS)
+    }
+
     /// The registry idle floor for this service.
     pub fn min_tier(&self) -> ActivationTier {
         match self.min_tier.as_deref() {
@@ -100,8 +120,24 @@ fn manifest_path() -> String {
     format!("{}/mcp-gateway/config/services.toml", poc_root())
 }
 
-fn parse(source: &str) -> Result<Manifest, toml::de::Error> {
-    toml::from_str(source)
+fn parse(source: &str) -> Result<Manifest, String> {
+    let manifest: Manifest = toml::from_str(source).map_err(|e| e.to_string())?;
+    let ceiling = crate::lifecycle::MAX_REQUEST_SECS_CEILING;
+    for (name, svc) in &manifest.services {
+        for (field, value) in [
+            ("max_request_secs", svc.max_request_secs),
+            ("health_kill_grace_secs", svc.health_kill_grace_secs),
+        ] {
+            if let Some(limit) = value {
+                if limit > ceiling {
+                    return Err(format!(
+                        "services.{name}.{field} = {limit} exceeds the ceiling of {ceiling} s"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(manifest)
 }
 
 /// Load the manifest: disk first, embedded copy as loud fallback.
@@ -135,6 +171,73 @@ mod tests {
 
     fn embedded() -> Manifest {
         parse(EMBEDDED_MANIFEST).expect("embedded manifest must parse")
+    }
+
+    fn one_service(extra: &str) -> String {
+        format!(
+            "[services.x]\nport = 1\ntier = \"cold\"\nruntime = \"native\"\nspawn = \"true\"\n{extra}\n"
+        )
+    }
+
+    // DEV-MCP-023 — design: HWC-AUTO-START-IMPLEMENTATION.md addendum 2026-11-12,
+    // "`max_request_secs` | 600 (global ceiling 7200; struct-analyzer 5400 ...)".
+    #[test]
+    fn max_request_secs_defaults_when_absent() {
+        let m = parse(&one_service("")).expect("parses");
+        assert_eq!(m.services["x"].max_request_secs(), 600);
+        assert_eq!(crate::lifecycle::DEFAULT_MAX_REQUEST_SECS, 600);
+    }
+
+    #[test]
+    fn max_request_secs_manifest_value_wins() {
+        let m = parse(&one_service("max_request_secs = 900")).expect("parses");
+        assert_eq!(m.services["x"].max_request_secs(), 900);
+    }
+
+    // "A per-service value above the ceiling is a manifest error".
+    #[test]
+    fn max_request_secs_above_ceiling_is_a_manifest_error() {
+        assert_eq!(crate::lifecycle::MAX_REQUEST_SECS_CEILING, 7200);
+        assert!(parse(&one_service("max_request_secs = 7200")).is_ok(), "ceiling itself is allowed");
+        let err = parse(&one_service("max_request_secs = 7201")).expect_err("above ceiling must fail");
+        assert!(err.contains("max_request_secs"), "error must name the field: {err}");
+        assert!(err.contains("7200"), "error must name the ceiling: {err}");
+    }
+
+    // "struct-analyzer 5400, above `rescan.py`'s `RESCAN_TIMEOUT=3600`".
+    #[test]
+    fn struct_analyzer_max_request_outlasts_rescan_timeout() {
+        assert_eq!(embedded().services["struct-analyzer"].max_request_secs(), 5400);
+    }
+
+    // DEV-MCP-023 (decision 2026-11-24): "`health_kill_grace_secs` | 120 for
+    // every service (global ceiling 7200 ...); per-service override; no
+    // struct-analyzer override. Independent of `max_request_secs`: no fallback".
+    #[test]
+    fn health_kill_grace_defaults_to_120_independent_of_max_request() {
+        let m = parse(&one_service("max_request_secs = 900")).expect("parses");
+        assert_eq!(crate::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS, 120);
+        assert_eq!(m.services["x"].health_kill_grace_secs(), 120, "no fallback to max_request_secs");
+    }
+
+    #[test]
+    fn health_kill_grace_manifest_value_wins() {
+        let m = parse(&one_service("health_kill_grace_secs = 300")).expect("parses");
+        assert_eq!(m.services["x"].health_kill_grace_secs(), 300);
+    }
+
+    // "A per-service value above the ceiling is a manifest error, handled like `max_request_secs`."
+    #[test]
+    fn health_kill_grace_above_ceiling_is_a_manifest_error() {
+        assert!(parse(&one_service("health_kill_grace_secs = 7200")).is_ok());
+        let err = parse(&one_service("health_kill_grace_secs = 7201")).expect_err("above ceiling must fail");
+        assert!(err.contains("health_kill_grace_secs"), "error must name the field: {err}");
+        assert!(err.contains("7200"), "error must name the ceiling: {err}");
+    }
+
+    #[test]
+    fn struct_analyzer_has_no_health_grace_override() {
+        assert_eq!(embedded().services["struct-analyzer"].health_kill_grace_secs, None);
     }
 
     #[test]

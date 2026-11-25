@@ -51,6 +51,10 @@ fn make_entry(name: &str, port: u16, tier: ActivationTier) -> ServiceEntry {
         last_transition_reason: None,
         last_transition_at: None,
         min_tier: ActivationTier::Cold,
+        max_request_secs: shim_mcp_gateway::lifecycle::DEFAULT_MAX_REQUEST_SECS,
+        in_flight_since: None,
+        health_kill_grace_secs: shim_mcp_gateway::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS,
+        health_grace_since: None,
     }
 }
 

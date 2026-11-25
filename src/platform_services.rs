@@ -74,6 +74,10 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             last_transition_reason: None,
             last_transition_at: None,
             min_tier: svc.min_tier(),
+            max_request_secs: svc.max_request_secs(),
+            in_flight_since: None,
+            health_kill_grace_secs: svc.health_kill_grace_secs(),
+            health_grace_since: None,
         });
     }
 }
@@ -254,6 +258,28 @@ mod tests {
         assert_eq!((inference.hot_idle_timeout_secs, inference.warm_idle_timeout_secs), (600, 0));
         let amve = registry.get("amve").unwrap();
         assert_eq!((amve.hot_idle_timeout_secs, amve.warm_idle_timeout_secs), (1800, 600));
+    }
+
+    // DEV-MCP-023: seeded entries carry the manifest request limit.
+    #[test]
+    fn seeded_entries_carry_manifest_max_request_secs() {
+        let registry = ServiceRegistry::new();
+        seed_platform_services(&registry);
+        assert_eq!(registry.get("struct-analyzer").unwrap().max_request_secs, 5400);
+        assert_eq!(registry.get("amve").unwrap().max_request_secs, 600);
+        assert!(registry.get("amve").unwrap().in_flight_since.is_none());
+    }
+
+    // DEV-MCP-023: every seeded entry gets the 120 s health grace (no overrides yet).
+    #[test]
+    fn seeded_entries_carry_manifest_health_kill_grace() {
+        let registry = ServiceRegistry::new();
+        seed_platform_services(&registry);
+        for name in ["struct-analyzer", "amve"] {
+            let e = registry.get(name).unwrap();
+            assert_eq!(e.health_kill_grace_secs, 120, "{name}");
+            assert!(e.health_grace_since.is_none(), "{name}");
+        }
     }
 
     #[test]
