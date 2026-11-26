@@ -35,6 +35,10 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         # Custom traversal / domain focus
         focus_areas: list[str] | None = None,
         focus_keywords: list[str] | None = None,
+        # Code facets (ETDI BEH-06.04 step 5) — applied to code_chunks
+        structural_types: list[str] | None = None,
+        tested_structural_types: list[str] | None = None,
+        is_test_unit: bool | None = None,
     ) -> dict:
         """Combines semantic search with keyword matching for better precision.
 
@@ -51,6 +55,10 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
                 - "code"      — CRE code implementation examples
                 - "docs"      — documentation
                 - "textbooks" — textbook chapter prose
+            structural_types: code units whose structural types include any of these (e.g. ["http_endpoint"]).
+            tested_structural_types: test units linked to code of any of these types — "how to test an HTTP
+                endpoint" is is_test_unit=True plus tested_structural_types=["http_endpoint"].
+            is_test_unit: True for test code only, False for non-test code only.
         """
         collection = resolve_search_collection(source)
         validated = HybridSearchInput(
@@ -68,6 +76,9 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             expand_taxonomy=expand_taxonomy,
             focus_areas=focus_areas,
             focus_keywords=focus_keywords,
+            structural_types=structural_types,
+            tested_structural_types=tested_structural_types,
+            is_test_unit=is_test_unit,
         )
         # Map MCP param names → semantic-search API param names
         payload: dict = {
@@ -95,6 +106,11 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             payload["focus_areas"] = validated.focus_areas
         if validated.focus_keywords is not None:
             payload["focus_keywords"] = validated.focus_keywords
+        # Code facets (ETDI BEH-06.04 step 5): omitted when None so absent fields change nothing
+        for facet in ("structural_types", "tested_structural_types", "is_test_unit"):
+            value = getattr(validated, facet)
+            if value is not None:
+                payload[facet] = value
         result = await dispatcher.dispatch(TOOL_NAME, payload)
         return sanitizer.sanitize(result.body)
 

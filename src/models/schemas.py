@@ -128,6 +128,19 @@ class HybridSearchInput(BaseModel):
         default=None,
         description="Custom keywords to boost relevance scoring in result fusion",
     )
+    # ── Code facets (ETDI v0.61 BEH-06.04 step 5) — code_chunks only ─────
+    structural_types: list[str] | None = Field(
+        default=None,
+        description="Code units whose structural types include any of these (e.g. ['http_endpoint', 'retry_loop'])",
+    )
+    tested_structural_types: list[str] | None = Field(
+        default=None,
+        description="Test units linked to code of any of these structural types (e.g. ['http_endpoint'])",
+    )
+    is_test_unit: bool | None = Field(
+        default=None,
+        description="True for test code only, False for non-test code only",
+    )
 
     @field_validator("query", mode="before")
     @classmethod
