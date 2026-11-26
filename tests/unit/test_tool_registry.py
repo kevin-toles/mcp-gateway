@@ -31,15 +31,6 @@ EXPECTED_TOOL_NAMES = {
     "enhance_guideline",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage",
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns",
-    "amve_detect_boundaries",
-    "amve_detect_communication",
-    "amve_build_call_graph",
-    "amve_evaluate_fitness",
-    "amve_generate_architecture_log",
-    # Dead Code Detection (AEI-17)
-    "amve_detect_dead_code",
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan",
     "audit_code_metrics",
@@ -129,34 +120,6 @@ tools:
     description: "Analyze taxonomy coverage"
     tier: gold
     tags: [workflow, taxonomy, analysis, coverage]
-  - name: amve_detect_patterns
-    description: "Detect architecture patterns"
-    tier: gold
-    tags: [amve, architecture, patterns, analysis]
-  - name: amve_detect_boundaries
-    description: "Detect service boundaries"
-    tier: gold
-    tags: [amve, architecture, boundaries, analysis]
-  - name: amve_detect_communication
-    description: "Detect communication patterns"
-    tier: gold
-    tags: [amve, architecture, communication, events, messaging]
-  - name: amve_build_call_graph
-    description: "Build call graph"
-    tier: gold
-    tags: [amve, architecture, call-graph, analysis]
-  - name: amve_evaluate_fitness
-    description: "Evaluate architecture fitness"
-    tier: gold
-    tags: [amve, architecture, fitness, evaluation]
-  - name: amve_generate_architecture_log
-    description: "Generate architecture log"
-    tier: gold
-    tags: [amve, architecture, batch-scan, baseline]
-  - name: amve_detect_dead_code
-    description: "Detect dead code via AMVE"
-    tier: gold
-    tags: [amve, architecture, dead-code, unused-imports]
   - name: audit_security_scan
     description: "Scan source code for security vulnerabilities"
     tier: silver
@@ -265,7 +228,7 @@ class TestToolRegistryLoading:
 
     def test_loads_25_tools(self, yaml_path):
         registry = ToolRegistry(yaml_path)
-        assert registry.tool_count == 34
+        assert registry.tool_count == len(EXPECTED_TOOL_NAMES)
 
     def test_tool_names_match(self, yaml_path):
         registry = ToolRegistry(yaml_path)
@@ -363,11 +326,11 @@ class TestToolRegistryAccess:
 
     def test_list_all_returns_25(self, registry):
         tools = registry.list_all()
-        assert len(tools) == 34
+        assert len(tools) == len(EXPECTED_TOOL_NAMES)
         assert all(isinstance(t, ToolDefinition) for t in tools)
 
     def test_tool_count(self, registry):
-        assert registry.tool_count == 34
+        assert registry.tool_count == len(EXPECTED_TOOL_NAMES)
 
     def test_every_tool_has_description(self, registry):
         for tool in registry.list_all():

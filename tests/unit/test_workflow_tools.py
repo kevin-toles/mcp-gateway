@@ -1417,18 +1417,6 @@ EXPECTED_ALL_TOOL_NAMES = {
     "push_to_github",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage",
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns",
-    "amve_detect_boundaries",
-    "amve_detect_communication",
-    "amve_build_call_graph",
-    "amve_evaluate_fitness",
-    "amve_generate_architecture_log",
-    # Dead Code Detection (AEI-17)
-    "amve_detect_dead_code",
-    # Phase 2: Content-Addressed Snapshot Store
-    "amve_extract_architecture",
-    "amve_detect_drift",
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan",
     "audit_code_metrics",

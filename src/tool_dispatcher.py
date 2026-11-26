@@ -126,18 +126,6 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "enhance_guideline": make_service_key("ai-agents"),
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": make_service_key("code-orchestrator"),
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns": make_service_key("amve"),
-    "amve_detect_boundaries": make_service_key("amve"),
-    "amve_detect_communication": make_service_key("amve"),
-    "amve_build_call_graph": make_service_key("amve"),
-    "amve_evaluate_fitness": make_service_key("amve"),
-    "amve_generate_architecture_log": make_service_key("amve"),
-    # AEI-17: Dead code detection
-    "amve_detect_dead_code": make_service_key("amve"),
-    # Phase 2: Content-Addressed Snapshot Store tools
-    "amve_extract_architecture": make_service_key("amve"),
-    "amve_detect_drift": make_service_key("amve"),
     # Audit Service (WBS-AEI13)
     "audit_security_scan": make_service_key("audit-service"),
     "audit_code_metrics": make_service_key("audit-service"),
@@ -309,45 +297,8 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/api/v1/workflows/analyze-taxonomy-coverage",
             timeout=300.0,
         ),
-        # AMVE tools (AEI-7)
-        "amve_detect_patterns": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/patterns",
-        ),
-        "amve_detect_boundaries": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/boundaries",
-        ),
-        "amve_detect_communication": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/communication",
-        ),
-        "amve_build_call_graph": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/call-graph",
-        ),
-        "amve_evaluate_fitness": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/fitness/evaluate",
-        ),
-        "amve_generate_architecture_log": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/architecture/batch-scan",
-        ),
         # AEI-17: Dead code detection
-        "amve_detect_dead_code": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/dead-code",
-        ),
         # Phase 2: Content-Addressed Snapshot Store tools (G2.12 GREEN)
-        "amve_extract_architecture": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/architecture/extract",
-        ),
-        "amve_detect_drift": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/architecture/drift",
-        ),
         # Audit Service (WBS-AEI13)
         "audit_security_scan": DispatchRoute(
             base_url=settings.AUDIT_SERVICE_URL,

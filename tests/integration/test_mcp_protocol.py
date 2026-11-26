@@ -70,13 +70,6 @@ class TestMCPToolsList:
                 "enrich_book_metadata",
                 "enhance_guideline",
                 "analyze_taxonomy_coverage",
-                # AMVE architecture analysis (AEI-7)
-                "amve_detect_patterns",
-                "amve_detect_boundaries",
-                "amve_detect_communication",
-                "amve_build_call_graph",
-                "amve_evaluate_fitness",
-                "amve_generate_architecture_log",
             }
             assert tool_names == expected
 

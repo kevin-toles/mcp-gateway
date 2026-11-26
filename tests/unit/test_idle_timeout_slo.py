@@ -34,7 +34,6 @@ SERVICE_NAMES = [
     "audit-service",
     "context-management-service",
     "inference-service-cpp",
-    "amve",
 ]
 
 

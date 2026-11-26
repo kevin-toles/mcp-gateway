@@ -241,10 +241,11 @@ mod tests {
     }
 
     #[test]
-    fn manifest_parses_all_eleven_services() {
+    fn manifest_parses_all_ten_services() {
         // M5: Python unified-search-service retired — no H/W/C entry.
+        // 2026-11-26: Python AMVE retired (replaced by struct-analyzer) — no H/W/C entry.
         let m = embedded();
-        assert_eq!(m.services.len(), 11, "expected 11 services in manifest");
+        assert_eq!(m.services.len(), 10, "expected 10 services in manifest");
     }
 
     #[test]
@@ -260,7 +261,6 @@ mod tests {
             ("mcp-gateway", 8087),
             ("struct-analyzer", 8088),
             ("validation-service", 8091),
-            ("amve", 8092),
             ("semantic-search", 8081),
         ];
         for (name, port) in expected {
@@ -284,7 +284,8 @@ mod tests {
             .filter(|(_, s)| s.is_native())
             .map(|(n, _)| n.clone())
             .collect();
-        assert_eq!(native.len(), 8, "expected 8 native services, got {:?}", native);
+        // 2026-11-26: AMVE (native) retired.
+        assert_eq!(native.len(), 7, "expected 7 native services, got {:?}", native);
     }
 
     #[test]
@@ -318,10 +319,11 @@ mod tests {
         }
     }
 
+    // AMVE is retired (2026-11-26, replaced by struct-analyzer): the manifest no longer defines it.
     #[test]
-    fn amve_overrides_health_path() {
+    fn retired_amve_is_not_in_the_manifest() {
         let m = embedded();
-        assert_eq!(m.services["amve"].health_path, "/v1/health");
+        assert!(!m.services.contains_key("amve"));
         assert_eq!(m.services["ai-agents"].health_path, "/health");
     }
 

@@ -52,7 +52,6 @@ ONDEMAND_SERVICES = {
     "context-management-service": (8086, "/health"),
     "struct-analyzer": (8088, "/health"),
     "validation-service": (8091, "/health"),
-    "amve": (8092, "/v1/health"),
 }
 
 
@@ -246,14 +245,14 @@ def test_hwc_00d_runner_probe_results_are_read_back(tmp_path, monkeypatch):
     """
     results = tmp_path / "hwc_probe_results.jsonl"
     results.write_text(
-        '{"service":"amve","ready":false,"spawned":false,"stopped":false}\n'
+        '{"service":"struct-analyzer","ready":false,"spawned":false,"stopped":false}\n'
         "not json\n"
-        '{"service":"amve","ready":true,"spawned":true,"stopped":true}\n'
+        '{"service":"struct-analyzer","ready":true,"spawned":true,"stopped":true}\n'
     )
     monkeypatch.setenv("HWC_PROBE_RESULTS", str(results))
 
-    assert runner_probe_result("amve") == {
-        "service": "amve", "ready": True, "spawned": True, "stopped": True,
+    assert runner_probe_result("struct-analyzer") == {
+        "service": "struct-analyzer", "ready": True, "spawned": True, "stopped": True,
     }
     assert runner_probe_result("audit-service") is None
 

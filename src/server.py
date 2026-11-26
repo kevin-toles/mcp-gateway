@@ -21,15 +21,6 @@ from src.tools import (
     a2a_cancel_task,
     a2a_get_task,
     a2a_send_message,
-    amve_build_call_graph,
-    amve_detect_boundaries,
-    amve_detect_communication,
-    amve_detect_dead_code,
-    amve_detect_drift,
-    amve_detect_patterns,
-    amve_evaluate_fitness,
-    amve_extract_architecture,
-    amve_generate_architecture_log,
     analyze_taxonomy_coverage,
     ask,
     audit_code_metrics,
@@ -131,17 +122,6 @@ _HANDLER_FACTORIES: dict[str, Callable[..., Any]] = {
     "enhance_guideline": enhance_guideline.create_handler,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": analyze_taxonomy_coverage.create_handler,
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns": amve_detect_patterns.create_handler,
-    "amve_detect_boundaries": amve_detect_boundaries.create_handler,
-    "amve_detect_communication": amve_detect_communication.create_handler,
-    "amve_build_call_graph": amve_build_call_graph.create_handler,
-    "amve_evaluate_fitness": amve_evaluate_fitness.create_handler,
-    "amve_generate_architecture_log": amve_generate_architecture_log.create_handler,
-    # AEI-17
-    "amve_detect_dead_code": amve_detect_dead_code.create_handler,
-    "amve_detect_drift": amve_detect_drift.create_handler,
-    "amve_extract_architecture": amve_extract_architecture.create_handler,
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan": audit_security_scan.create_handler,
     "audit_code_metrics": audit_code_metrics.create_handler,

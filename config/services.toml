@@ -120,10 +120,3 @@ tier = "warm"
 runtime = "native"
 spawn = "cd ${POC_ROOT}/validation-service/rust && PORT=8091 ./target/release/validation-service"
 
-# amve: health endpoint is mounted under prefix /v1.
-[services.amve]
-port = 8092
-tier = "warm"
-runtime = "native"
-health_path = "/v1/health"
-spawn = "cd ${POC_ROOT}/architecture-mapping-validation-engine && (test -x .venv/bin/python || (python3 -m venv .venv && .venv/bin/pip install -q -e .)) && PORT=8092 .venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8092"

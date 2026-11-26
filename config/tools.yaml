@@ -372,56 +372,6 @@ tools:
     tier: bronze
     tags: [struct-analyzer, architecture, fitness, functions, discovery]
 
-  # ── AMVE Deprecated Stubs (→ sa_* replacements) ───────────────────────────────
-  # These stubs exist for backward compatibility. All amve_* routes point to
-  # struct-analyzer (:8088) which is the live service at that port.
-  # amve_detect_communication is BROKEN — no /v1/analysis/communication endpoint exists.
-
-  - name: amve_detect_patterns
-    description: "[DEPRECATED] Use sa_detect_patterns. Dispatches to AMVE (:8092) /v1/analysis/patterns. The struct-analyzer (Go :8088) sa_detect_patterns is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, patterns]
-
-  - name: amve_detect_boundaries
-    description: "[DEPRECATED] Use sa_detect_boundaries. Dispatches to AMVE (:8092) /v1/analysis/boundaries. The struct-analyzer (Go :8088) sa_detect_boundaries is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, boundaries]
-
-  - name: amve_detect_communication
-    description: "[DEPRECATED — BROKEN ⛔] Routes to /v1/analysis/communication which does NOT exist in struct-analyzer Go. Python AMVE's unified 'communication' concept was split into two endpoints: use sa_detect_events for event-driven patterns and sa_detect_messaging for message bus patterns."
-    tier: bronze
-    tags: [amve, deprecated, broken, communication]
-
-  - name: amve_build_call_graph
-    description: "[DEPRECATED] Use sa_build_call_graph. Dispatches to AMVE (:8092) /v1/analysis/call-graph. The struct-analyzer (Go :8088) sa_build_call_graph is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, call-graph]
-
-  - name: amve_evaluate_fitness
-    description: "[DEPRECATED] Use sa_evaluate_fitness. Dispatches to AMVE (:8092) /v1/fitness/evaluate. The struct-analyzer (Go :8088) sa_evaluate_fitness is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required."
-    tier: bronze
-    tags: [amve, deprecated, architecture, fitness]
-
-  - name: amve_generate_architecture_log
-    description: "[DEPRECATED] Use sa_batch_scan. Dispatches to AMVE (:8092) /v1/architecture/batch-scan. The struct-analyzer (Go :8088) sa_batch_scan is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, batch-scan]
-
-  - name: amve_detect_dead_code
-    description: "[DEPRECATED] Use sa_detect_dead_code. Dispatches to AMVE (:8092) /v1/analysis/dead-code. The struct-analyzer (Go :8088) sa_detect_dead_code is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, dead-code]
-
-  - name: amve_extract_architecture
-    description: "[DEPRECATED] Use sa_extract_architecture. Dispatches to AMVE (:8092) /v1/architecture/extract. The struct-analyzer (Go :8088) sa_extract_architecture is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required."
-    tier: bronze
-    tags: [amve, deprecated, architecture, snapshot]
-
-  - name: amve_detect_drift
-    description: "[DEPRECATED] Use sa_detect_drift. Dispatches to AMVE (:8092) /v1/architecture/drift. The struct-analyzer (Go :8088) sa_detect_drift is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required for SHA-pair mode."
-    tier: bronze
-    tags: [amve, deprecated, architecture, drift]
-
   # ── Context Management Service — CMS :8086 ────────────────────────────────────
   # Bifurcated processing pipeline: TextSegment / CodeBlock routing,
   # token optimization, skeleton client → struct-analyzer skeletonize.

@@ -19,8 +19,7 @@ _HEALTH_PATHS = {
     "llm-gateway": "/health",
     "ai-agents": "/health",
     "audit-service": "/health",
-    "struct-analyzer": "/health",  # Go service — replaces amve
-    "amve": "/health",  # kept for legacy tool routing during migration
+    "struct-analyzer": "/health",
     "inference-service-cpp": "/health",
     "context-management-service": "/health",
     "semantic-search": "/health",
@@ -39,7 +38,6 @@ def _service_base_url(service: str, settings: Settings) -> str | None:
         "llm-gateway": settings.LLM_GATEWAY_URL,
         "ai-agents": settings.AI_AGENTS_URL,
         "audit-service": settings.AUDIT_SERVICE_URL,
-        "amve": settings.AMVE_SERVICE_URL,
         "struct-analyzer": settings.STRUCT_ANALYZER_URL,
         "inference-service-cpp": settings.INFERENCE_SERVICE_URL,
         "context-management-service": settings.CONTEXT_MANAGEMENT_URL,
