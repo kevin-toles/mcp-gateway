@@ -379,3 +379,59 @@ class TestCodeFacetsPassThrough:
         _capturing(dispatcher, captured)
         await create_handler(dispatcher, sanitizer)(query="token validation", source="code")
         assert not {"structural_types", "tested_structural_types", "is_test_unit"} & captured.keys()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ETDI-1.0.1199 (AC-ETDI-1.0.314; BEH-06.04 step 5, v0.77): "v0.76: `subject_subdomains` (match any on the
+# payload's `subject.subdomain`) finds tests by the code they test" — carried by "the hybrid route's
+# `subject_subdomains` filter plus the mcp-gateway passthrough".
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSubjectSubdomainsPassThrough:
+    """AC-ETDI-1.0.314: hybrid_search passes subject_subdomains to POST /v1/search/hybrid."""
+
+    def test_subject_subdomains_defaults_to_none(self) -> None:
+        from src.models.schemas import HybridSearchInput
+
+        assert HybridSearchInput(query="tests of the file system").subject_subdomains is None
+
+    @pytest.mark.asyncio
+    async def test_tests_of_filesystem_code_reach_the_payload(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        """xv6 usertests.c:fourfiles — subject {kernel-systems-programming-operating-systems, filesystems-implementation}."""
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(
+            query="tests of the file system", source="code",
+            is_test_unit=True, subject_subdomains=["filesystems-implementation"],
+        )
+        assert captured["collection"] == "code"
+        assert captured["subject_subdomains"] == ["filesystems-implementation"]
+        assert captured["is_test_unit"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_list_is_forwarded_as_given(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        """USS-RS treats an empty list as absent (v0.66); the gateway forwards what it was given."""
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(query="file system", source="code", subject_subdomains=[])
+        assert captured["subject_subdomains"] == []
+
+    @pytest.mark.asyncio
+    async def test_absent_subject_subdomains_leaves_the_payload_unchanged(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(query="file system", source="code")
+        assert "subject_subdomains" not in captured

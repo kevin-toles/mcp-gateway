@@ -39,6 +39,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         structural_types: list[str] | None = None,
         tested_structural_types: list[str] | None = None,
         is_test_unit: bool | None = None,
+        subject_subdomains: list[str] | None = None,
     ) -> dict:
         """Combines semantic search with keyword matching for better precision.
 
@@ -59,6 +60,8 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             tested_structural_types: test units linked to code of any of these types — "how to test an HTTP
                 endpoint" is is_test_unit=True plus tested_structural_types=["http_endpoint"].
             is_test_unit: True for test code only, False for non-test code only.
+            subject_subdomains: test units whose subject — the code they test — is in any of these subdomains
+                (e.g. ["filesystems-implementation"]).
         """
         collection = resolve_search_collection(source)
         validated = HybridSearchInput(
@@ -79,6 +82,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             structural_types=structural_types,
             tested_structural_types=tested_structural_types,
             is_test_unit=is_test_unit,
+            subject_subdomains=subject_subdomains,
         )
         # Map MCP param names → semantic-search API param names
         payload: dict = {
@@ -107,7 +111,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         if validated.focus_keywords is not None:
             payload["focus_keywords"] = validated.focus_keywords
         # Code facets (ETDI BEH-06.04 step 5): omitted when None so absent fields change nothing
-        for facet in ("structural_types", "tested_structural_types", "is_test_unit"):
+        for facet in ("structural_types", "tested_structural_types", "is_test_unit", "subject_subdomains"):
             value = getattr(validated, facet)
             if value is not None:
                 payload[facet] = value

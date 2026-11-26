@@ -141,6 +141,11 @@ class HybridSearchInput(BaseModel):
         default=None,
         description="True for test code only, False for non-test code only",
     )
+    subject_subdomains: list[str] | None = Field(
+        default=None,
+        description="Test units whose subject (the code they test) is in any of these subdomains "
+        "(e.g. ['filesystems-implementation']) (ETDI v0.76)",
+    )
 
     @field_validator("query", mode="before")
     @classmethod
