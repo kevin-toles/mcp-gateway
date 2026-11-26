@@ -301,3 +301,81 @@ class TestTierFilterValidation:
 
         with pytest.raises((ValidationError, ValueError)):
             HybridSearchInput(query="test", quality_tier_filter=[4])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ETDI-1.0.1134 (AC-ETDI-1.0.306; BEH-06.04 step 5, SCE-06.04.05; v0.61):
+# "mcp-gateway's `hybrid_search` tool passes them through" — the optional code_chunks facets
+# `structural_types`, `tested_structural_types` (match any) and `is_test_unit`; absent fields change nothing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _capturing(dispatcher: ToolDispatcher, captured: dict) -> None:
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"results": [], "total": 0, "alpha": 0.7, "latency_ms": 1.0})
+
+    dispatcher._client = httpx.AsyncClient(transport=httpx.MockTransport(mock_transport))
+
+
+class TestCodeFacetsPassThrough:
+    """AC-ETDI-1.0.306: hybrid_search passes the code facets to POST /v1/search/hybrid."""
+
+    def test_facet_fields_default_to_none(self) -> None:
+        from src.models.schemas import HybridSearchInput
+
+        m = HybridSearchInput(query="how to test an HTTP endpoint")
+        assert (m.structural_types, m.tested_structural_types, m.is_test_unit) == (None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_tests_of_http_endpoints_reach_the_payload(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        """SCE-06.04.05: "how to test an HTTP endpoint" is is_test_unit true plus tested_structural_types [http_endpoint]."""
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(
+            query="how to test an HTTP endpoint", source="code",
+            is_test_unit=True, tested_structural_types=["http_endpoint"],
+        )
+        assert captured["collection"] == "code"
+        assert captured["is_test_unit"] is True
+        assert captured["tested_structural_types"] == ["http_endpoint"]
+        assert "structural_types" not in captured
+
+    @pytest.mark.asyncio
+    async def test_structural_types_reach_the_payload(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(
+            query="retry with backoff", source="code", structural_types=["retry_loop", "timeout_guard"],
+        )
+        assert captured["structural_types"] == ["retry_loop", "timeout_guard"]
+
+    @pytest.mark.asyncio
+    async def test_is_test_unit_false_is_passed_not_dropped(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(query="token validation", source="code", is_test_unit=False)
+        assert captured["is_test_unit"] is False
+
+    @pytest.mark.asyncio
+    async def test_absent_facets_leave_the_payload_unchanged(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(query="token validation", source="code")
+        assert not {"structural_types", "tested_structural_types", "is_test_unit"} & captured.keys()

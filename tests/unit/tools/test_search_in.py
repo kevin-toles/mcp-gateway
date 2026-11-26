@@ -54,7 +54,7 @@ class TestSearchInDefaultDispatch:
         handler = create_handler(dispatcher)
         await handler(query="design patterns", source="textbooks")
 
-        assert captured.get("collection") == "chunks"
+        assert captured.get("collection") == "chapters"   # ETDI-1.0 v0.48: `chunks` retired; passages via granularity
 
     @pytest.mark.asyncio
     async def test_mmr_rerank_is_true(self, dispatcher: ToolDispatcher) -> None:

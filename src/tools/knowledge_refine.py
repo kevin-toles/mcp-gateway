@@ -12,6 +12,7 @@ Use this tool when:
 
 from src.models.schemas import KnowledgeRefineInput
 from src.security.output_sanitizer import OutputSanitizer
+from src.tools._resolvers import SHELF_GRANULARITY, granularity_for
 from src.tool_dispatcher import ToolDispatcher
 
 TOOL_NAME = "knowledge_refine"
@@ -37,7 +38,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         Args:
             query: Natural language question or concept to search for.
             collection: Collection to search. Valid values:
-                - 'chunks' / 'textbooks' — textbook chapter chunks (with full text)
+                - 'chapters' / 'textbooks' — book passages
                 - 'code_chunks' / 'code'   — CRE code examples
                 - 'pattern_instances' / 'patterns' — architectural pattern instances
                 - 'code_good_patterns'     — canonical good-code examples
@@ -57,15 +58,19 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             quality_tier_filter=quality_tier_filter,
             mmr_rerank=mmr_rerank,
         )
+        collection = "chapters" if validated.collection in ("chapters", "textbooks") else validated.collection
         payload: dict = {
             "query": validated.query,
-            "collection": validated.collection,
+            "collection": collection,
             "limit": validated.limit,
             "include_graph": True,
             "tier_boost": True,
             "expand_taxonomy": False,
             "mmr_rerank": validated.mmr_rerank,
         }
+        granularity = granularity_for(collection, SHELF_GRANULARITY)
+        if granularity:
+            payload["granularity"] = granularity
         if validated.bloom_tier_filter is not None:
             payload["bloom_tier_filter"] = validated.bloom_tier_filter
         if validated.quality_tier_filter is not None:

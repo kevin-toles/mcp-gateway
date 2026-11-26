@@ -49,7 +49,7 @@ class SemanticSearchInput(BaseModel):
     """
 
     query: str = Field(..., min_length=1, max_length=2000)
-    collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
+    collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|chapters|all)$")
     top_k: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_RESULTS)
     limit: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_ALIAS)
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -80,7 +80,7 @@ class HybridSearchInput(BaseModel):
     """
 
     query: str = Field(..., min_length=1, max_length=2000)
-    collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|all)$")
+    collection: str = Field(default="all", pattern=r"^(code|docs|textbooks|chapters|all)$")
     top_k: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_RESULTS)
     limit: int | None = Field(default=None, ge=1, le=100, description=_DESC_MAX_ALIAS)
     semantic_weight: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -127,6 +127,19 @@ class HybridSearchInput(BaseModel):
     focus_keywords: list[str] | None = Field(
         default=None,
         description="Custom keywords to boost relevance scoring in result fusion",
+    )
+    # ── Code facets (ETDI v0.61 BEH-06.04 step 5) — code_chunks only ─────
+    structural_types: list[str] | None = Field(
+        default=None,
+        description="Code units whose structural types include any of these (e.g. ['http_endpoint', 'retry_loop'])",
+    )
+    tested_structural_types: list[str] | None = Field(
+        default=None,
+        description="Test units linked to code of any of these structural types (e.g. ['http_endpoint'])",
+    )
+    is_test_unit: bool | None = Field(
+        default=None,
+        description="True for test code only, False for non-test code only",
     )
 
     @field_validator("query", mode="before")

@@ -23,20 +23,29 @@ _SEARCH_COLLECTION_MAP: dict[str, str] = {
     "all": "all",  # search across all collections (default)
     "code": "code",  # CRE code implementation examples
     "docs": "docs",  # documentation
-    "textbooks": "chunks",  # textbook chapter prose — routes to chunks with full text
+    "textbooks": "chapters",  # book text: every level lives in `chapters`, reached by granularity (ETDI §5.1.8)
 }
 
 # ── knowledge_refine backend Qdrant collection names ─────────────────────────
 
 _SHELF_COLLECTION_MAP: dict[str, str] = {
-    # NOTE: "textbooks" routes to "chunks" (the fine-grained chunk collection
-    # with verbatim text), not "chapters" (which is metadata-only with no text body).
-    # WBS_CHUNK_RETRIEVAL Phase 3 — 273K chunks with full text.
-    "textbooks": "chunks",
+    # ETDI-1.0 (v0.48, S3/S4): the `chunks` collection is retired; book text at every level (chapter, passage,
+    # paragraph group) lives in `chapters` with its text in `content`, reached by a `granularity` filter.
+    "textbooks": "chapters",
     "code": "code_chunks",
     "patterns": "code_good_patterns",
     "diagrams": "ascii_diagrams",
 }
+
+
+#: Level each kind of call asks `chapters` for (ETDI §5.1.8): broad search returns chapters, targeted refining passages.
+SEARCH_GRANULARITY = "chapter"
+SHELF_GRANULARITY = "passage"
+
+
+def granularity_for(collection: str, level: str) -> str | None:
+    """The `granularity` to send with `collection` — only `chapters` is multi-level; other collections take none."""
+    return level if collection == "chapters" else None
 
 
 def resolve_search_collection(source: str) -> str:

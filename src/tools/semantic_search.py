@@ -11,7 +11,7 @@ dispatches to the semantic-search backend, and sanitizes output.
 from src.models.schemas import SemanticSearchInput
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
-from src.tools._resolvers import resolve_search_collection
+from src.tools._resolvers import SEARCH_GRANULARITY, granularity_for, resolve_search_collection
 
 TOOL_NAME = "semantic_search"
 
@@ -45,6 +45,9 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
         payload = validated.model_dump()
         payload["limit"] = payload.pop("top_k")
         payload["min_score"] = payload.pop("threshold")
+        granularity = granularity_for(validated.collection, SEARCH_GRANULARITY)
+        if granularity:
+            payload["granularity"] = granularity
         result = await dispatcher.dispatch(TOOL_NAME, payload)
         return sanitizer.sanitize(result.body)
 

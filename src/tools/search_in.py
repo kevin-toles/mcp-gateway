@@ -12,7 +12,7 @@ enforcement (KB-6); enum-bounded routing signals (CRE-2).
 from __future__ import annotations
 
 from src.tool_dispatcher import ToolDispatcher
-from src.tools._resolvers import resolve_shelf_collection
+from src.tools._resolvers import SHELF_GRANULARITY, granularity_for, resolve_shelf_collection
 
 TOOL_NAME = "search_in"
 
@@ -45,7 +45,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer=None):  # noqa: ANN001
         Args:
             query: The question or concept to search for.
             source: Knowledge shelf to search. One of:
-                - "textbooks" — textbook chapter prose (default)
+                - "textbooks" — book passages (default)
                 - "code" — CRE code implementation examples
                 - "patterns" — design pattern / anti-pattern instances
                 - "diagrams" — architecture ASCII diagrams
@@ -62,6 +62,9 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer=None):  # noqa: ANN001
             "tier_boost": True,
             "expand_taxonomy": False,
         }
+        granularity = granularity_for(collection, SHELF_GRANULARITY)
+        if granularity:
+            payload["granularity"] = granularity
 
         result = await dispatcher.dispatch("knowledge_refine", payload)
         return result.body
