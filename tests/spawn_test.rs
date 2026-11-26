@@ -50,6 +50,11 @@ fn make_entry(name: &str, port: u16, tier: ActivationTier) -> ServiceEntry {
         health_checks_passed: 0,
         last_transition_reason: None,
         last_transition_at: None,
+        min_tier: ActivationTier::Cold,
+        max_request_secs: shim_mcp_gateway::lifecycle::DEFAULT_MAX_REQUEST_SECS,
+        in_flight_since: None,
+        health_kill_grace_secs: shim_mcp_gateway::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS,
+        health_grace_since: None,
     }
 }
 
@@ -94,7 +99,7 @@ async fn test_spawn_native_uvicorn() {
         health_port: port,
         tier: ActivationTier::Warm,
         runtime: ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".into(),
+            spawn_cmd: "/bin/sleep 120".into(), // a process that stays alive
             pid_file: None,
         },
         health_path: "/health".into(),
@@ -122,7 +127,7 @@ async fn test_spawn_native_binary() {
         health_port: port,
         tier: ActivationTier::Warm,
         runtime: ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".into(),
+            spawn_cmd: "/bin/sleep 120".into(), // a process that stays alive
             pid_file: None,
         },
         health_path: "/health".into(),
@@ -169,7 +174,7 @@ async fn test_spawn_docker_container() {
 // ═════════════════════════════════════════════════════════════════════════════
 #[tokio::test]
 #[serial]
-async fn test_spawn_auto_resolves_native() {
+async fn test_spawn_refuses_auto_runtime_in_hybrid_mode() {
     let port = spawn_health_endpoint().await;
 
     let entry = ServiceEntry {
@@ -182,11 +187,10 @@ async fn test_spawn_auto_resolves_native() {
         ..make_entry("", 0, ActivationTier::Warm)
     };
 
+    // launchd owns Auto services: the shim refuses to spawn them rather than
+    // running a placeholder process.
     let result = shim_mcp_gateway::spawn::spawn_service(&entry, "hybrid").await;
-    match result {
-        Ok(pid) => assert!(pid > 0, "Auto+hybrid should spawn native and return PID > 0"),
-        Err(e) => panic!("expected Ok(pid), got Err({:?})", e),
-    }
+    assert_eq!(result, Err(shim_mcp_gateway::spawn::SpawnError::RuntimeUnresolved));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -261,7 +265,7 @@ async fn test_spawn_updates_registry_tier() {
         health_port: port,
         tier: ActivationTier::Warm,
         runtime: ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".into(),
+            spawn_cmd: "/bin/sleep 120".into(), // a process that stays alive
             pid_file: None,
         },
         health_path: "/health".into(),
@@ -322,7 +326,7 @@ async fn test_spawn_health_poll_timeout() {
         health_port,
         tier: ActivationTier::Warm,
         runtime: ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".into(),
+            spawn_cmd: "/bin/sleep 120".into(), // outlives the 30 s health wait
             pid_file: None,
         },
         health_path: "/health".into(),
@@ -366,7 +370,7 @@ async fn test_spawn_health_poll_success() {
         health_port: port,
         tier: ActivationTier::Warm,
         runtime: ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".into(),
+            spawn_cmd: "/bin/sleep 120".into(), // a process that stays alive
             pid_file: None,
         },
         health_path: "/health".into(),

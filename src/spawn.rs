@@ -20,6 +20,13 @@ pub enum SpawnError {
     },
     /// Could not determine how to deploy this service (Auto + unknown mode)
     RuntimeUnresolved,
+    /// The spawned process exited before becoming healthy.
+    ExitedEarly {
+        /// Exit code (`None` when killed by a signal).
+        code: Option<i32>,
+        /// Last lines of `/tmp/spawn-<service>.log`.
+        log_tail: String,
+    },
 }
 
 impl PartialEq for SpawnError {
@@ -30,6 +37,7 @@ impl PartialEq for SpawnError {
             (SpawnError::DockerFailed(a), SpawnError::DockerFailed(b)) => a == b,
             (SpawnError::HealthTimeout { elapsed_secs: a }, SpawnError::HealthTimeout { elapsed_secs: b }) => a == b,
             (SpawnError::RuntimeUnresolved, SpawnError::RuntimeUnresolved) => true,
+            (SpawnError::ExitedEarly { code: a, .. }, SpawnError::ExitedEarly { code: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -45,6 +53,10 @@ impl std::fmt::Display for SpawnError {
                 write!(f, "health check timed out after {}s", elapsed_secs)
             }
             SpawnError::RuntimeUnresolved => write!(f, "could not resolve deployment runtime"),
+            SpawnError::ExitedEarly { code, log_tail } => {
+                let status = code.map_or_else(|| "a signal".to_string(), |c| format!("code {c}"));
+                write!(f, "process exited with {status} before becoming healthy; log tail:\n{log_tail}")
+            }
         }
     }
 }
@@ -90,12 +102,12 @@ async fn spawn_service_inner(entry: &ServiceEntry, deployment_mode: &str) -> Res
     // Step 3: Spawn based on resolved runtime
     match resolved {
         ServiceRuntime::Native { spawn_cmd, .. } => {
-            let child = spawn_native_process(&spawn_cmd)?;
+            let mut child = spawn_native_process(&spawn_cmd, &entry.name)?;
             let pid = child.id();
             let url = format!("http://127.0.0.1:{}{}", health_port, entry.health_path);
 
-            // Step 4: Poll health
-            poll_health(&url, Duration::from_secs(30), Duration::from_millis(500)).await?;
+            // Step 4: Poll health — failing fast if the process dies first.
+            poll_health_or_exit(&mut child, &entry.name, &url, Duration::from_secs(30)).await?;
 
             Ok(pid)
         }
@@ -148,6 +160,50 @@ pub async fn spawn_service_and_promote(
 /// the service isn't listening and can return immediately rather than waiting
 /// for the full timeout. This is critical for unit tests that test timeout
 /// behavior against unreachable ports.
+/// Where a service's spawn output goes (`/tmp/spawn-<service>.log`, appended).
+pub fn spawn_log_path(service: &str) -> std::path::PathBuf {
+    std::path::Path::new("/tmp").join(format!("spawn-{}.log", service.replace('/', "_")))
+}
+
+/// Last `lines` lines of a service's spawn log (empty if unreadable).
+fn spawn_log_tail(service: &str, lines: usize) -> String {
+    let text = std::fs::read_to_string(spawn_log_path(service)).unwrap_or_default();
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
+/// Poll `url` until healthy, but stop as soon as `child` exits: a spawn that
+/// dies (missing tool, crash on import) is reported at once with its exit
+/// status and log tail instead of after the full health timeout.
+async fn poll_health_or_exit(
+    child: &mut Child,
+    service: &str,
+    url: &str,
+    timeout: Duration,
+) -> Result<(), SpawnError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
+    let start = tokio::time::Instant::now();
+    let mut interval = Duration::from_millis(250);
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(SpawnError::ExitedEarly { code: status.code(), log_tail: spawn_log_tail(service, 20) });
+        }
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status().is_success() {
+                return Ok(());
+            }
+        }
+        if start.elapsed() >= timeout {
+            return Err(SpawnError::HealthTimeout { elapsed_secs: start.elapsed().as_secs() });
+        }
+        sleep(interval).await;
+        interval = std::cmp::min(interval * 2, Duration::from_millis(1600));
+    }
+}
+
 pub async fn poll_health(
     url: &str,
     timeout: Duration,
@@ -188,10 +244,9 @@ pub fn resolve_runtime(
 ) -> Result<ServiceRuntime, SpawnError> {
     match runtime {
         ServiceRuntime::Auto => match deployment_mode {
-            "hybrid" | "native" => Ok(ServiceRuntime::Native {
-                spawn_cmd: "/bin/sleep".to_string(),
-                pid_file: None,
-            }),
+            // launchd (KeepAlive) is the restart authority for Auto services;
+            // there is no spawn command to run natively.
+            "hybrid" | "native" => Err(SpawnError::RuntimeUnresolved),
             "docker" | "auto" => {
                 // For "auto", probe Docker availability. Since we're at the
                 // service level and the caller should have resolved "auto" by
@@ -213,6 +268,48 @@ pub async fn is_port_bound(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port)).await.is_ok()
 }
 
+/// Count in-flight inbound connections to `port` from `lsof -Fpn` output.
+///
+/// Only server-side sockets count (local endpoint port == `port`). A server
+/// socket whose client end is a socket owned by `own_pid` (this daemon's own
+/// health probe) is excluded, so the shim never keeps a service alive by
+/// probing it.
+fn count_inbound_connections(lsof_fields: &str, port: u16, own_pid: u32) -> usize {
+    let mut pid = 0u32;
+    let mut server_peers: Vec<&str> = Vec::new();
+    let mut own_locals: Vec<&str> = Vec::new();
+    for line in lsof_fields.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.parse().unwrap_or(0);
+        } else if let Some(name) = line.strip_prefix('n') {
+            let Some((local, remote)) = name.split_once("->") else { continue };
+            if pid == own_pid {
+                own_locals.push(local);
+            }
+            let local_port = local.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+            if local_port == Some(port) {
+                server_peers.push(remote);
+            }
+        }
+    }
+    server_peers.iter().filter(|peer| !own_locals.contains(peer)).count()
+}
+
+/// True when some client holds an ESTABLISHED connection to the service on
+/// `port` — a request still in flight. Request-driven lifecycle: an open
+/// request is activity, so the idle monitor must not demote or stop the
+/// service while one exists (2026-11-10 struct-analyzer mid-request stops).
+pub async fn has_inbound_connections(port: u16) -> bool {
+    let output = tokio::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:ESTABLISHED", "-Fpn"])
+        .output()
+        .await;
+    let Ok(out) = output else {
+        return false;
+    };
+    count_inbound_connections(&String::from_utf8_lossy(&out.stdout), port, std::process::id()) > 0
+}
+
 /// Kill the process(es) LISTENING on `port`. Returns how many were killed.
 ///
 /// Wedged-service eviction: a service can hang with its socket still bound
@@ -223,6 +320,12 @@ pub async fn is_port_bound(port: u16) -> bool {
 /// Safety: `-sTCP:LISTEN` restricts to the listener itself. Processes that
 /// merely hold a *client* connection to the port (e.g. this daemon's own
 /// stuck health probe) are never touched.
+///
+/// The listener's whole process group is stopped, not just the listener:
+/// SIGTERM first (so a service can shut its worker pool down), then SIGKILL
+/// for whatever is left. Every native spawn leads its own group, as does
+/// every launchd job. 2026-11-10: killing only the listener orphaned COS's
+/// pool workers on every stop until the machine ran out of memory.
 pub async fn kill_port_listeners(port: u16) -> usize {
     let output = tokio::process::Command::new("lsof")
         .args(["-ti", &format!(":{}", port), "-sTCP:LISTEN"])
@@ -233,13 +336,9 @@ pub async fn kill_port_listeners(port: u16) -> usize {
     };
     let mut killed = 0;
     for pid_str in String::from_utf8_lossy(&out.stdout).split_whitespace() {
-        if let Ok(pid) = pid_str.parse::<u32>() {
-            let result = tokio::process::Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .status()
-                .await;
-            if matches!(result, Ok(s) if s.success()) {
-                tracing::warn!(port = port, pid = pid, "killed wedged listener");
+        if let Ok(pid) = pid_str.parse::<i32>() {
+            if stop_process_group_of(pid).await {
+                tracing::warn!(port = port, pid = pid, "stopped listener and its process group");
                 killed += 1;
             }
         }
@@ -247,9 +346,34 @@ pub async fn kill_port_listeners(port: u16) -> usize {
     killed
 }
 
-/// Spawn a native process from a command string.
-/// Splits the command string into program and arguments by whitespace.
-fn spawn_native_process(spawn_cmd: &str) -> Result<Child, SpawnError> {
+/// How long a service gets between SIGTERM and SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+
+/// Stop `pid` together with its process group. Falls back to SIGKILL of
+/// `pid` alone when the group is this daemon's own (or init's) — signalling
+/// it would take the shim down with the service.
+async fn stop_process_group_of(pid: i32) -> bool {
+    // SAFETY: getpgid/kill/killpg take plain integers and touch no memory.
+    let pgid = unsafe { libc::getpgid(pid) };
+    let own = unsafe { libc::getpgid(0) };
+    if pgid <= 1 || pgid == own {
+        return unsafe { libc::kill(pid, libc::SIGKILL) } == 0;
+    }
+    if unsafe { libc::killpg(pgid, libc::SIGTERM) } != 0 {
+        return false;
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < STOP_GRACE && unsafe { libc::kill(pid, 0) } == 0 {
+        sleep(Duration::from_millis(100)).await;
+    }
+    // Children that ignored or outlived the SIGTERM; ESRCH (group gone) is fine.
+    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    true
+}
+
+/// Spawn a native process from a command string (shlex-split), in its own
+/// process group, logging to `/tmp/spawn-{service}.log` (appended).
+fn spawn_native_process(spawn_cmd: &str, service: &str) -> Result<Child, SpawnError> {
     let parts = shlex::split(spawn_cmd).ok_or_else(|| {
         SpawnError::ProcessFailed(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -265,14 +389,22 @@ fn spawn_native_process(spawn_cmd: &str) -> Result<Child, SpawnError> {
     let program = &parts[0];
     let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
-    let log_dir = std::path::Path::new("/tmp");
-    let stdout_file = std::fs::File::create(log_dir.join(format!("spawn-{}.log", program.replace('/', "_"))))
+    // Per-service, appended: one shared truncated log hid every crash.
+    let log_path = spawn_log_path(service);
+    let stdout_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
         .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
     let stderr_file = stdout_file.try_clone()
         .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
 
+    use std::os::unix::process::CommandExt;
     Command::new(program)
         .args(&args)
+        // Own process group: the service must outlive a shim restart
+        // (launchd kills the shim job's process group).
+        .process_group(0)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .spawn()
@@ -300,6 +432,39 @@ fn spawn_docker_container(container_name: &str) -> Result<(), SpawnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-20: `launchctl kickstart -k` on the shim killed every service it
+    /// had spawned (same process group), taking COS down mid-use. A spawned
+    /// service must lead its own process group so it outlives the shim.
+    #[test]
+    fn test_spawned_service_leads_its_own_process_group() {
+        let mut child = spawn_native_process("sleep 5", "pgroup-test").expect("spawn");
+        let pid = child.id();
+        let pgid = |p: u32| {
+            let out = std::process::Command::new("ps").args(["-o", "pgid=", "-p", &p.to_string()]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().unwrap()
+        };
+        let child_group = pgid(pid);
+        let own_group = pgid(std::process::id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(child_group, pid, "spawned service must be its own group leader");
+        assert_ne!(child_group, own_group);
+    }
+
+    /// Every service shared `/tmp/spawn-sh.log`, truncated on each spawn — so a
+    /// crashing service's error was overwritten before anyone could read it.
+    #[test]
+    fn test_spawn_output_goes_to_a_per_service_appended_log() {
+        let log = std::path::Path::new("/tmp").join("spawn-log-test-svc.log");
+        let _ = std::fs::remove_file(&log);
+        for word in ["first", "second"] {
+            let mut child = spawn_native_process(&format!("sh -c 'echo {word}'"), "log-test-svc").unwrap();
+            child.wait().unwrap();
+        }
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("first") && text.contains("second"), "{text}");
+    }
 
     #[test]
     fn test_spawn_error_display_already_running() {
@@ -334,20 +499,16 @@ mod tests {
 
     #[test]
     fn test_resolve_runtime_auto_hybrid() {
-        let result = resolve_runtime(&ServiceRuntime::Auto, "hybrid").unwrap();
-        assert_eq!(result, ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
-            pid_file: None,
-        });
+        // launchd (KeepAlive) owns Auto services; the shim never invents a spawn
+        // command for them (was a `/bin/sleep` placeholder).
+        assert_eq!(resolve_runtime(&ServiceRuntime::Auto, "hybrid"), Err(SpawnError::RuntimeUnresolved));
     }
 
     #[test]
     fn test_resolve_runtime_auto_native() {
-        let result = resolve_runtime(&ServiceRuntime::Auto, "native").unwrap();
-        assert_eq!(result, ServiceRuntime::Native {
-            spawn_cmd: "/bin/sleep".to_string(),
-            pid_file: None,
-        });
+        // launchd (KeepAlive) owns Auto services; the shim never invents a spawn
+        // command for them (was a `/bin/sleep` placeholder).
+        assert_eq!(resolve_runtime(&ServiceRuntime::Auto, "native"), Err(SpawnError::RuntimeUnresolved));
     }
 
     #[test]
@@ -423,6 +584,91 @@ mod tests {
         assert!(!is_port_bound(port).await, "port still bound after kill");
     }
 
+    /// Spawn, in its own process group (as `spawn_native_process` does), a
+    /// python listener on `port` that first forks a non-listening child.
+    /// Returns the listener's child handle and the forked child's pid.
+    async fn spawn_listener_with_forked_child(port: u16, dir: &std::path::Path, on_term: &str) -> (tokio::process::Child, i32) {
+        let pid_file = dir.join("child.pid");
+        let script = format!(
+            "import os,signal,socket,sys,time\n\
+             pid=os.fork()\n\
+             if pid==0:\n    time.sleep(120); os._exit(0)\n\
+             open({pid_file:?},'w').write(str(pid))\n\
+             def term(*_):\n{on_term}\n    sys.exit(0)\n\
+             signal.signal(signal.SIGTERM,term)\n\
+             s=socket.socket(); s.bind(('127.0.0.1',{port})); s.listen(5)\n\
+             time.sleep(120)",
+            pid_file = pid_file.to_str().unwrap(),
+        );
+        let child = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .process_group(0)
+            .spawn()
+            .expect("spawn python listener");
+        for _ in 0..50 {
+            if is_port_bound(port).await && pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(is_port_bound(port).await, "listener never bound the port");
+        let forked: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        (child, forked)
+    }
+
+    fn process_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks existence/permission; nothing is sent.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    async fn free_port() -> u16 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    /// 2026-11-10 kernel panic: every stop SIGKILLed only the port's listener,
+    /// so COS's process-pool workers (non-listening children) were orphaned —
+    /// 28 × ~1.6 GB accumulated until the machine ran out of memory.
+    #[tokio::test]
+    async fn test_stopping_a_service_also_stops_its_non_listening_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        let (mut child, forked) = spawn_listener_with_forked_child(port, dir.path(), "    pass").await;
+
+        assert!(kill_port_listeners(port).await >= 1);
+        let _ = child.wait().await;
+
+        let mut gone = false;
+        for _ in 0..50 {
+            if !process_alive(forked) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !gone {
+            unsafe { libc::kill(forked, libc::SIGKILL) };
+        }
+        assert!(gone, "forked child {forked} outlived its service's stop");
+    }
+
+    /// The stop asks first (SIGTERM) so a service can shut its pool down
+    /// cleanly; SIGKILL is only the fallback for a wedged one.
+    #[tokio::test]
+    async fn test_stopping_a_service_lets_it_shut_down_gracefully_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("terminated");
+        let port = free_port().await;
+        let on_term = format!("    open({:?},'w').write('ok')", marker.to_str().unwrap());
+        let (mut child, forked) = spawn_listener_with_forked_child(port, dir.path(), &on_term).await;
+
+        assert!(kill_port_listeners(port).await >= 1);
+        let _ = child.wait().await;
+        unsafe { libc::kill(forked, libc::SIGKILL) };
+
+        assert!(marker.exists(), "service got SIGKILL without a SIGTERM first");
+    }
+
     #[tokio::test]
     async fn test_kill_port_listeners_noop_on_free_port() {
         let port = {
@@ -440,5 +686,56 @@ mod tests {
         };
         let result = resolve_runtime(&docker, "docker").unwrap();
         assert_eq!(result, docker);
+    }
+
+    /// 2026-11-10: struct-analyzer was stopped twice mid-request (a ~1850 s
+    /// call-graph scan) because idleness only counted /activity calls. An open
+    /// inbound connection on the service port is a request still in flight.
+    /// `lsof -Fpn` lists both ends of loopback connections; only server-side
+    /// sockets (local port == service port) count, and a connection whose
+    /// client end belongs to this daemon (its own health probe) does not.
+    #[test]
+    fn test_count_inbound_connections_counts_server_side_sockets_only() {
+        let lsof = "\
+p500
+f4
+n127.0.0.1:8088->127.0.0.1:61001
+f5
+n[::1]:8088->[::1]:61002
+p900
+f7
+n127.0.0.1:61001->127.0.0.1:8088
+p42
+f9
+n127.0.0.1:61003->127.0.0.1:8088
+p500
+f6
+n127.0.0.1:8088->127.0.0.1:61003
+";
+        // pid 42 is this daemon: its client socket 61003 is excluded, so the
+        // matching server socket does not count. 61001 (pid 900) and 61002
+        // (remote client, not in the listing) are real requests.
+        assert_eq!(count_inbound_connections(lsof, 8088, 42), 2);
+        assert_eq!(count_inbound_connections(lsof, 9999, 42), 0);
+        assert_eq!(count_inbound_connections("", 8088, 42), 0);
+    }
+
+    /// The live helper sees an established connection held by another process.
+    #[tokio::test]
+    async fn test_has_inbound_connections_sees_external_client() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(!has_inbound_connections(port).await, "no client yet");
+        let script = format!(
+            "import socket,time\ns=socket.create_connection(('127.0.0.1',{port}))\ntime.sleep(30)"
+        );
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-c", &script])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn python client");
+        let (_conn, _) = listener.accept().await.unwrap();
+        assert!(has_inbound_connections(port).await, "open request must be seen");
+        let _ = child.kill().await;
     }
 }

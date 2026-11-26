@@ -160,11 +160,9 @@ class TestResolveHealthUrl:
         assert url is not None
         assert "/health" in url
 
-    def test_resolves_amve(self, promoter: ColdWarmPromoter):
-        """amve should resolve (not return None after AMVE_URL→AMVE_SERVICE_URL fix)."""
-        url = promoter._resolve_health_url("amve")
-        assert url is not None
-        assert "/health" in url
+    def test_retired_amve_does_not_resolve(self, promoter: ColdWarmPromoter):
+        """AMVE is retired (2026-11-26, replaced by struct-analyzer): it has no health URL to warm."""
+        assert promoter._resolve_health_url("amve") is None
 
 
 # =============================================================================

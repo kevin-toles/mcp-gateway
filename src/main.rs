@@ -4,7 +4,7 @@
 // with KeepAlive=true, like llm-gateway. This process no longer proxies for it.
 //
 // Responsibilities:
-//   - startup_scan: promote already-healthy services Boot→Cold on startup
+//   - startup_scan: promote already-healthy Boot/restored-Cold services to Warm on startup
 //   - shim_idle_monitor: Hot→Warm→Cold demotion for idle warm-tier services
 //   - BootColdMonitor: poll Boot-tier services until healthy, then promote Cold
 //   - health_failure_monitor: respawn services that fail consecutive health checks
@@ -23,12 +23,21 @@ fn main() {
         )
         .init();
 
-    let deployment_mode = config::DeploymentMode::from_env();
-    if let Err(e) = config::validate_config(&deployment_mode) {
-        tracing::error!(error = %e, "config validation failed");
-        std::process::exit(1);
-    }
-    tracing::info!(deployment_mode = ?deployment_mode, "starting platform-lifecycle");
+    // Fail fast: DEPLOYMENT_MODE must be set and valid; `auto` is opt-in.
+    let resolution = match config::load() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "config validation failed");
+            std::process::exit(1);
+        }
+    };
+    tracing::info!(
+        deployment_mode = %resolution.mode,
+        source = ?resolution.source,
+        "starting platform-lifecycle"
+    );
+    let deployment_mode = resolution.mode.clone();
+    config::record(resolution);
 
     let registry = Arc::new(registry::ServiceRegistry::new());
     platform_services::seed_platform_services(&registry);

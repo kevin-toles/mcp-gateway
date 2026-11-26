@@ -126,18 +126,6 @@ _TOOL_SERVICE_NAMES: dict[str, str] = {
     "enhance_guideline": make_service_key("ai-agents"),
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": make_service_key("code-orchestrator"),
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns": make_service_key("amve"),
-    "amve_detect_boundaries": make_service_key("amve"),
-    "amve_detect_communication": make_service_key("amve"),
-    "amve_build_call_graph": make_service_key("amve"),
-    "amve_evaluate_fitness": make_service_key("amve"),
-    "amve_generate_architecture_log": make_service_key("amve"),
-    # AEI-17: Dead code detection
-    "amve_detect_dead_code": make_service_key("amve"),
-    # Phase 2: Content-Addressed Snapshot Store tools
-    "amve_extract_architecture": make_service_key("amve"),
-    "amve_detect_drift": make_service_key("amve"),
     # Audit Service (WBS-AEI13)
     "audit_security_scan": make_service_key("audit-service"),
     "audit_code_metrics": make_service_key("audit-service"),
@@ -309,45 +297,8 @@ def _build_routes(settings: Settings) -> dict[str, DispatchRoute]:
             path="/api/v1/workflows/analyze-taxonomy-coverage",
             timeout=300.0,
         ),
-        # AMVE tools (AEI-7)
-        "amve_detect_patterns": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/patterns",
-        ),
-        "amve_detect_boundaries": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/boundaries",
-        ),
-        "amve_detect_communication": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/communication",
-        ),
-        "amve_build_call_graph": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/call-graph",
-        ),
-        "amve_evaluate_fitness": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/fitness/evaluate",
-        ),
-        "amve_generate_architecture_log": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/architecture/batch-scan",
-        ),
         # AEI-17: Dead code detection
-        "amve_detect_dead_code": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/analysis/dead-code",
-        ),
         # Phase 2: Content-Addressed Snapshot Store tools (G2.12 GREEN)
-        "amve_extract_architecture": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/architecture/extract",
-        ),
-        "amve_detect_drift": DispatchRoute(
-            base_url=settings.AMVE_SERVICE_URL,
-            path="/v1/architecture/drift",
-        ),
         # Audit Service (WBS-AEI13)
         "audit_security_scan": DispatchRoute(
             base_url=settings.AUDIT_SERVICE_URL,
@@ -712,29 +663,24 @@ class ToolDispatcher:
         await asyncio.sleep(delay)
 
     async def _try_auto_start(self, service_name: str, base_url: str) -> bool:
-        """Detect service state, spawn if absent, and poll until healthy.
+        """Make the target ready via the lifecycle daemon (Option A).
 
-        State machine:
-          circuit open     → return False immediately (no probe, no spawn)
-          healthy already  → return True immediately (skip spawn)
-          port bound, sick → log conflict; return False (Rust supervisor handles respawn)
-          port not bound   → spawn via SERVICE_STARTUP_COMMANDS, then poll READINESS
-
-        The post-spawn poll uses the service's readiness endpoint (manifest
-        ready_path) when it declares one — alive-but-still-loading must not
-        count as started. Polling budget is tier-specific via
-        health_timeout_for(): HOT=2s, WARM=15s, COLD=60s, BOOT=120s.
+        The Rust shim is the single spawn authority (HWC GAP-MCP-005): the gateway
+        never spawns services itself. State machine:
+          circuit open     → return False immediately (no probe, no shim call)
+          healthy already  → return True immediately
+          otherwise        → POST :8079/activity/{svc}?wait=true&timeout_secs=N;
+                             the shim spawns if down (single flight), waits on a
+                             starting service, and answers 200 only once the
+                             service's readiness endpoint answers.
+        The wait budget is tier-specific via health_timeout_for().
         """
-        from src.config.health_config import (
-            SERVICE_READY_PATHS,
-            SERVICE_STARTUP_COMMANDS,
-            health_timeout_for,
-        )
+        from src.config.health_config import health_timeout_for
 
         key = normalize_service_key(str(service_name))
 
         # Spawn backoff: a crash-looping service gets a cooldown, not a
-        # respawn per dispatch.
+        # start request per dispatch.
         failures, blocked_until = self._auto_start_failures.get(key, (0, 0.0))
         if failures >= AUTO_START_MAX_CONSECUTIVE_FAILURES:
             if time.monotonic() < blocked_until:
@@ -753,70 +699,30 @@ class ToolDispatcher:
 
         hp_config = self._settings.HEALTH_PROXY_SERVICE_CONFIG
         health_endpoint = str(hp_config.get(key, {}).get("health_endpoint", "/health"))
-        health_url = f"{base_url}{health_endpoint}"
-        # Readiness endpoint for the post-spawn poll (falls back to liveness).
-        ready_url = f"{base_url}{SERVICE_READY_PATHS.get(key, health_endpoint)}"
-
-        # Probe current state before deciding whether to spawn.
         try:
             async with httpx.AsyncClient(timeout=2.0) as probe:
-                r = await probe.get(health_url)
+                r = await probe.get(f"{base_url}{health_endpoint}")
                 if r.status_code == 200:
-                    logger.info("%s is already healthy — skipping spawn", key)
                     self._auto_start_failures.pop(key, None)
                     return True
-                # Port is bound but service is unhealthy — stale or mid-restart.
-                # Spawning another copy would cause a port conflict.
-                # The Rust health_failure_monitor will respawn on next cycle.
-                logger.warning(
-                    "%s port is bound but health returned %s — "
-                    "possible stale process; Rust supervisor will respawn",
-                    key,
-                    r.status_code,
-                )
-                return False
-        except httpx.ConnectError:
-            pass  # Port not bound — proceed to spawn.
         except Exception:
-            pass  # Unknown probe error — attempt spawn.
+            pass  # Down or still starting — the shim decides.
 
-        command = SERVICE_STARTUP_COMMANDS.get(key)
-        if not command:
-            logger.warning(
-                "No startup command for %s — cannot auto-start (add entry to SERVICE_STARTUP_COMMANDS)",
-                key,
-            )
-            return False
-
-        logger.info("Auto-starting %s", key)
-        log_path = f"/tmp/autostart-{key}.log"  # noqa: S108
+        wait_secs = max(1, int(health_timeout_for(key)))
+        url = f"{_LIFECYCLE_ACTIVITY_URL}{key}?wait=true&timeout_secs={wait_secs}"
+        logger.info("Requesting %s from lifecycle daemon (wait ≤ %ss)", key, wait_secs)
         try:
-            log_fd = open(log_path, "a")  # noqa: SIM115
-            await asyncio.create_subprocess_shell(
-                command,
-                stdout=log_fd,
-                stderr=log_fd,
-            )
+            async with httpx.AsyncClient(timeout=wait_secs + 5.0) as shim:
+                r = await shim.post(url)
         except Exception as exc:
-            logger.warning("Failed to spawn %s: %s", key, exc)
+            logger.warning("Lifecycle daemon unreachable for %s: %s", key, exc)
             self._record_auto_start_failure(key)
             return False
 
-        timeout = health_timeout_for(key)
-        start = time.monotonic()
-        while (time.monotonic() - start) < timeout:
-            try:
-                async with httpx.AsyncClient(timeout=1.0) as probe:
-                    r = await probe.get(ready_url)
-                    if r.status_code == 200:
-                        logger.info("%s ready in %.1fs", key, time.monotonic() - start)
-                        self._auto_start_failures.pop(key, None)
-                        return True
-            except Exception:
-                pass
-            await asyncio.sleep(0.2)
-
-        logger.warning("%s not ready after %.1fs", key, timeout)
+        if r.status_code == 200:
+            self._auto_start_failures.pop(key, None)
+            return True
+        logger.warning("%s not ready via lifecycle daemon (HTTP %s)", key, r.status_code)
         self._record_auto_start_failure(key)
         return False
 

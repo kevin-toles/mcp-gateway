@@ -24,7 +24,6 @@ from src.security.credential_masking import CredentialMaskingFilter as _Credenti
 _credential_masking_filter = _CredentialMaskingFilter()
 logging.getLogger().addFilter(_credential_masking_filter)
 
-from src.core.idle_timeout_checker import get_checker
 from src.models.schemas import HealthResponse
 from src.security.audit import AuditMiddleware
 from src.security.authn import OIDCAuthMiddleware
@@ -37,22 +36,15 @@ settings = Settings()
 _start_time = time.monotonic()
 
 
-# ── Lifespan handler with idle timeout checker ─────────────────────────
+# ── Lifespan ────────────────────────────────────────────────────────────
+# Service start/stop is owned solely by the Rust lifecycle daemon (:8079,
+# Option A — HWC GAP-MCP-005). The gateway no longer runs its own idle
+# shutdown actuator (the WarmColdActuator module under src/core is unused).
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle with idle timeout checker."""
-    # Startup: Start idle timeout checker
-    checker = get_checker()
-    checker.start()
-    logger.info("Idle timeout checker started")
-    
-    try:
-        yield
-    finally:
-        # Shutdown: Stop idle timeout checker
-        await checker.stop()
-        logger.info("Idle timeout checker stopped")
+    """Application lifespan (no lifecycle actuators run in the gateway)."""
+    yield
 
 
 app = FastAPI(

@@ -92,6 +92,75 @@ wait_for_services() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase 1b: Sequenced on-demand startup
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# On-demand services are NOT started by launchd at login (RunAtLoad=false).
+# They are brought up here one group at a time so login never boots every
+# model-loading service at once (boot storm → memory exhaustion). A group
+# starts only after every service in the previous group is healthy or has
+# timed out. Group membership is defined here; ports and health paths come
+# from config/services.toml (single source of truth).
+#
+# Group 0 (launchd KeepAlive): shim, mcp-gateway, llm-gateway, unified-search-rs
+STARTUP_GROUPS=(
+  "validation-service struct-analyzer amve"                      # light Rust/Go/Python
+  "ai-agents audit-service context-management-service"           # medium Python
+  "code-orchestrator"                                            # model-heavy, alone
+  "inference-service-cpp"                                        # model-heavy, alone
+)
+GROUP_TIMEOUT_SECS=150
+
+# Print "<port> <health_path>" for a service from the manifest.
+manifest_endpoint() {
+  "$VENV_PYTHON" - "$1" "$PROJECT_ROOT/config/services.toml" <<'PY'
+import sys, tomllib
+svc = tomllib.load(open(sys.argv[2], "rb"))["services"][sys.argv[1]]
+print(svc["port"], svc.get("health_path", "/health"))
+PY
+}
+
+service_healthy() {
+  curl -sf --max-time 2 "http://localhost:$1$2" >/dev/null 2>&1
+}
+
+# Probe results (one JSON object per line) for the test suite — it must not
+# re-wake services itself.
+export HWC_PROBE_RESULTS="${HWC_PROBE_RESULTS:-$PROJECT_ROOT/logs/hwc_probe_results.jsonl}"
+
+# Probe each service one at a time: the shim starts it if stopped, verifies it
+# is ready, then stops it again (?probe=true records no use — 2026-10-20).
+start_group() {
+  local group_no="$1"; shift
+  echo ""
+  echo "── Startup group $group_no: $* ──"
+  local svc result
+  for svc in "$@"; do
+    result=$(curl -s --max-time $((GROUP_TIMEOUT_SECS + 10)) -X POST \
+      "http://localhost:8079/activity/$svc?probe=true&timeout_secs=$GROUP_TIMEOUT_SECS" 2>/dev/null)
+    [ -n "$result" ] || result="{\"service\":\"$svc\",\"ready\":false,\"reason\":\"shim_unreachable\"}"
+    echo "$result" >> "$HWC_PROBE_RESULTS"
+    case "$result" in
+      *'"ready":true'*) echo "  ✓ $svc: $result" ;;
+      *) echo "  ✗ $svc: $result — test suite will report it" ;;
+    esac
+  done
+}
+
+sequenced_startup() {
+  echo ""
+  echo "Sequenced startup of on-demand services (${#STARTUP_GROUPS[@]} groups)..."
+  mkdir -p "$(dirname "$HWC_PROBE_RESULTS")"
+  : > "$HWC_PROBE_RESULTS"
+  local i=1 group
+  for group in "${STARTUP_GROUPS[@]}"; do
+    # shellcheck disable=SC2086  # word-split the group into service names
+    start_group "$i" $group
+    i=$((i + 1))
+  done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 2: Run test suite
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -157,11 +226,14 @@ main() {
     exit 1
   fi
 
+  VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+  [ -f "$VENV_PYTHON" ] || VENV_PYTHON="python3"
+
+  sequenced_startup
+
   run_tests
   TEST_EXIT=$?
 
-  VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
-  [ -f "$VENV_PYTHON" ] || VENV_PYTHON="python3"
   tier_report
 
   echo ""

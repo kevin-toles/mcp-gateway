@@ -40,12 +40,6 @@ def gateway_url() -> str:
 
 
 @pytest.fixture(scope="session")
-def amve_url() -> str:
-    """Base URL of the running AMVE service."""
-    return os.environ.get("MCP_GATEWAY_AMVE_SERVICE_URL", "http://localhost:8088")
-
-
-@pytest.fixture(scope="session")
 def audit_log_path(tmp_path_factory) -> Path:
     """Temp path for audit JSONL during tests."""
     return tmp_path_factory.mktemp("audit") / "test_audit.jsonl"
@@ -59,11 +53,10 @@ def backend_urls() -> dict[str, str]:
         "semantic-search": "http://localhost:8081/health",
         "ai-agents": "http://localhost:8082/health",
         "code-orchestrator": "http://localhost:8083/health",
-        "amve": "http://localhost:8088/v1/health",
+        "struct-analyzer": "http://localhost:8088/health",
     }
 
 
-# ── AMVE MCP Integration Fixtures (AEI-8) ──────────────────────────────────
 
 
 async def _check_backend(url: str, timeout: float = 3.0) -> bool:
@@ -114,7 +107,6 @@ def mcp_server(registry, dispatcher, sanitizer):
 INFERENCE_SERVICE_SRC = "/Users/kevintoles/POC/inference-service/src"
 LLM_GATEWAY_SRC = "/Users/kevintoles/POC/llm-gateway/src"
 AI_AGENTS_SRC = "/Users/kevintoles/POC/ai-agents/src"
-AMVE_SRC = "/Users/kevintoles/POC/architecture-mapping-validation-engine/src"
 
 
 def _extract_body(result) -> dict:

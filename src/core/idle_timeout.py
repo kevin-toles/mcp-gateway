@@ -324,7 +324,6 @@ class IdleTimeoutTracker:
         "ai-agents": "AI_AGENTS_IDLE_TIMEOUT",
         "audit-service": "AUDIT_SERVICE_IDLE_TIMEOUT",
         "context-management-service": "CMS_IDLE_TIMEOUT",
-        "amve": "AMVE_IDLE_TIMEOUT",
         "struct-analyzer": "STRUCT_ANALYZER_IDLE_TIMEOUT",
     }
     

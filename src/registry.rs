@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 /// Activation tier per HYBRID §4.6.1 4-tier model
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActivationTier {
-    Boot,  // First-start; single-use; transitions to Cold after first start
-    Cold,  // Not running; requires manual start
-    Warm,  // Not running; can auto-start on demand via shim
-    Hot,   // Running and available; zero startup cost
+    Boot,  // First-start; single-use; scan → Warm when found running
+    Cold,  // Idle past the Warm timeout; Native services are stopped (started on demand)
+    Warm,  // Running but idle; demoted to Cold after the Warm timeout unless min_tier = Warm
+    Hot,   // Running and in use
 }
 
 impl ActivationTier {
@@ -87,6 +87,23 @@ pub struct ServiceEntry {
     pub last_transition_reason: Option<String>,
     /// Reducer: when the last tier transition happened.
     pub last_transition_at: Option<Instant>,
+    /// Idle-demotion floor (manifest `min_tier`). `Warm` = "Hot→Warm only": the
+    /// service idles to Warm but is never demoted to Cold (or stopped).
+    /// `Cold` = no floor.
+    pub min_tier: ActivationTier,
+    /// DEV-MCP-023: how long an open inbound connection may block idle
+    /// demotion before it is treated as stuck (manifest `max_request_secs`).
+    pub max_request_secs: u64,
+    /// DEV-MCP-023: when a monitor pass first saw an open inbound connection
+    /// (None = none seen, or reset by a pass that saw none / by real activity).
+    pub in_flight_since: Option<Instant>,
+    /// DEV-MCP-023: how long an open inbound connection defers a health-failure
+    /// stop or eviction (manifest `health_kill_grace_secs`; independent of
+    /// `max_request_secs`).
+    pub health_kill_grace_secs: u64,
+    /// DEV-MCP-023: when a failing health pass first saw an open inbound
+    /// connection (None = reset by a healthy pass or one with no open connection).
+    pub health_grace_since: Option<Instant>,
 }
 
 impl ServiceEntry {
@@ -124,6 +141,11 @@ pub enum TierEvent {
     HealthDegraded,
     /// The idle monitor's timeout for the current tier elapsed.
     IdleTimeout,
+    /// A Native service nobody is using failed its health checks; it is stopped
+    /// and left Cold for the next real request (request-driven lifecycle).
+    DownWhileIdle,
+    /// A startup-test probe started the service, verified it, and stopped it.
+    ProbeStopped,
 }
 
 impl TierEvent {
@@ -134,6 +156,8 @@ impl TierEvent {
             TierEvent::SpawnSucceeded => "spawn-succeeded",
             TierEvent::HealthDegraded => "health-degraded",
             TierEvent::IdleTimeout => "idle-timeout",
+            TierEvent::DownWhileIdle => "down-while-idle",
+            TierEvent::ProbeStopped => "probe-stopped",
         }
     }
 }
@@ -168,12 +192,14 @@ impl ServiceRegistry {
     /// the event is a no-op for the current tier (or the service is unknown).
     ///
     /// Transition table (preserves the previously-scattered semantics):
-    ///   Boot + ScanFoundReady        → Cold
+    ///   Boot/Cold + ScanFoundReady   → Warm  (running, idle clock started — GAP-MCP-004;
+    ///                                        Cold = a restored tier that is actually running)
     ///   Boot/Cold/Warm + Activity    → Hot
     ///   any-non-Hot + SpawnSucceeded → Hot
     ///   Hot  + HealthDegraded        → Warm
     ///   Hot  + IdleTimeout           → Warm
-    ///   Warm + IdleTimeout           → Cold
+    ///   Warm + IdleTimeout           → Cold  (unless min_tier = Warm)
+    ///   Hot/Warm + DownWhileIdle     → Cold  (unused service failed; not respawned)
     ///   everything else              → no-op
     pub fn apply_event(
         &self,
@@ -185,12 +211,14 @@ impl ServiceRegistry {
         let entry = entries.get_mut(name)?;
         let from = entry.tier.clone();
         let to = match (&from, event) {
-            (Boot, TierEvent::ScanFoundReady) => Cold,
+            (Boot | Cold, TierEvent::ScanFoundReady) => Warm,
             (Boot | Cold | Warm, TierEvent::Activity) => Hot,
             (Boot | Cold | Warm, TierEvent::SpawnSucceeded) => Hot,
             (Hot, TierEvent::HealthDegraded) => Warm,
             (Hot, TierEvent::IdleTimeout) => Warm,
-            (Warm, TierEvent::IdleTimeout) => Cold,
+            (Warm, TierEvent::IdleTimeout) if entry.min_tier != Warm => Cold,
+            (Hot | Warm, TierEvent::DownWhileIdle) => Cold,
+            (Hot | Warm, TierEvent::ProbeStopped) => Cold,
             _ => return None,
         };
         entry.transition(to.clone(), event.reason());
@@ -221,6 +249,8 @@ impl ServiceRegistry {
         if let Some(entry) = entries.get_mut(name) {
             let now = Instant::now();
             entry.last_request = Some(now);
+            // Real activity restarts the open-request clock (DEV-MCP-023).
+            entry.in_flight_since = None;
             let window = Duration::from_secs(super::lifecycle::COLD_PROMOTION_WINDOW_SECS);
             entry.request_timestamps.push_back(now);
             // Prune expired entries older than the promotion window
@@ -232,6 +262,49 @@ impl ServiceRegistry {
                 }
             }
         }
+    }
+
+    /// Record that a monitor pass saw an open inbound connection on `name`.
+    /// Keeps the first time it was seen; returns that time (None = unknown service).
+    pub fn mark_in_flight(&self, name: &str) -> Option<Instant> {
+        let mut entries = self.entries.write().unwrap();
+        let entry = entries.get_mut(name)?;
+        Some(*entry.in_flight_since.get_or_insert_with(Instant::now))
+    }
+
+    /// Forget the open request on `name`; returns whether one was recorded.
+    pub fn clear_in_flight(&self, name: &str) -> bool {
+        let mut entries = self.entries.write().unwrap();
+        entries
+            .get_mut(name)
+            .and_then(|entry| entry.in_flight_since.take())
+            .is_some()
+    }
+
+    /// Record that a failing health pass saw an open inbound connection on
+    /// `name`. Keeps the first time; returns it (None = unknown service).
+    pub fn mark_health_grace(&self, name: &str) -> Option<Instant> {
+        let mut entries = self.entries.write().unwrap();
+        let entry = entries.get_mut(name)?;
+        Some(*entry.health_grace_since.get_or_insert_with(Instant::now))
+    }
+
+    /// End the health grace on `name`; returns whether one was running.
+    pub fn clear_health_grace(&self, name: &str) -> bool {
+        let mut entries = self.entries.write().unwrap();
+        entries
+            .get_mut(name)
+            .and_then(|entry| entry.health_grace_since.take())
+            .is_some()
+    }
+
+    /// Requests recorded for `name` at or after `since`.
+    pub fn requests_since(&self, name: &str, since: Instant) -> usize {
+        self.entries
+            .read()
+            .unwrap()
+            .get(name)
+            .map_or(0, |e| e.request_timestamps.iter().filter(|&&t| t >= since).count())
     }
 
     /// Count request timestamps within the given sliding window.
@@ -383,6 +456,11 @@ mod tests {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: ActivationTier::Cold,
+            max_request_secs: crate::lifecycle::DEFAULT_MAX_REQUEST_SECS,
+            in_flight_since: None,
+            health_kill_grace_secs: crate::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS,
+            health_grace_since: None,
         }
     }
 
@@ -394,6 +472,44 @@ mod tests {
         let got = registry.get("llm-gateway");
         assert!(got.is_some());
         assert_eq!(got.unwrap().port, 8080);
+    }
+
+    // DEV-MCP-023 — design: `in_flight_since` "resets on the first pass that
+    // sees none"; real activity also restarts it, so an old connection seen
+    // before a later reported request is never mistaken for one long request.
+    #[test]
+    fn test_in_flight_since_marks_once_and_clears() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Hot));
+        let first = registry.mark_in_flight("svc").expect("registered");
+        let again = registry.mark_in_flight("svc").expect("registered");
+        assert_eq!(first, again, "marking keeps the first time an open request was seen");
+        assert!(registry.clear_in_flight("svc"), "clear reports it was set");
+        assert!(!registry.clear_in_flight("svc"), "second clear: nothing was set");
+        assert!(registry.get("svc").unwrap().in_flight_since.is_none());
+    }
+
+    #[test]
+    fn test_record_request_clears_in_flight_since() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Hot));
+        registry.mark_in_flight("svc");
+        registry.record_request("svc");
+        assert!(registry.get("svc").unwrap().in_flight_since.is_none());
+    }
+
+    // DEV-MCP-023: the health grace timer keeps its first-seen time, clears on
+    // request, and is separate from the idle monitor's in_flight_since.
+    #[test]
+    fn test_health_grace_marks_once_and_clears_independently() {
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Hot));
+        let first = registry.mark_health_grace("svc").expect("registered");
+        assert_eq!(registry.mark_health_grace("svc"), Some(first));
+        assert!(registry.get("svc").unwrap().in_flight_since.is_none(), "separate from in_flight_since");
+        assert!(registry.clear_health_grace("svc"));
+        assert!(!registry.clear_health_grace("svc"));
+        assert!(registry.get("svc").unwrap().health_grace_since.is_none());
     }
 
     #[test]
@@ -508,16 +624,45 @@ mod tests {
     // ── Tier-transition reducer (single writer, finding #4) ──────────────
 
     #[test]
-    fn reducer_scan_promotes_boot_to_cold_only() {
+    fn reducer_scan_promotes_boot_to_warm_only() {
+        // GAP-MCP-004: a service found running at boot is Warm (running, idle clock
+        // started) so it idles to Cold and is stopped unless used — never a running
+        // "Cold" that the idle monitor skips forever.
         let registry = ServiceRegistry::new();
         registry.register(make_entry("svc", 9000, ActivationTier::Boot));
         assert_eq!(
             registry.apply_event("svc", TierEvent::ScanFoundReady),
-            Some((ActivationTier::Boot, ActivationTier::Cold))
+            Some((ActivationTier::Boot, ActivationTier::Warm))
         );
         // Second scan is a no-op — service is no longer Boot.
         assert_eq!(registry.apply_event("svc", TierEvent::ScanFoundReady), None);
-        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Cold);
+        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Warm);
+    }
+
+    #[test]
+    fn reducer_scan_found_running_cold_becomes_warm() {
+        // A restored Cold entry whose service is actually running.
+        let registry = ServiceRegistry::new();
+        registry.register(make_entry("svc", 9000, ActivationTier::Cold));
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::ScanFoundReady),
+            Some((ActivationTier::Cold, ActivationTier::Warm))
+        );
+    }
+
+    #[test]
+    fn reducer_idle_timeout_stops_at_min_tier_floor() {
+        let registry = ServiceRegistry::new();
+        let mut entry = make_entry("svc", 9000, ActivationTier::Hot);
+        entry.min_tier = ActivationTier::Warm;
+        registry.register(entry);
+        assert_eq!(
+            registry.apply_event("svc", TierEvent::IdleTimeout),
+            Some((ActivationTier::Hot, ActivationTier::Warm))
+        );
+        // Hot→Warm only: Warm is the floor.
+        assert_eq!(registry.apply_event("svc", TierEvent::IdleTimeout), None);
+        assert_eq!(registry.get("svc").unwrap().tier, ActivationTier::Warm);
     }
 
     #[test]
@@ -573,7 +718,7 @@ mod tests {
         let entry = registry.get("svc").unwrap();
         assert_eq!(
             entry.last_transition_reason.as_deref(),
-            Some("Boot→Cold (scan-found-ready)")
+            Some("Boot→Warm (scan-found-ready)")
         );
         assert!(entry.last_transition_at.is_some());
     }

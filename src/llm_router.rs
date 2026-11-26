@@ -176,30 +176,96 @@ async fn handle(mut client: TcpStream, registry: Arc<ServiceRegistry>) {
     // report that a service handled a valid request. This is the primary
     // mechanism for Cold/Warm → Hot promotion after the proxy removal.
     if req.path.starts_with("/activity/") && req.method == "POST" {
-        let service = &req.path["/activity/".len()..];
-        if service.is_empty() {
+        let Some(target) = parse_activity_target(&req.path) else {
             let _ = simple_response(&mut client, 400, "Bad Request", b"{\"error\":\"missing service name\"}").await;
-        } else {
-            registry.record_request(service);
-            // The reducer logs the transition (with from/to tiers) itself.
-            let promoted = registry.apply_event(service, TierEvent::Activity).is_some();
-            // Request-driven lifecycle: if the service is dead (Native
-            // runtime, port unbound), spawn it NOW in the background —
-            // don't make the caller wait for health-monitor cadence.
-            {
-                let reg = Arc::clone(&registry);
-                let name = service.to_string();
-                tokio::spawn(async move {
-                    crate::lifecycle::ensure_running_after_activity(&reg, &name).await;
-                });
-            }
-            let body = if promoted {
-                format!("{{\"service\":\"{}\",\"promoted\":true,\"tier\":\"Hot\"}}", service)
-            } else {
-                format!("{{\"service\":\"{}\",\"recorded\":true}}", service)
+            return;
+        };
+        let service = target.service.as_str();
+
+        if target.probe {
+            // Startup-test probe: no activity recorded, service left as it was found.
+            let outcome = crate::lifecycle::probe(&registry, service, target.timeout).await;
+            let (code, reason, body) = match outcome {
+                crate::lifecycle::Probe::Ready { spawned, stopped } => (
+                    200,
+                    "OK",
+                    format!("{{\"service\":\"{service}\",\"ready\":true,\"spawned\":{spawned},\"stopped\":{stopped}}}"),
+                ),
+                crate::lifecycle::Probe::NotRegistered => (
+                    404,
+                    "Not Found",
+                    format!("{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"not_registered\"}}"),
+                ),
+                crate::lifecycle::Probe::TimedOut => (
+                    503,
+                    "Service Unavailable",
+                    format!("{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"timeout\"}}"),
+                ),
+                crate::lifecycle::Probe::SpawnFailed(e) => (
+                    503,
+                    "Service Unavailable",
+                    format!(
+                        "{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"spawn_failed\",\"detail\":{}}}",
+                        serde_json::to_string(&e).unwrap_or_else(|_| "\"\"".to_string())
+                    ),
+                ),
             };
-            let _ = simple_response(&mut client, 200, "OK", body.as_bytes()).await;
+            let _ = simple_response(&mut client, code, reason, body.as_bytes()).await;
+            return;
         }
+
+        registry.record_request(service);
+        // The reducer logs the transition (with from/to tiers) itself.
+        let promoted = registry.apply_event(service, TierEvent::Activity).is_some();
+
+        if target.wait {
+            // Option A: the shim is the single spawn authority — start the service
+            // if needed and answer only once it is ready (or the deadline passes).
+            let outcome = crate::lifecycle::ensure_ready(&registry, service, target.timeout).await;
+            let (code, reason, body) = match outcome {
+                crate::lifecycle::EnsureReady::Ready { spawned } => (
+                    200,
+                    "OK",
+                    format!("{{\"service\":\"{service}\",\"ready\":true,\"spawned\":{spawned}}}"),
+                ),
+                crate::lifecycle::EnsureReady::NotRegistered => (
+                    404,
+                    "Not Found",
+                    format!("{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"not_registered\"}}"),
+                ),
+                crate::lifecycle::EnsureReady::TimedOut => (
+                    503,
+                    "Service Unavailable",
+                    format!("{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"timeout\"}}"),
+                ),
+                crate::lifecycle::EnsureReady::SpawnFailed(e) => (
+                    503,
+                    "Service Unavailable",
+                    format!(
+                        "{{\"service\":\"{service}\",\"ready\":false,\"reason\":\"spawn_failed\",\"detail\":{}}}",
+                        serde_json::to_string(&e).unwrap_or_else(|_| "\"\"".to_string())
+                    ),
+                ),
+            };
+            let _ = simple_response(&mut client, code, reason, body.as_bytes()).await;
+            return;
+        }
+
+        // Fire-and-forget: spawn a dead Native service in the background now —
+        // don't make the caller wait for health-monitor cadence.
+        {
+            let reg = Arc::clone(&registry);
+            let name = service.to_string();
+            tokio::spawn(async move {
+                crate::lifecycle::ensure_running_after_activity(&reg, &name).await;
+            });
+        }
+        let body = if promoted {
+            format!("{{\"service\":\"{}\",\"promoted\":true,\"tier\":\"Hot\"}}", service)
+        } else {
+            format!("{{\"service\":\"{}\",\"recorded\":true}}", service)
+        };
+        let _ = simple_response(&mut client, 200, "OK", body.as_bytes()).await;
         return;
     }
 
@@ -392,7 +458,56 @@ pub fn status_snapshot(registry: &ServiceRegistry) -> serde_json::Value {
             "health_checks_passed": entry.health_checks_passed,
         }));
     }
-    serde_json::json!({ "services": services })
+    let deployment = crate::config::resolved().map(|r| {
+        serde_json::json!({ "mode": r.mode.as_deployment_str(), "source": r.source })
+    });
+    serde_json::json!({ "services": services, "deployment": deployment })
+}
+
+/// Default `?wait=true` deadline: covers measured cold starts (~100 s under load).
+pub const ACTIVITY_WAIT_DEFAULT_SECS: u64 = 150;
+/// Upper bound on a caller-supplied `timeout_secs`.
+pub const ACTIVITY_WAIT_MAX_SECS: u64 = 300;
+
+/// Parsed `POST /activity/{service}[?wait=true][&timeout_secs=N]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityTarget {
+    pub service: String,
+    pub wait: bool,
+    /// Startup-test probe: verify the service starts, record no use, leave it stopped.
+    pub probe: bool,
+    pub timeout: Duration,
+}
+
+/// Parse an `/activity/…` request path (query string included).
+pub fn parse_activity_target(path: &str) -> Option<ActivityTarget> {
+    let rest = path.strip_prefix("/activity/")?;
+    let (service, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if service.is_empty() {
+        return None;
+    }
+    let mut wait = false;
+    let mut probe = false;
+    let mut timeout_secs = ACTIVITY_WAIT_DEFAULT_SECS;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match key {
+            "wait" => wait = matches!(value, "true" | "1" | ""),
+            "probe" => probe = matches!(value, "true" | "1" | ""),
+            "timeout_secs" => {
+                if let Ok(v) = value.parse::<u64>() {
+                    timeout_secs = v.min(ACTIVITY_WAIT_MAX_SECS);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(ActivityTarget {
+        service: service.to_string(),
+        wait: wait || probe,
+        probe,
+        timeout: Duration::from_secs(timeout_secs),
+    })
 }
 
 #[cfg(test)]
@@ -423,6 +538,11 @@ mod status_tests {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: ActivationTier::Cold,
+            max_request_secs: crate::lifecycle::DEFAULT_MAX_REQUEST_SECS,
+            in_flight_since: None,
+            health_kill_grace_secs: crate::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS,
+            health_grace_since: None,
         }
     }
 
@@ -438,12 +558,23 @@ mod status_tests {
         let svc = &services[0];
         assert_eq!(svc["service"], "svc");
         assert_eq!(svc["port"], 9000);
-        assert_eq!(svc["tier"], "Cold");
+        assert_eq!(svc["tier"], "Warm");
         assert_eq!(svc["runtime"], "auto");
         assert_eq!(svc["failure_count"], 0);
         assert_eq!(svc["circuit_open"], false);
-        assert_eq!(svc["last_transition"], "Boot→Cold (scan-found-ready)");
+        assert_eq!(svc["last_transition"], "Boot→Warm (scan-found-ready)");
         assert!(svc["last_transition_elapsed_secs"].is_number());
+    }
+
+    #[test]
+    fn status_snapshot_exposes_the_resolved_deployment_mode() {
+        // The only test that records a resolution (process-wide, write-once).
+        crate::config::record(crate::config::Resolution {
+            mode: crate::config::DeploymentMode::Hybrid,
+            source: crate::config::ModeSource::Configured,
+        });
+        let snap = status_snapshot(&ServiceRegistry::new());
+        assert_eq!(snap["deployment"], serde_json::json!({"mode": "hybrid", "source": "configured"}));
     }
 
     #[test]
@@ -460,4 +591,45 @@ mod status_tests {
         assert!(svc["first_failure_elapsed_secs"].is_number());
         assert!(svc["last_health"].as_str().unwrap().contains("Unreachable"));
     }
+
+    // ── Option A: POST /activity/{svc}?wait=true[&timeout_secs=N] ──────────
+
+    #[test]
+    fn activity_target_plain_is_fire_and_forget() {
+        let t = parse_activity_target("/activity/code-orchestrator").unwrap();
+        assert_eq!(t.service, "code-orchestrator");
+        assert!(!t.wait);
+    }
+
+    #[test]
+    fn activity_target_wait_uses_default_timeout() {
+        let t = parse_activity_target("/activity/code-orchestrator?wait=true").unwrap();
+        assert_eq!(t.service, "code-orchestrator");
+        assert!(t.wait);
+        assert_eq!(t.timeout, std::time::Duration::from_secs(ACTIVITY_WAIT_DEFAULT_SECS));
+    }
+
+    #[test]
+    fn activity_target_timeout_is_parsed_and_capped() {
+        let t = parse_activity_target("/activity/x?timeout_secs=30&wait=1").unwrap();
+        assert!(t.wait);
+        assert_eq!(t.timeout, std::time::Duration::from_secs(30));
+        let capped = parse_activity_target("/activity/x?wait=true&timeout_secs=99999").unwrap();
+        assert_eq!(capped.timeout, std::time::Duration::from_secs(ACTIVITY_WAIT_MAX_SECS));
+    }
+
+    #[test]
+    fn activity_target_probe_implies_wait() {
+        let t = parse_activity_target("/activity/inference-service-cpp?probe=true&timeout_secs=90").unwrap();
+        assert!(t.probe && t.wait);
+        assert_eq!(t.timeout, Duration::from_secs(90));
+        assert!(!parse_activity_target("/activity/x?wait=true").unwrap().probe);
+    }
+
+    #[test]
+    fn activity_target_rejects_missing_service() {
+        assert!(parse_activity_target("/activity/").is_none());
+        assert!(parse_activity_target("/activity/?wait=true").is_none());
+    }
+
 }

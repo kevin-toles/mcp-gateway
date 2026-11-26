@@ -61,8 +61,8 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             health_path: svc.health_path.clone(),
             last_health: None,
             failure_count: 0,
-            hot_idle_timeout_secs: 1800,
-            warm_idle_timeout_secs: 600,
+            hot_idle_timeout_secs: svc.idle_timeouts().0,
+            warm_idle_timeout_secs: svc.idle_timeouts().1,
             last_request: None,
             request_timestamps: VecDeque::new(),
             circuit_open_since: None,
@@ -73,6 +73,11 @@ pub fn seed_platform_services(registry: &ServiceRegistry) {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: svc.min_tier(),
+            max_request_secs: svc.max_request_secs(),
+            in_flight_since: None,
+            health_kill_grace_secs: svc.health_kill_grace_secs(),
+            health_grace_since: None,
         });
     }
 }
@@ -88,7 +93,7 @@ mod tests {
 
         seed_platform_services(&registry);
 
-        assert_eq!(registry.len(), 12);
+        assert_eq!(registry.len(), 10); // 2026-11-26: AMVE retired
         // Managed services (Native runtime, health_failure_monitor respawns)
         for name in [
             "ai-agents",
@@ -98,7 +103,6 @@ mod tests {
             "context-management-service",
             "struct-analyzer",
             "validation-service",
-            "amve",
         ] {
             let entry = registry
                 .get(name)
@@ -109,14 +113,14 @@ mod tests {
                 "{} should have Native runtime, not Auto",
                 name
             );
-            let expected_health = if name == "amve" { "/v1/health" } else { "/health" };
+            let expected_health = "/health";
             assert_eq!(
                 entry.health_path, expected_health,
                 "{} health_path mismatch", name
             );
         }
         // KeepAlive services (Auto runtime, tier tracking only)
-        for name in ["llm-gateway", "semantic-search", "unified-search-service", "mcp-gateway"] {
+        for name in ["llm-gateway", "semantic-search", "mcp-gateway"] {
             let entry = registry
                 .get(name)
                 .unwrap_or_else(|| panic!("missing KeepAlive service: {}", name));
@@ -142,7 +146,6 @@ mod tests {
             ("context-management-service", 8086),
             ("struct-analyzer", 8088),
             ("validation-service", 8091),
-            ("amve", 8092),
         ];
         for (name, port) in expected {
             let entry = registry.get(name).unwrap();
@@ -224,25 +227,41 @@ mod tests {
         );
     }
 
+    // AMVE is retired (2026-11-26, replaced by struct-analyzer): seeding never registers it.
     #[test]
-    fn amve_uses_v1_health_path() {
+    fn retired_amve_is_not_seeded() {
         let registry = ServiceRegistry::new();
         seed_platform_services(&registry);
+        assert!(registry.get("amve").is_none());
+    }
 
-        let entry = registry.get("amve").unwrap();
-        assert_eq!(entry.port, 8092);
-        assert_eq!(
-            entry.health_path, "/v1/health",
-            "amve health_path must be /v1/health (mounted with prefix=/v1)"
-        );
-        let ServiceRuntime::Native { spawn_cmd, .. } = &entry.runtime else {
-            panic!("amve must have Native runtime");
-        };
-        assert!(
-            spawn_cmd.contains("PORT=8092"),
-            "amve spawn_cmd must set PORT=8092; got: {}",
-            spawn_cmd
-        );
+    #[test]
+    fn seeded_entries_carry_manifest_idle_timeouts() {
+        let registry = ServiceRegistry::new();
+        seed_platform_services(&registry);
+        let inference = registry.get("inference-service-cpp").unwrap();
+        assert_eq!((inference.hot_idle_timeout_secs, inference.warm_idle_timeout_secs), (600, 0));
+    }
+
+    // DEV-MCP-023: seeded entries carry the manifest request limit.
+    #[test]
+    fn seeded_entries_carry_manifest_max_request_secs() {
+        let registry = ServiceRegistry::new();
+        seed_platform_services(&registry);
+        assert_eq!(registry.get("struct-analyzer").unwrap().max_request_secs, 5400);
+        assert!(registry.get("struct-analyzer").unwrap().in_flight_since.is_none());
+    }
+
+    // DEV-MCP-023: every seeded entry gets the 120 s health grace (no overrides yet).
+    #[test]
+    fn seeded_entries_carry_manifest_health_kill_grace() {
+        let registry = ServiceRegistry::new();
+        seed_platform_services(&registry);
+        for name in ["struct-analyzer", "validation-service"] {
+            let e = registry.get(name).unwrap();
+            assert_eq!(e.health_kill_grace_secs, 120, "{name}");
+            assert!(e.health_grace_since.is_none(), "{name}");
+        }
     }
 
     #[test]
@@ -250,16 +269,18 @@ mod tests {
         let registry = ServiceRegistry::new();
         seed_platform_services(&registry);
 
-        for name in ["code-orchestrator", "inference-service-cpp"] {
+        // inference-service-cpp runs stock llama.cpp `llama-server`: /health is its
+        // readiness probe (503 while loading); it has no /ready route.
+        for (name, path) in [("code-orchestrator", "/ready"), ("inference-service-cpp", "/health")] {
             let entry = registry.get(name).unwrap();
             assert_eq!(
                 entry.ready_path,
-                Some("/ready".to_string()),
+                Some(path.to_string()),
                 "D-3: {} must have ready_path for startup readiness",
                 name
             );
         }
-        for name in ["ai-agents", "audit-service", "context-management-service", "amve"] {
+        for name in ["ai-agents", "audit-service", "context-management-service"] {
             let entry = registry.get(name).unwrap();
             assert_eq!(
                 entry.ready_path, None,
@@ -276,7 +297,7 @@ mod tests {
 
         // KeepAlive=true services are registered for tier tracking only.
         // Auto runtime ensures health_failure_monitor skips respawn.
-        for (name, port) in [("llm-gateway", 8080), ("semantic-search", 8093), ("unified-search-service", 8081), ("mcp-gateway", 8087)] {
+        for (name, port) in [("llm-gateway", 8080), ("semantic-search", 8081), ("mcp-gateway", 8087)] {
             let entry = registry.get(name).unwrap_or_else(|| panic!("{} should be registered", name));
             assert_eq!(entry.port, port, "{} port mismatch", name);
             assert!(matches!(entry.runtime, ServiceRuntime::Auto), "{} must have Auto runtime", name);

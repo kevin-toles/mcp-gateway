@@ -17,13 +17,6 @@ from src.models.schemas import (
     A2ACancelTaskInput,
     A2AGetTaskInput,
     A2ASendMessageInput,
-    AMVEAnalysisInput,
-    AMVECommunicationInput,
-    AMVEDetectDeadCodeInput,
-    AMVEDetectDriftInput,
-    AMVEEvaluateFitnessInput,
-    AMVEExtractArchitectureInput,
-    AMVEGenerateArchitectureLogInput,
     AnalyzeTaxonomyCoverageInput,
     AskInput,
     AuditCodeMetricsInput,
@@ -121,18 +114,6 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "enhance_guideline": EnhanceGuidelineInput,
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage": AnalyzeTaxonomyCoverageInput,
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns": AMVEAnalysisInput,
-    "amve_detect_boundaries": AMVEAnalysisInput,
-    "amve_detect_communication": AMVECommunicationInput,
-    "amve_build_call_graph": AMVEAnalysisInput,
-    "amve_evaluate_fitness": AMVEEvaluateFitnessInput,
-    "amve_generate_architecture_log": AMVEGenerateArchitectureLogInput,
-    # AEI-17: Dead code detection
-    "amve_detect_dead_code": AMVEDetectDeadCodeInput,
-    # Phase 2: Content-Addressed Snapshot Store (G2.12 GREEN)
-    "amve_extract_architecture": AMVEExtractArchitectureInput,
-    "amve_detect_drift": AMVEDetectDriftInput,
     # Audit Service tools (WBS-AEI13)
     "audit_security_scan": AuditSecurityScanInput,
     "audit_code_metrics": AuditCodeMetricsInput,

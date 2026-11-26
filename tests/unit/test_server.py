@@ -36,13 +36,6 @@ EXPECTED_TOOL_NAMES = {
     "enhance_guideline",
     # Taxonomy Analysis (WBS-TAP9)
     "analyze_taxonomy_coverage",
-    # AMVE tools (AEI-7)
-    "amve_detect_patterns",
-    "amve_detect_boundaries",
-    "amve_detect_communication",
-    "amve_build_call_graph",
-    "amve_evaluate_fitness",
-    "amve_generate_architecture_log",
     # MCP Facade tools (MCP-F)
     "ask",
     "search_in",
@@ -111,30 +104,6 @@ tools:
     description: "Analyze taxonomy coverage"
     tier: gold
     tags: [workflow, taxonomy, analysis, coverage]
-  - name: amve_detect_patterns
-    description: "Detect architecture patterns"
-    tier: gold
-    tags: [amve, architecture, patterns, analysis]
-  - name: amve_detect_boundaries
-    description: "Detect service boundaries"
-    tier: gold
-    tags: [amve, architecture, boundaries, analysis]
-  - name: amve_detect_communication
-    description: "Detect communication patterns"
-    tier: gold
-    tags: [amve, architecture, communication, events, messaging]
-  - name: amve_build_call_graph
-    description: "Build call graph"
-    tier: gold
-    tags: [amve, architecture, call-graph, analysis]
-  - name: amve_evaluate_fitness
-    description: "Evaluate architecture fitness"
-    tier: gold
-    tags: [amve, architecture, fitness, evaluation]
-  - name: amve_generate_architecture_log
-    description: "Generate architecture log"
-    tier: gold
-    tags: [amve, architecture, batch-scan, baseline]
   - name: ask
     description: "General software-engineering question from KB"
     tier: bronze
@@ -201,7 +170,7 @@ class TestToolsList:
     async def test_returns_21_tools(self, mcp_server):
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 24
+        assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_tool_names(self, mcp_server):
         async with Client(mcp_server) as client:

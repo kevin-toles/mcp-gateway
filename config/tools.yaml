@@ -21,7 +21,7 @@ tools:
     tags: [search, rag, internal]
 
   - name: hybrid_search
-    description: "[INTERNAL] Raw hybrid semantic+keyword search. All facade tools (knowledge_search, knowledge_refine, pattern_search, diagram_search) already dispatch to this endpoint internally. Calling it directly bypasses taxonomy expansion and collection routing. Optional code_chunks facets: structural_types and tested_structural_types (match any) plus is_test_unit (ETDI BEH-06.04)."
+    description: "[INTERNAL] Raw hybrid semantic+keyword search. All facade tools (knowledge_search, knowledge_refine, pattern_search, diagram_search) already dispatch to this endpoint internally. Calling it directly bypasses taxonomy expansion and collection routing. Optional code_chunks facets: structural_types and tested_structural_types (match any) plus is_test_unit, and subject_subdomains (tests by the code they test) (ETDI BEH-06.04)."
     when_to_use: "INTERNAL ONLY. Do not call from skills or LLM workflows. Use knowledge_search or knowledge_refine instead."
     tier: bronze
     tags: [search, rag, internal]
@@ -319,7 +319,7 @@ tools:
     tags: [struct-analyzer, architecture, messaging, async, broker]
 
   - name: sa_build_call_graph
-    description: "Build a call graph from source files. Returns nodes (functions/methods) and edges (call relationships) with fan-in/fan-out metrics. Accepts source_paths[], include_external, repo_id. Requires struct-analyzer (:8088)."
+    description: "Build a call graph from source files. Returns nodes (functions/methods) and edges (call relationships) with fan-in/fan-out metrics. Accepts source_paths[], include_external, min_confidence (high|medium|low|unknown — drops weaker edges), repo_id, reference_paths[] (dependency sources read for what their macros inject, e.g. an Elixir deps/ checkout; never graphed). The response carries coverage notes, warnings and measured_accuracy per language. Requires struct-analyzer (:8088)."
     when_to_use: "Trace execution paths. Required prerequisite for sa_detect_dead_code — provides reachability context. Reveals coupling hotspots. Part of W-2 (step 3), W-3, W-4 (step 1). Replaces amve_build_call_graph."
     tier: gold
     tags: [struct-analyzer, architecture, call-graph, analysis]
@@ -371,56 +371,6 @@ tools:
     when_to_use: "Discovery step before sa_evaluate_fitness when function IDs are unknown. Part of W-5 (step 0), W-11 (step 0). Net-new — no AMVE equivalent."
     tier: bronze
     tags: [struct-analyzer, architecture, fitness, functions, discovery]
-
-  # ── AMVE Deprecated Stubs (→ sa_* replacements) ───────────────────────────────
-  # These stubs exist for backward compatibility. All amve_* routes point to
-  # struct-analyzer (:8088) which is the live service at that port.
-  # amve_detect_communication is BROKEN — no /v1/analysis/communication endpoint exists.
-
-  - name: amve_detect_patterns
-    description: "[DEPRECATED] Use sa_detect_patterns. Dispatches to AMVE (:8092) /v1/analysis/patterns. The struct-analyzer (Go :8088) sa_detect_patterns is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, patterns]
-
-  - name: amve_detect_boundaries
-    description: "[DEPRECATED] Use sa_detect_boundaries. Dispatches to AMVE (:8092) /v1/analysis/boundaries. The struct-analyzer (Go :8088) sa_detect_boundaries is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, boundaries]
-
-  - name: amve_detect_communication
-    description: "[DEPRECATED — BROKEN ⛔] Routes to /v1/analysis/communication which does NOT exist in struct-analyzer Go. Python AMVE's unified 'communication' concept was split into two endpoints: use sa_detect_events for event-driven patterns and sa_detect_messaging for message bus patterns."
-    tier: bronze
-    tags: [amve, deprecated, broken, communication]
-
-  - name: amve_build_call_graph
-    description: "[DEPRECATED] Use sa_build_call_graph. Dispatches to AMVE (:8092) /v1/analysis/call-graph. The struct-analyzer (Go :8088) sa_build_call_graph is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, call-graph]
-
-  - name: amve_evaluate_fitness
-    description: "[DEPRECATED] Use sa_evaluate_fitness. Dispatches to AMVE (:8092) /v1/fitness/evaluate. The struct-analyzer (Go :8088) sa_evaluate_fitness is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required."
-    tier: bronze
-    tags: [amve, deprecated, architecture, fitness]
-
-  - name: amve_generate_architecture_log
-    description: "[DEPRECATED] Use sa_batch_scan. Dispatches to AMVE (:8092) /v1/architecture/batch-scan. The struct-analyzer (Go :8088) sa_batch_scan is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, batch-scan]
-
-  - name: amve_detect_dead_code
-    description: "[DEPRECATED] Use sa_detect_dead_code. Dispatches to AMVE (:8092) /v1/analysis/dead-code. The struct-analyzer (Go :8088) sa_detect_dead_code is the preferred replacement."
-    tier: bronze
-    tags: [amve, deprecated, architecture, dead-code]
-
-  - name: amve_extract_architecture
-    description: "[DEPRECATED] Use sa_extract_architecture. Dispatches to AMVE (:8092) /v1/architecture/extract. The struct-analyzer (Go :8088) sa_extract_architecture is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required."
-    tier: bronze
-    tags: [amve, deprecated, architecture, snapshot]
-
-  - name: amve_detect_drift
-    description: "[DEPRECATED] Use sa_detect_drift. Dispatches to AMVE (:8092) /v1/architecture/drift. The struct-analyzer (Go :8088) sa_detect_drift is the preferred replacement. SNAPSHOT_STORE_ENABLED=true required for SHA-pair mode."
-    tier: bronze
-    tags: [amve, deprecated, architecture, drift]
 
   # ── Context Management Service — CMS :8086 ────────────────────────────────────
   # Bifurcated processing pipeline: TextSegment / CodeBlock routing,
@@ -488,7 +438,7 @@ tools:
 
   - name: uss_ring_search
     description: "6-ring concentric search pipeline on unified-search-rs (:8081): Ring 0 (ANN primary hit) → Rings 1–5 (KF envelope, sibling, domain bridge, cross-collection, suggestion expansion) → RRF fusion → cascade enrichment → MMR re-rank → budget trim. Returns RingSearchResponse with per-ring provenance chains and cascade metadata. Higher recall than flat hybrid search."
-    when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6."
+    when_to_use: "Use when knowledge_search returns insufficient depth or diversity. Preferred high-recall KB retrieval path. Part of W-1, W-6. An SE search also returns an 'Underlying theory' section — the mathematics, statistics, control, queueing or other theory the hit is built on, each with the concept that connects it. Pass scope='theory' for a question that is itself about mathematics, statistics, physics, control, economics or other theory; scope='all' searches both and leads with the better match."
     tier: gold
     tags: [search, rag, uss-rs, ring]
 

@@ -98,6 +98,11 @@ mod tests {
             health_checks_passed: 0,
             last_transition_reason: None,
             last_transition_at: None,
+            min_tier: ActivationTier::Cold,
+            max_request_secs: crate::lifecycle::DEFAULT_MAX_REQUEST_SECS,
+            in_flight_since: None,
+            health_kill_grace_secs: crate::lifecycle::DEFAULT_HEALTH_KILL_GRACE_SECS,
+            health_grace_since: None,
         });
 
         registry.increment_health_check("test-svc", true);

@@ -68,7 +68,6 @@ class Settings(BaseSettings):
     AI_AGENTS_URL: str = "http://localhost:8082"
     CODE_ORCHESTRATOR_URL: str = "http://localhost:8083"
     AUDIT_SERVICE_URL: str = "http://localhost:8084"
-    AMVE_SERVICE_URL: str = "http://localhost:8092"
     STRUCT_ANALYZER_URL: str = "http://localhost:8088"
     CONTEXT_MANAGEMENT_URL: str = "http://localhost:8086"
     INFERENCE_SERVICE_URL: str = "http://localhost:8085"
@@ -123,7 +122,6 @@ class Settings(BaseSettings):
         "ai-agents": "lsof -ti:8082 | xargs kill -9 2>/dev/null || true",
         "audit-service": "lsof -ti:8084 | xargs kill -9 2>/dev/null || true",
         "context-management-service": "lsof -ti:8086 | xargs kill -9 2>/dev/null || true",
-        "amve": "lsof -ti:8092 | xargs kill -9 2>/dev/null || true",
         "struct-analyzer": "lsof -ti:8088 | xargs kill -9 2>/dev/null || true",
         "unified-search-rs": "lsof -ti:8081 | xargs kill -9 2>/dev/null || true",
         "inference-service-cpp": "pkill -f inference-service 2>/dev/null || true",
@@ -234,14 +232,6 @@ class Settings(BaseSettings):
                 "restart_command": _restart_cmd("context-management-service"),
                 "timeout": 60.0,
                 "sla_timeout": 15.0,
-            },
-            "amve": {
-                "name": "amve",
-                "url": self.AMVE_SERVICE_URL,
-                "health_endpoint": "/v1/health",
-                "restart_command": _restart_cmd("amve"),
-                "timeout": 8.0,
-                "sla_timeout": 8.0,
             },
             "struct-analyzer": {
                 "name": "struct-analyzer",

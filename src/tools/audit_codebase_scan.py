@@ -3,10 +3,20 @@
 Dispatches to audit-service :8084 POST /v1/audit/scan.
 
 Walks a local source directory, runs the full 4-layer detection pipeline
-(AST → Enrichment → Scoring → Reporting) on every scannable file
-(.py .js .ts .tsx .jsx .go .java), deduplicates findings by
-(pattern_id, file), and enriches any SEC* findings with VRE exploit evidence
-and advisory context from Qdrant :6336.
+(AST → Enrichment → Scoring → Reporting) on every scannable file,
+deduplicates findings by (pattern_id, file), and enriches any SEC* findings
+with VRE exploit evidence and advisory context from Qdrant :6336.
+
+Scannable files (audit-service ``scan.py`` ``_SCANNABLE_EXTENSIONS``):
+    - AST tier, 20 tree-sitter languages: Python, Go, Java, JavaScript,
+      TypeScript, C#, Rust, Kotlin, Scala, Ruby, C, C++, Elixir, PHP, Groovy,
+      Objective-C, Lua, Zig, Haskell, OCaml. Language-specific tree-sitter
+      rules plus the language-agnostic regex SEC rules run on these.
+    - Regex-only tier: shell (.sh .bash .zsh .fish) and Swift (.swift) —
+      language-agnostic regex SEC rules only.
+    - Every scanned file is also checked against the VRE vulnerability
+      corpus by embedding similarity (needs Qdrant :6336 plus
+      Code-Orchestrator; returns no VRE matches when either is down).
 
 Note:
     ``confidence_threshold`` (0.80) and ``max_findings`` (uncapped) are

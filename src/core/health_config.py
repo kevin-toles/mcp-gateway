@@ -39,7 +39,6 @@ SERVICE_TIERS: dict[str, str] = {
     "code-orchestrator": "COLD",
     "llm-gateway": "COLD",
     "ai-agents": "COLD",
-    "amve": "COLD",
     "audit-service": "COLD",
     "context-management-service": "COLD",
     "struct-analyzer": "COLD",

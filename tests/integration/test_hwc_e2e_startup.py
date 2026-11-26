@@ -15,11 +15,13 @@ Usage:
 """
 
 import asyncio
+import json
 import os
 import time
 from datetime import datetime
 
 import httpx
+from pathlib import Path
 import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,7 +52,6 @@ ONDEMAND_SERVICES = {
     "context-management-service": (8086, "/health"),
     "struct-analyzer": (8088, "/health"),
     "validation-service": (8091, "/health"),
-    "amve": (8092, "/v1/health"),
 }
 
 
@@ -88,15 +89,34 @@ async def poll_health(
     )
 
 
-async def trigger_auto_start(service: str) -> None:
-    """Report activity to the lifecycle daemon to trigger tier promotion.
+async def probe_service(service: str) -> dict:
+    """Probe via the lifecycle daemon: start if stopped, verify, stop again.
 
-    POST /activity/{service} on :8079 records a request and promotes
-    Cold/Warm → Hot. For Native-runtime services, health_failure_monitor
-    will detect the unhealthy state and respawn via spawn_cmd.
+    ``?probe=true`` records no activity, so the startup test never leaves a
+    service (e.g. llama-server, ~4.8 GB) running (2026-10-20).
     """
-    async with httpx.AsyncClient(timeout=5) as client:
-        await client.post(f"http://localhost:{LIFECYCLE_DAEMON_PORT}/activity/{service}")
+    async with httpx.AsyncClient(timeout=AUTO_START_TIMEOUT_SECS + 10) as client:
+        r = await client.post(
+            f"http://localhost:{LIFECYCLE_DAEMON_PORT}/activity/{service}"
+            f"?probe=true&timeout_secs={AUTO_START_TIMEOUT_SECS}"
+        )
+        return r.json()
+
+
+def runner_probe_result(service: str) -> dict | None:
+    """The runner's probe result for ``service`` (HWC_PROBE_RESULTS), if any."""
+    path = os.environ.get("HWC_PROBE_RESULTS")
+    if not path or not Path(path).exists():
+        return None
+    found = None
+    for line in Path(path).read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("service") == service:
+            found = rec
+    return found
 
 
 async def is_service_up(port: int, health_path: str) -> bool:
@@ -147,7 +167,8 @@ def test_hwc_00_manifest_exists_and_parses():
     """The service manifest must exist — everything derives from it."""
     assert MANIFEST_PATH.is_file(), f"MANIFEST MISSING: {MANIFEST_PATH}"
     services = _load_manifest()
-    assert len(services) >= 12, f"manifest has only {len(services)} services"
+    # 11 since M5: Python unified-search-service retired (no H/W/C entry).
+    assert len(services) >= 11, f"manifest has only {len(services)} services"
     print(f"  ✓ Manifest OK: {len(services)} services")
 
 
@@ -195,40 +216,92 @@ def test_hwc_01_plist_matches_manifest(service: str):
     print(f"  ✓ {service}: plist agrees with manifest")
 
 
+SHIM_PLIST = LAUNCH_AGENTS / "com.kevintoles.mcp-gateway-shim.plist"
+
+
+@pytest.mark.integration
+def test_hwc_00c_spawn_toolchain_is_on_the_shim_path():
+    """Every build tool a spawn command invokes resolves on the shim's launchd PATH.
+
+    2026-10-27: struct-analyzer's binary had to be rebuilt, but the shim's PATH
+    lacked /opt/homebrew/bin — `sh: go: command not found` on every
+    request-driven start, so MCP struct-analyzer calls hung until timeout.
+    """
+    import shutil
+
+    env = plistlib.loads(SHIM_PLIST.read_bytes()).get("EnvironmentVariables", {})
+    shim_path = env.get("PATH", "")
+    tools = {"go"} if any("go build" in svc["spawn"] for svc in _load_manifest().values()) else set()
+    missing = [t for t in sorted(tools) if shutil.which(t, path=shim_path) is None]
+    assert not missing, f"not on the shim PATH ({shim_path}): {missing}"
+
+
+@pytest.mark.integration
+def test_hwc_00d_runner_probe_results_are_read_back(tmp_path, monkeypatch):
+    """The runner's probe results file is parsed; the last record per service wins.
+
+    2026-10-27: the first real run raised NameError (json not imported) in all
+    eight test_hwc_20 cases even though every probe had succeeded.
+    """
+    results = tmp_path / "hwc_probe_results.jsonl"
+    results.write_text(
+        '{"service":"struct-analyzer","ready":false,"spawned":false,"stopped":false}\n'
+        "not json\n"
+        '{"service":"struct-analyzer","ready":true,"spawned":true,"stopped":true}\n'
+    )
+    monkeypatch.setenv("HWC_PROBE_RESULTS", str(results))
+
+    assert runner_probe_result("struct-analyzer") == {
+        "service": "struct-analyzer", "ready": True, "spawned": True, "stopped": True,
+    }
+    assert runner_probe_result("audit-service") is None
+
+
 @pytest.mark.integration
 def test_hwc_00b_mcp_json_matches_manifest():
-    """~/.claude/mcp.json must point to the mcp-gateway port declared in
-    services.toml.  This is the drift that broke every Claude Code session
-    after the 2026-08-16 proxy removal: port 8090 was intentionally removed
-    from the shim, but mcp.json was never updated to point directly to 8087.
+    """The Claude Code `ai-platform` MCP server must point to the mcp-gateway
+    port declared in services.toml.  This is the drift that broke every Claude
+    Code session after the 2026-08-16 proxy removal: port 8090 was removed from
+    the shim, but the client config was never updated to point at 8087.
+
+    Claude Code keeps MCP servers in ~/.claude.json (project scope under
+    ``projects[<POC_ROOT>].mcpServers``, or user scope ``mcpServers``); the
+    legacy ~/.claude/mcp.json is still honoured if present.
     """
     import json
 
-    mcp_json_path = Path.home() / ".claude" / "mcp.json"
-    assert mcp_json_path.is_file(), f"~/.claude/mcp.json not found at {mcp_json_path}"
+    poc_root = os.environ.get("POC_ROOT", "/Users/kevintoles/POC")
+    candidates: list[tuple[str, dict]] = []
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.is_file():
+        cfg = json.loads(claude_json.read_text())
+        candidates.append((f"{claude_json} projects[{poc_root}]",
+                           cfg.get("projects", {}).get(poc_root, {}).get("mcpServers", {})))
+        candidates.append((f"{claude_json} (user scope)", cfg.get("mcpServers", {})))
+    legacy = Path.home() / ".claude" / "mcp.json"
+    if legacy.is_file():
+        candidates.append((str(legacy), json.loads(legacy.read_text()).get("mcpServers", {})))
+
+    found = [(src, servers["ai-platform"]) for src, servers in candidates if "ai-platform" in servers]
+    assert found, (
+        "no 'ai-platform' MCP server configured in ~/.claude.json (project or user scope) "
+        "or ~/.claude/mcp.json"
+    )
+    source, server = found[0]
 
     services = _load_manifest()
     assert "mcp-gateway" in services, "mcp-gateway not in services.toml — cannot validate"
     canonical_port = services["mcp-gateway"]["port"]
     expected_url = f"http://localhost:{canonical_port}/mcp/sse"
 
-    with open(mcp_json_path) as f:
-        mcp_config = json.load(f)
-
-    servers = mcp_config.get("mcpServers", {})
-    assert "ai-platform" in servers, (
-        "~/.claude/mcp.json has no 'ai-platform' server entry — "
-        "add: {\"mcpServers\": {\"ai-platform\": {\"type\": \"sse\", \"url\": \"" + expected_url + "\"}}}"
-    )
-
-    actual_url = servers["ai-platform"].get("url", "")
+    actual_url = server.get("url", "")
     assert actual_url == expected_url, (
-        f"~/.claude/mcp.json ai-platform URL is '{actual_url}' "
+        f"{source} ai-platform URL is '{actual_url}' "
         f"but services.toml declares mcp-gateway on port {canonical_port} — "
         f"expected '{expected_url}'. "
         f"Run: scripts/validate_mcp_json.py --fix"
     )
-    print(f"  ✓ mcp.json ai-platform URL matches manifest: {actual_url}")
+    print(f"  ✓ {source} ai-platform URL matches manifest: {actual_url}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -325,27 +398,15 @@ async def test_hwc_20_ondemand_service_auto_starts(service: str, endpoint: tuple
     A Cold service that refuses to start is a FAILURE, not a skip.
     """
     port, health_path = endpoint
+    _ = (port, health_path)
 
-    # Fast path: already running
-    if await is_service_up(port, health_path):
-        print(f"  ✓ {service} (:{port}): already healthy")
-        return
-
-    # Trigger auto-start via activity report to lifecycle daemon
-    print(f"  → {service} (:{port}): not running, triggering auto-start...")
-    await trigger_auto_start(service)
-
-    # Poll until healthy
-    try:
-        elapsed = await poll_health(port, health_path)
-        print(f"  ✓ {service} (:{port}): auto-started in {elapsed:.1f}s")
-    except AssertionError:
-        pytest.fail(
-            f"{service} (:{port}): FAILED TO AUTO-START within {AUTO_START_TIMEOUT_SECS}s. "
-            f"HWC lifecycle is broken for this service. "
-            f"Check: spawn_cmd in platform_services.rs, "
-            f"SERVICE_STARTUP_COMMANDS in health_config.py"
-        )
+    # The runner already probed it (start → verify → stop); don't re-wake it.
+    result = runner_probe_result(service) or await probe_service(service)
+    assert result.get("ready") is True, (
+        f"{service}: FAILED TO START via the lifecycle daemon probe: {result}. "
+        f"HWC lifecycle is broken for this service — check its spawn in config/services.toml"
+    )
+    print(f"  ✓ {service}: started and verified (spawned={result.get('spawned')}, stopped={result.get('stopped')})")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

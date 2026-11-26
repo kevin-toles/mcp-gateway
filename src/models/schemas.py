@@ -141,6 +141,11 @@ class HybridSearchInput(BaseModel):
         default=None,
         description="True for test code only, False for non-test code only",
     )
+    subject_subdomains: list[str] | None = Field(
+        default=None,
+        description="Test units whose subject (the code they test) is in any of these subdomains "
+        "(e.g. ['filesystems-implementation']) (ETDI v0.76)",
+    )
 
     @field_validator("query", mode="before")
     @classmethod
@@ -737,96 +742,6 @@ class AnalyzeTaxonomyCoverageInput(BaseModel):
         return _sanitize_str_field(v)
 
 
-# ── AMVE tool schemas (AEI-7) ──────────────────────────────────────────
-
-
-class AMVEAnalysisInput(BaseModel):
-    """Input for amve_detect_patterns, amve_detect_boundaries, amve_build_call_graph."""
-
-    source_path: str = Field(
-        ...,
-        min_length=1,
-        max_length=2000,
-        description="Path to source directory or file to analyze",
-    )
-    include_confidence: bool = Field(
-        default=False,
-        description="Include confidence scores in results",
-    )
-
-    @field_validator("source_path", mode="before")
-    @classmethod
-    def sanitize_source_path(cls, v: str) -> str:
-        return _sanitize_str_field(v)
-
-
-class AMVECommunicationInput(BaseModel):
-    """Input for amve_detect_communication -- consolidated events + messaging."""
-
-    source_path: str = Field(
-        ...,
-        min_length=1,
-        max_length=2000,
-        description="Path to source directory or file to analyze",
-    )
-    scope: str = Field(
-        default="all",
-        pattern=r"^(all|events|messaging)$",
-        description="Detection scope: events, messaging, or all",
-    )
-    include_confidence: bool = Field(
-        default=False,
-        description="Include confidence scores in results",
-    )
-
-    @field_validator("source_path", mode="before")
-    @classmethod
-    def sanitize_source_path(cls, v: str) -> str:
-        return _sanitize_str_field(v)
-
-
-class AMVEEvaluateFitnessInput(BaseModel):
-    """Input for amve_evaluate_fitness -- evaluate fitness functions against a snapshot."""
-
-    snapshot_id: str = Field(
-        ...,
-        min_length=1,
-        max_length=200,
-        description="Architecture snapshot ID to evaluate",
-    )
-    fitness_function_ids: list[str] | None = Field(
-        default=None,
-        description="Optional list of specific fitness function IDs to evaluate",
-    )
-
-    @field_validator("snapshot_id", mode="before")
-    @classmethod
-    def sanitize_snapshot_id(cls, v: str) -> str:
-        return _sanitize_str_field(v)
-
-
-class AMVEGenerateArchitectureLogInput(BaseModel):
-    """Input for amve_generate_architecture_log -- batch scan with baseline comparison."""
-
-    source_paths: list[str] = Field(
-        ...,
-        min_length=1,
-        description="List of source paths to scan",
-    )
-    violations: list[dict] = Field(
-        default_factory=list,
-        description="Known violations to include in scan",
-    )
-    patterns: list[dict] = Field(
-        default_factory=list,
-        description="Known patterns to include in scan",
-    )
-    baseline_json: dict | None = Field(
-        default=None,
-        description="Optional baseline snapshot for delta comparison",
-    )
-
-
 # ── Audit Service schemas (WBS-AEI13) ──────────────────────────────────────
 
 
@@ -886,69 +801,6 @@ class AuditCorpusSearchInput(BaseModel):
         return self
 
 
-# ── AMVE Dead Code Detection (AEI-17) ───────────────────────────────────────
-
-
-class AMVEDetectDeadCodeInput(BaseModel):
-    """Input for amve_detect_dead_code — detect dead code in a source tree."""
-
-    source_path: str = Field(
-        ...,
-        min_length=1,
-        max_length=5000,
-        description="Path to source directory or file to analyse for dead code",
-    )
-    include_unused_imports: bool = Field(
-        default=True,
-        description="Whether to include unused-import analysis (tree-sitter)",
-    )
-
-
-# -- Phase 2: Content-Addressed Snapshot Store (G2.2 GREEN) ---------------
-
-
-class AMVEExtractArchitectureInput(BaseModel):
-    """Input for amve_extract_architecture — extract architecture snapshot and compute SHA."""
-
-    source_path: str = Field(
-        ...,
-        min_length=1,
-        max_length=5000,
-        description="Absolute path to the source directory to extract the architecture from.",
-    )
-
-    @field_validator("source_path", mode="before")
-    @classmethod
-    def sanitize_source_path(cls, v: str) -> str:
-        return _sanitize_str_field(v)
-
-
-class AMVEDetectDriftInput(BaseModel):
-    """Input for amve_detect_drift — detect drift between two architecture snapshots.
-
-    Accepts either:
-    - SHA-pair mode: ``snapshot_a_sha`` + ``snapshot_b_sha`` (retrieves from Redis stream)
-    - Passthrough mode: ``snapshot_a`` + ``snapshot_b`` dicts (calls AMVE drift directly)
-    """
-
-    snapshot_a_sha: str | None = Field(
-        default=None,
-        description="SHA-256 hex of the first (baseline) snapshot stored in the stream.",
-    )
-    snapshot_b_sha: str | None = Field(
-        default=None,
-        description="SHA-256 hex of the second (current) snapshot stored in the stream.",
-    )
-    snapshot_a: dict | None = Field(
-        default=None,
-        description="Raw baseline snapshot dict for passthrough mode (no Redis lookup).",
-    )
-    snapshot_b: dict | None = Field(
-        default=None,
-        description="Raw current snapshot dict for passthrough mode (no Redis lookup).",
-    )
-
-
 # -- Dependency Assessment (AEI-18) ----------------------------------------
 
 
@@ -994,9 +846,16 @@ class AuditCodebaseScanInput(BaseModel):
     """Input for audit_codebase_scan — walk a local codebase and return findings.
 
     Walks *source_path* recursively, runs the full 4-layer detection pipeline
-    on each scannable file (.py .js .ts .tsx .jsx .go .java), deduplicates by
-    (pattern_id, file), and enriches any SEC* findings with VRE exploit
-    evidence and advisory context from Qdrant :6336.
+    on each scannable file, deduplicates by (pattern_id, file), and enriches
+    any SEC* findings with VRE exploit evidence and advisory context from
+    Qdrant :6336.
+
+    Scannable files: 20 tree-sitter languages (Python, Go, Java, JavaScript,
+    TypeScript, C#, Rust, Kotlin, Scala, Ruby, C, C++, Elixir, PHP, Groovy,
+    Objective-C, Lua, Zig, Haskell, OCaml) get language-specific tree-sitter
+    rules plus language-agnostic regex SEC rules; shell (.sh .bash .zsh .fish)
+    and Swift (.swift) get the regex SEC rules only. Every scanned file is also
+    checked against the VRE vulnerability corpus by embedding similarity.
 
     Note:
         ``confidence_threshold`` and ``max_findings`` are deliberately omitted
@@ -1522,7 +1381,11 @@ class SACallGraphInput(BaseModel):
 
     source_paths: list[str] = Field(..., min_length=1)
     include_external: bool = Field(default=False)
+    # Drop edges below this confidence; "" keeps every edge.
+    min_confidence: Literal["", "high", "medium", "low", "unknown"] = Field(default="")
     repo_id: str = Field(default="")
+    # Dependency sources read for what their macros inject, never graphed.
+    reference_paths: list[str] = Field(default_factory=list)
 
 
 class SAExtractArchitectureInput(BaseModel):
@@ -1659,6 +1522,8 @@ class USSRingSearchInput(BaseModel):
     q: str = Field(..., min_length=1, max_length=2000)
     collection: str = Field(default="")
     mmr_strategy: str = Field(default="")
+    # ETDI-1.0 v0.22 BEH-11.08: se (default) | theory | all; "" leaves the service default (se).
+    scope: Literal["", "se", "theory", "all"] = Field(default="")
 
 
 class USSScientificSearchInput(BaseModel):
