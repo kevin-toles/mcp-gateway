@@ -33,7 +33,7 @@ classifiers = [
 ]
 dependencies = [
     # Web framework
-    "fastapi>=0.110.0",
+    "fastapi>=0.141.1,<0.142",  # tested on 0.141.1; 0.141 changed include_router internals
     "uvicorn[standard]>=0.27.0",
 
     # MCP protocol
