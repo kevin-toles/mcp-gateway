@@ -28,6 +28,19 @@ from src.resilience.circuit_breaker import (
 )
 from src.tool_dispatcher import ToolDispatcher
 
+
+@pytest.fixture(autouse=True)
+def _no_auto_start(monkeypatch):
+    """Keep dispatcher tests off the live platform.
+
+    On BackendUnavailableError, dispatch() calls _try_auto_start, which probes the real
+    backend's /health and otherwise asks the HWC shim (:8079) to spawn it. With a live
+    backend the probe answers 200, the dispatcher retries, and one dispatch records two
+    breaker failures; with it down, a unit test would spawn a real service. These tests
+    cover breaker and retry behaviour only, so auto-start reports "not available".
+    """
+    monkeypatch.setattr(ToolDispatcher, "_try_auto_start", AsyncMock(return_value=False))
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CircuitBreaker State Machine Tests
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
