@@ -15,6 +15,7 @@ from datetime import datetime
 
 import httpx
 
+from src.models.schemas import ConvertPDFInput
 from src.security.output_sanitizer import OutputSanitizer
 from src.tool_dispatcher import ToolDispatcher
 
@@ -122,6 +123,17 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             workers: Concurrent conversions (default: 6). Use 1 for sequential with live
                      per-page progress. Max 16 — beyond 6 gives diminishing returns on M1 Pro.
         """
+        validated = ConvertPDFInput(
+            input_path=input_path,
+            output_path=output_path,
+            file_pattern=file_pattern,
+            skip_existing=skip_existing,
+            enable_ocr=enable_ocr,
+            workers=workers,
+        )
+        input_path = validated.input_path
+        output_path = validated.output_path
+
         # Resolve CO URL: dispatcher settings > fresh Settings() (env-driven).
         # Fresh Settings() picks up MCP_GATEWAY_CODE_ORCHESTRATOR_URL so Docker
         # mode reaches code-orchestrator via container DNS.
@@ -144,7 +156,7 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             # ── Batch mode: directory ──────────────────────────────────────
             input_dir = input_path
             out_dir = output_path or os.path.join(os.path.dirname(input_dir.rstrip("/")), "converted")
-            pattern = file_pattern
+            pattern = validated.file_pattern
         else:
             # ── Single-file mode: use parent dir + exact filename as pattern
             input_dir = os.path.dirname(os.path.abspath(input_path))
@@ -161,10 +173,10 @@ def create_handler(dispatcher: ToolDispatcher, sanitizer: OutputSanitizer):
             input_dir=input_dir,
             out_dir=out_dir,
             file_pattern=pattern,
-            skip_existing=skip_existing,
-            enable_ocr=enable_ocr,
+            skip_existing=validated.skip_existing,
+            enable_ocr=validated.enable_ocr,
             co_url=co_url,
-            workers=workers,
+            workers=validated.workers,
         )
 
     return convert_pdf_to_json

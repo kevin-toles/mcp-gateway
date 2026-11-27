@@ -661,45 +661,71 @@ class TestAnalyzeTaxonomyCoverageSchema:
 
 
 class TestConvertPDFHandler:
-    """Test the convert_pdf tool handler."""
+    """Test the convert_pdf tool handler.
+
+    Since 89e41bb, server.py maps ``convert_pdf`` to ``convert_pdf_to_json.create_handler``
+    (the old dispatch-based ``src/tools/convert_pdf.py`` was deleted): the handler health-checks
+    code-orchestrator, then launches the batch converter in Terminal.app and returns at once.
+    The Terminal launch and the health check are patched here, so no osascript or network runs.
+    """
+
+    @pytest.fixture()
+    def launch(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from src.tools import convert_pdf_to_json
+
+        healthy = MagicMock(status_code=200)
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.return_value = healthy
+        monkeypatch.setattr(convert_pdf_to_json.httpx, "AsyncClient", MagicMock(return_value=client))
+        launcher = MagicMock(return_value={"status": "started"})
+        monkeypatch.setattr(convert_pdf_to_json, "_launch_terminal", launcher)
+        return launcher
 
     @pytest.mark.asyncio
-    async def test_dispatches_correct_tool_name(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
+    async def test_single_file_launches_with_parent_dir_and_filename(self, mock_dispatcher, sanitizer, launch, tmp_path):
+        from src.tools.convert_pdf_to_json import create_handler
+
+        pdf = tmp_path / "in" / "book.pdf"
+        out = tmp_path / "out" / "book.json"
+        handler = create_handler(mock_dispatcher, sanitizer)
+        await handler(input_path=str(pdf), output_path=str(out), enable_ocr=False)
+
+        launch.assert_called_once()
+        kwargs = launch.call_args.kwargs
+        assert kwargs["input_dir"] == str(pdf.parent)
+        assert kwargs["file_pattern"] == "book.pdf"
+        assert kwargs["out_dir"] == str(out.parent)
+        assert kwargs["enable_ocr"] is False
+
+    @pytest.mark.asyncio
+    async def test_returns_launch_result(self, mock_dispatcher, sanitizer, launch, tmp_path):
+        from src.tools.convert_pdf_to_json import create_handler
 
         handler = create_handler(mock_dispatcher, sanitizer)
-        await handler(input_path="/tmp/book.pdf")
-
-        mock_dispatcher.dispatch.assert_called_once()
-        assert mock_dispatcher.dispatch.call_args[0][0] == "convert_pdf"
+        result = await handler(input_path=str(tmp_path / "book.pdf"))
+        assert result == {"status": "started"}
 
     @pytest.mark.asyncio
-    async def test_dispatches_validated_payload(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
-
-        handler = create_handler(mock_dispatcher, sanitizer)
-        await handler(input_path="/tmp/book.pdf", output_path="/tmp/out.json", enable_ocr=False)
-
-        payload = mock_dispatcher.dispatch.call_args[0][1]
-        assert payload["input_path"] == "/tmp/book.pdf"
-        assert payload["output_path"] == "/tmp/out.json"
-        assert payload["enable_ocr"] is False
-
-    @pytest.mark.asyncio
-    async def test_returns_sanitized_body(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
-
-        handler = create_handler(mock_dispatcher, sanitizer)
-        result = await handler(input_path="/tmp/book.pdf")
-        assert "output_path" in result
-
-    @pytest.mark.asyncio
-    async def test_rejects_empty_input_path(self, mock_dispatcher, sanitizer):
-        from src.tools.convert_pdf import create_handler
+    async def test_rejects_empty_input_path(self, mock_dispatcher, sanitizer, launch):
+        from src.tools.convert_pdf_to_json import create_handler
 
         handler = create_handler(mock_dispatcher, sanitizer)
         with pytest.raises(ValidationError):
             await handler(input_path="")
+        launch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_workers_out_of_range(self, mock_dispatcher, sanitizer, launch, tmp_path):
+        """ConvertPDFInput caps workers at 16; the handler must enforce it."""
+        from src.tools.convert_pdf_to_json import create_handler
+
+        handler = create_handler(mock_dispatcher, sanitizer)
+        with pytest.raises(ValidationError):
+            await handler(input_path=str(tmp_path / "book.pdf"), workers=17)
+        launch.assert_not_called()
 
 
 class TestExtractBookMetadataHandler:
@@ -1561,12 +1587,26 @@ class TestToolsListWorkflow:
         assert "concurrency" in props
         assert "include_evidence" in props
 
-    async def test_workflow_tools_call_succeeds(self, mcp_server, mock_dispatcher):
-        """tools/call for each workflow tool should succeed."""
+    async def test_workflow_tools_call_succeeds(self, mcp_server, mock_dispatcher, monkeypatch, tmp_path):
+        """tools/call for each workflow tool should succeed.
+
+        convert_pdf launches Terminal.app after a code-orchestrator health check (89e41bb);
+        both are patched so the unit run spawns nothing and touches no network.
+        """
+        from unittest.mock import MagicMock
+
         from fastmcp import Client
 
+        from src.tools import convert_pdf_to_json
+
+        client_cm = AsyncMock()
+        client_cm.__aenter__.return_value = client_cm
+        client_cm.get.return_value = MagicMock(status_code=200)
+        monkeypatch.setattr(convert_pdf_to_json.httpx, "AsyncClient", MagicMock(return_value=client_cm))
+        monkeypatch.setattr(convert_pdf_to_json, "_launch_terminal", MagicMock(return_value={"status": "started"}))
+
         test_cases = [
-            ("convert_pdf", {"input_path": "/tmp/book.pdf"}),
+            ("convert_pdf", {"input_path": str(tmp_path / "pdfs" / "book.pdf")}),
             ("extract_book_metadata", {"input_path": "/tmp/book.json"}),
             ("generate_taxonomy", {"tier_books": {"t": ["/tmp/b.json"]}}),
             ("enrich_book_metadata", {"input_path": "/tmp/book.json"}),
