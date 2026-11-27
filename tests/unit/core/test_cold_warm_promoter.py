@@ -155,8 +155,8 @@ class TestResolveHealthUrl:
         assert "/health" in url
 
     def test_resolves_struct_analyzer(self, promoter: ColdWarmPromoter):
-        """struct-analyzer-service should resolve."""
-        url = promoter._resolve_health_url("struct-analyzer-service")
+        """struct-analyzer (canonical key since 074c231, matches health_config.SERVICE_TIERS) should resolve."""
+        url = promoter._resolve_health_url("struct-analyzer")
         assert url is not None
         assert "/health" in url
 
@@ -221,7 +221,7 @@ class TestWarmServiceSuccess:
         mock_client.get.return_value = mock_response
         mock_client_cls.return_value = mock_client
 
-        result = await promoter.warm_service("struct-analyzer-service")
+        result = await promoter.warm_service("struct-analyzer")
         assert result is True
 
     @patch("src.core.cold_warm_promoter.httpx.AsyncClient")
