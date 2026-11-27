@@ -435,3 +435,59 @@ class TestSubjectSubdomainsPassThrough:
         _capturing(dispatcher, captured)
         await create_handler(dispatcher, sanitizer)(query="file system", source="code")
         assert "subject_subdomains" not in captured
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ETDI-1.0.1231 (AC-ETDI-1.0.318) and .1239 (AC-ETDI-1.0.319); BEH-06.04 step 5, v0.82: "`subject_domains` (match any
+# on `subject.domain`) also finds a test whose subject is set at domain level only …, and `frameworks` (match any on
+# the payload's `frameworks`) finds units by framework; mcp-gateway's `hybrid_search` passes both through".
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSubjectDomainsAndFrameworksPassThrough:
+    """AC-ETDI-1.0.318 / .319: hybrid_search passes subject_domains and frameworks only when set."""
+
+    def test_both_default_to_none(self) -> None:
+        from src.models.schemas import HybridSearchInput
+
+        m = HybridSearchInput(query="Flask tests")
+        assert (m.subject_domains, m.frameworks) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_subject_domains_reaches_the_payload(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        """SCE-06.04.09: subject_domains [web-development] finds P (domain-level subject) and Q."""
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(
+            query="Flask tests", source="code", is_test_unit=True, subject_domains=["web-development"],
+        )
+        assert captured["subject_domains"] == ["web-development"]
+        assert "frameworks" not in captured
+
+    @pytest.mark.asyncio
+    async def test_frameworks_reaches_the_payload(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        """SCE-06.04.08: the query "Flask tests" as frameworks [flask]."""
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(query="Flask tests", source="code", frameworks=["flask"])
+        assert captured["frameworks"] == ["flask"]
+        assert "subject_domains" not in captured
+
+    @pytest.mark.asyncio
+    async def test_absent_fields_leave_the_payload_unchanged(
+        self, dispatcher: ToolDispatcher, sanitizer: OutputSanitizer
+    ) -> None:
+        from src.tools.hybrid_search import create_handler
+
+        captured: dict = {}
+        _capturing(dispatcher, captured)
+        await create_handler(dispatcher, sanitizer)(query="Flask tests", source="code")
+        assert not {"subject_domains", "frameworks"} & captured.keys()

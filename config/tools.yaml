@@ -21,7 +21,7 @@ tools:
     tags: [search, rag, internal]
 
   - name: hybrid_search
-    description: "[INTERNAL] Raw hybrid semantic+keyword search. All facade tools (knowledge_search, knowledge_refine, pattern_search, diagram_search) already dispatch to this endpoint internally. Calling it directly bypasses taxonomy expansion and collection routing. Optional code_chunks facets: structural_types and tested_structural_types (match any) plus is_test_unit, and subject_subdomains (tests by the code they test) (ETDI BEH-06.04)."
+    description: "[INTERNAL] Raw hybrid semantic+keyword search. All facade tools (knowledge_search, knowledge_refine, pattern_search, diagram_search) already dispatch to this endpoint internally. Calling it directly bypasses taxonomy expansion and collection routing. Optional code_chunks facets: structural_types and tested_structural_types (match any) plus is_test_unit, subject_subdomains and subject_domains (tests by the code they test), and frameworks (ETDI BEH-06.04)."
     when_to_use: "INTERNAL ONLY. Do not call from skills or LLM workflows. Use knowledge_search or knowledge_refine instead."
     tier: bronze
     tags: [search, rag, internal]

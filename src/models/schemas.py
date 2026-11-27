@@ -146,6 +146,15 @@ class HybridSearchInput(BaseModel):
         description="Test units whose subject (the code they test) is in any of these subdomains "
         "(e.g. ['filesystems-implementation']) (ETDI v0.76)",
     )
+    subject_domains: list[str] | None = Field(
+        default=None,
+        description="Test units whose subject is in any of these domains, including subjects set at domain level "
+        "only (e.g. ['web-development']) (ETDI v0.82)",
+    )
+    frameworks: list[str] | None = Field(
+        default=None,
+        description="Code units wired to any of these frameworks (e.g. ['flask']) (ETDI v0.82)",
+    )
 
     @field_validator("query", mode="before")
     @classmethod
