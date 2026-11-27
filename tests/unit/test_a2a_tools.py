@@ -356,7 +356,7 @@ class TestMCPA2ATemporalChain:
         Breakdown: AEI-18 dependency + AEI-20 resolve + AEI-23 VRE
         + Phase 7 quality + MCP-F facade + WBS-F7 foundation.
         """
-        assert len(dispatcher.routes) == 74
+        assert len(dispatcher.routes) == 66  # 66: config held 75 at 074c231; f10cd48 retired AMVE's 9 routes
 
     def test_a2a_tools_registered_in_yaml(self):
         """All 3 A2A tools are in the tool registry YAML."""

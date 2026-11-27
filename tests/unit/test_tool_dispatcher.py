@@ -17,7 +17,8 @@ from src.core.errors import BackendUnavailableError, ToolTimeoutError
 
 # ── Route table expectations ────────────────────────────────────────────
 EXPECTED_ROUTES = {
-    "semantic_search": {"base_url": "http://localhost:8081", "path": "/v1/search"},
+    # 815a716 moved semantic_search to the unified-search-rs POST hybrid route; USS-rs /v1/search is GET-only.
+    "semantic_search": {"base_url": "http://localhost:8081", "path": "/v1/search/hybrid"},
     "hybrid_search": {"base_url": "http://localhost:8081", "path": "/v1/search/hybrid"},
     "code_analyze": {"base_url": "http://localhost:8084", "path": "/v1/patterns/detect"},
     "code_pattern_audit": {"base_url": "http://localhost:8084", "path": "/v1/patterns/detect"},
@@ -68,7 +69,7 @@ class TestRouteTable:
         assert route.path == expected["path"], f"{tool_name}: expected path={expected['path']}, got {route.path}"
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 74
+        assert len(dispatcher.routes) == 66  # 66: config held 75 at 074c231; f10cd48 retired AMVE's 9 routes
 
 
 class TestDispatchRouting:
@@ -76,7 +77,7 @@ class TestDispatchRouting:
 
     @pytest.mark.asyncio
     async def test_semantic_search_dispatches_to_correct_url(self, dispatcher):
-        """First tool smoke-test: semantic_search → :8081/v1/search."""
+        """First tool smoke-test: semantic_search → :8081/v1/search/hybrid (POST; route moved in 815a716)."""
         captured_request = {}
 
         async def mock_handler(request: httpx.Request) -> httpx.Response:
@@ -88,7 +89,7 @@ class TestDispatchRouting:
         dispatcher._client = httpx.AsyncClient(transport=transport)
 
         await dispatcher.dispatch("semantic_search", {"query": "test"})
-        assert captured_request["url"] == "http://localhost:8081/v1/search"
+        assert captured_request["url"] == "http://localhost:8081/v1/search/hybrid"
         assert captured_request["method"] == "POST"
 
     @pytest.mark.asyncio

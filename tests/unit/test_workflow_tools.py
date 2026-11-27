@@ -119,7 +119,7 @@ class TestToolRegistryWorkflow:
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "tools.yaml"
         registry = ToolRegistry(config_path)
-        assert len(registry.list_all()) == 77
+        assert len(registry.list_all()) == 70  # 70: config held 78 at 074c231; +convert_youtube (8b3de83), -9 amve_* (f10cd48)
 
 
 EXPECTED_WORKFLOW_ROUTES = {
@@ -189,7 +189,7 @@ class TestWorkflowRouteTable:
         )
 
     def test_total_route_count_is_25(self, dispatcher):
-        assert len(dispatcher.routes) == 74
+        assert len(dispatcher.routes) == 66  # 66: config held 75 at 074c231; f10cd48 retired AMVE's 9 routes
 
     @pytest.mark.parametrize("tool_name,expected", list(EXPECTED_WORKFLOW_ROUTES.items()))
     @pytest.mark.asyncio
@@ -1462,6 +1462,44 @@ EXPECTED_ALL_TOOL_NAMES = {
     "find_code_pattern",
     # WBS-F7: Foundation search (scientific / theoretical layer)
     "foundation_search",
+    # Added in 592c71a (gateway overhaul): audit scan, CMS, inference, struct-analyzer (SAS), USS-rs
+    "audit_codebase_scan",
+    "cms_chunk",
+    "cms_get_glossary",
+    "cms_get_metrics",
+    "cms_glossary_define",
+    "cms_optimize",
+    "cms_process",
+    "cms_validate",
+    "cms_warmup",
+    "inference",
+    "sa_architecture_mapping_log",
+    "sa_batch_scan",
+    "sa_build_call_graph",
+    "sa_detect_boundaries",
+    "sa_detect_dead_code",
+    "sa_detect_drift",
+    "sa_detect_events",
+    "sa_detect_messaging",
+    "sa_detect_patterns",
+    "sa_evaluate_fitness",
+    "sa_extract_architecture",
+    "sa_get_fitness_functions",
+    "sa_platform_scan",
+    "uss_embed",
+    "uss_fitness_batch",
+    "uss_fitness_evaluate",
+    "uss_graph_query",
+    "uss_graph_traverse",
+    "uss_hydrate",
+    "uss_ring_search",
+    "uss_scientific_search",
+    # Added in 074c231: SDLC + validation-service tools
+    "sdlc_execute",
+    "validate_design_doc",
+    "validate_wbs",
+    # Added in 8b3de83: YouTube transcript conversion
+    "convert_youtube",
 }
 
 
@@ -1489,7 +1527,7 @@ class TestToolsListWorkflow:
 
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
-        assert len(tools) == 44
+        assert len(tools) == 70  # 70: config held 78 at 074c231; +convert_youtube (8b3de83), -9 amve_* (f10cd48); matches EXPECTED_ALL_TOOL_NAMES
 
     async def test_all_tool_names_present(self, mcp_server):
         from fastmcp import Client

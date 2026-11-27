@@ -384,5 +384,5 @@ class TestToolRegistryRealConfig:
         if not config_path.exists():
             pytest.skip("config/tools.yaml not yet created")
         registry = ToolRegistry(config_path)
-        assert registry.tool_count == 77
+        assert registry.tool_count == 70  # 70: config held 78 at 074c231; +convert_youtube (8b3de83), -9 amve_* (f10cd48)
         assert {"ask", "search_in", "find_code_pattern"}.issubset(registry.tool_names())
