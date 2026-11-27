@@ -52,11 +52,15 @@ class TestAllSchemasExist:
         assert hasattr(schemas, name), f"{name} not found in schemas module"
 
     def test_exactly_23_tool_schemas(self):
-        """75 tool input models: 46 baseline + 10 SA + 8 CMS + 8 USS + 1 Inference + 2 Validation."""
+        """70 public *Input names: 69 model classes + the ConvertPDFToJsonInput alias (3863358).
+
+        Was 75; ConvertYouTubeInput (a6e39d3) added one class and f10cd48 (AMVE retired,
+        replaced by struct-analyzer) removed the seven AMVE*Input models.
+        """
         from src.models import schemas
 
         tool_models = [n for n in dir(schemas) if n.endswith("Input") and not n.startswith("_")]
-        assert len(tool_models) == 75
+        assert len(tool_models) == 70
 
 
 # ═══════════════════════════════════════════════════════════════════════

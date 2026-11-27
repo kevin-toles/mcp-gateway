@@ -1527,10 +1527,27 @@ class USSRingSearchInput(BaseModel):
 
 
 class USSScientificSearchInput(BaseModel):
-    """Input for uss_scientific_search — first-principles / theoretical retrieval."""
+    """Input for uss_scientific_search — first-principles / theoretical retrieval.
+
+    **Parameter compatibility:** Accepts BOTH `top_k` and `limit` interchangeably
+    to prevent LLM validation errors. Canonical form is `top_k` (the backend's name).
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
-    top_k: int = Field(default=10, ge=1, le=50)
+    top_k: int | None = Field(default=None, ge=1, le=50, description=_DESC_MAX_RESULTS)
+    limit: int | None = Field(default=None, ge=1, le=50, description=_DESC_MAX_ALIAS)
+
+    @model_validator(mode="after")
+    def normalize_result_count(self) -> "USSScientificSearchInput":
+        """Accept top_k OR limit, normalize to top_k (canonical form)."""
+        if self.top_k is None and self.limit is None:
+            self.top_k = 10  # default
+        elif self.top_k is None:
+            self.top_k = self.limit  # normalize limit → top_k
+        elif self.limit is not None and self.limit != self.top_k:
+            raise ValueError(_ERR_TOPK_LIMIT)
+        self.limit = None  # clear alias
+        return self
 
 
 class USSEmbedInput(BaseModel):
