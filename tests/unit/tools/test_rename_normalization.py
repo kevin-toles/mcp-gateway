@@ -70,7 +70,7 @@ class TestInputValidation:
     def test_source_dir_not_found_returns_error(self, handler, fake_output, tmp_path):
         """RN-1: Non-existent source_dir → error without calling subprocess."""
         missing = str(tmp_path / "does_not_exist")
-        result = asyncio.get_event_loop().run_until_complete(handler(source_dir=missing, output=fake_output))
+        result = asyncio.run(handler(source_dir=missing, output=fake_output))
         assert result["status"] == "error"
         assert "does not exist" in result["error"]
 
@@ -78,14 +78,14 @@ class TestInputValidation:
         """RN-2: source_dir pointing to a file → error."""
         f = tmp_path / "a_file.pdf"
         f.write_bytes(b"")
-        result = asyncio.get_event_loop().run_until_complete(handler(source_dir=str(f), output=fake_output))
+        result = asyncio.run(handler(source_dir=str(f), output=fake_output))
         assert result["status"] == "error"
         assert "not a directory" in result["error"]
 
     def test_script_not_found_returns_error(self, handler, fake_source_dir, fake_output):
         """RN-3: rename_copilot.py missing → error reported before subprocess call."""
         with patch.object(rename_normalization, "_RENAME_SCRIPT", "/nonexistent/rename_copilot.py"):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler(source_dir=str(fake_source_dir), output=fake_output)
             )
         assert result["status"] == "error"
@@ -104,7 +104,7 @@ class TestSubprocessExitCodes:
         with patch("subprocess.run", return_value=proc) as mock_run:
             # Also need the script to appear to exist
             with patch("os.path.exists", return_value=True):
-                result = asyncio.get_event_loop().run_until_complete(
+                result = asyncio.run(
                     handler(source_dir=str(fake_source_dir), output=fake_output)
                 )
         assert result["status"] == "error"
@@ -116,7 +116,7 @@ class TestSubprocessExitCodes:
         context_doc = "# Rename Protocol\n\nRound 1: Scanner\n..."
         proc = _make_proc(returncode=0, stdout=context_doc, stderr="8 files — 3 flagged")
         with patch("subprocess.run", return_value=proc), patch("os.path.exists", return_value=True):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler(source_dir=str(fake_source_dir), output=fake_output)
             )
         assert result["status"] == "ready"
@@ -151,7 +151,7 @@ class TestCountParsing:
         """RN-6: file_count and flagged are parsed from stderr summary line."""
         proc = _make_proc(returncode=0, stdout="context", stderr=stderr)
         with patch("subprocess.run", return_value=proc), patch("os.path.exists", return_value=True):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 handler(source_dir=str(fake_source_dir), output=fake_output)
             )
         assert result["file_count"] == expected_file_count
@@ -168,7 +168,7 @@ class TestLimitFlag:
         """RN-7: limit=5 → ['--limit', '5'] in subprocess cmd."""
         proc = _make_proc(returncode=0, stdout="ctx", stderr="5 files — 2 flagged")
         with patch("subprocess.run", return_value=proc) as mock_run, patch("os.path.exists", return_value=True):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 handler(source_dir=str(fake_source_dir), output=fake_output, limit=5)
             )
         cmd = mock_run.call_args[0][0]
@@ -179,7 +179,7 @@ class TestLimitFlag:
         """RN-8: limit=0 (default) → --limit NOT in subprocess cmd."""
         proc = _make_proc(returncode=0, stdout="ctx", stderr="5 files — 2 flagged")
         with patch("subprocess.run", return_value=proc) as mock_run, patch("os.path.exists", return_value=True):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 handler(source_dir=str(fake_source_dir), output=fake_output, limit=0)
             )
         cmd = mock_run.call_args[0][0]
@@ -189,7 +189,7 @@ class TestLimitFlag:
         """RN-8 (default): calling without limit → --limit absent."""
         proc = _make_proc(returncode=0, stdout="ctx", stderr="")
         with patch("subprocess.run", return_value=proc) as mock_run, patch("os.path.exists", return_value=True):
-            asyncio.get_event_loop().run_until_complete(handler(source_dir=str(fake_source_dir), output=fake_output))
+            asyncio.run(handler(source_dir=str(fake_source_dir), output=fake_output))
         cmd = mock_run.call_args[0][0]
         assert "--limit" not in cmd
 
