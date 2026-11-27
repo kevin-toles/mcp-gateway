@@ -67,8 +67,26 @@ def _get_endpoint_label(request: Request) -> str:
     """
     route = request.scope.get("route")
     if route is not None and hasattr(route, "path"):
-        return route.path  # type: ignore[no-any-return]
+        return _include_prefix(request.url.path, route) + route.path
     return _normalize_path_fallback(request.url.path)
+
+
+def _include_prefix(path: str, route) -> str:
+    """The include_router() prefix in front of ``route.path``, from public data only.
+
+    FastAPI 0.141+ puts the router's own APIRoute in scope["route"], so its ``path`` (and ``path_regex``) leave out the
+    prefix the router was mounted at, e.g. "/embed/health" for "/api/v1/embed/health". The prefix is the part of the
+    request path in front of the longest tail that the route's own ``path_regex`` matches. Older FastAPI copied
+    routes with their full path, which matches the whole request path and gives "" here. Any id-like segment in a
+    parameterised prefix is normalized like the fallback.
+    """
+    regex = getattr(route, "path_regex", None)
+    if regex is None or regex.match(path):
+        return ""
+    for i in range(1, len(path)):
+        if path[i] == "/" and regex.match(path[i:]):
+            return _normalize_path_fallback(path[:i])
+    return ""
 
 
 # ---------------------------------------------------------------------------
