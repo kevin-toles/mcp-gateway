@@ -24,6 +24,8 @@ from src.security.credential_masking import CredentialMaskingFilter as _Credenti
 _credential_masking_filter = _CredentialMaskingFilter()
 logging.getLogger().addFilter(_credential_masking_filter)
 
+from src.ai_platform_metrics import mount_metrics
+from src.middleware.metrics import MetricsMiddleware
 from src.models.schemas import HealthResponse
 from src.security.audit import AuditMiddleware
 from src.security.authn import OIDCAuthMiddleware
@@ -95,6 +97,17 @@ app.add_middleware(
 )
 
 app.add_middleware(OIDCAuthMiddleware, settings=settings)
+
+# Platform-standard request metrics (ai_platform_request_total / _duration_seconds), outside auth
+# so rejected requests are counted too. GET /mcp/sse is a long-lived stream, so it is not timed;
+# MCP tool calls (POST /mcp/messages/) are counted. Served at /metrics with the dispatcher's
+# ai_platform_tool_calls_total.
+app.add_middleware(
+    MetricsMiddleware,
+    service_name="mcp-gateway",
+    exclude_paths=["/metrics", "/metrics/", "/health", "/health/ready", "/health/live", "/mcp/sse"],
+)
+mount_metrics(app, service_name="mcp-gateway")
 
 
 @app.middleware("http")
