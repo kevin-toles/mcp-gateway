@@ -181,3 +181,64 @@ class TestExcludedPaths:
         after = _counter_value(service="svc-exclude", endpoint="/metrics", method="GET", status_code="200")
         # Counter must NOT have been incremented
         assert after - before == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Routers mounted under a prefix (FastAPI 0.141 puts the router's own APIRoute, path without the prefix, in
+# scope["route"]): the label is still the full prefixed route template, as Code-Orchestrator-Service found (1b4185f).
+# ---------------------------------------------------------------------------
+
+
+def _prefixed_app(service_name: str) -> TestClient:
+    from fastapi import APIRouter
+
+    app = FastAPI()
+    app.add_middleware(MetricsMiddleware, service_name=service_name)
+    embed, items, a, b = APIRouter(), APIRouter(), APIRouter(), APIRouter()
+
+    @embed.get("/embed/health")
+    async def embed_health():
+        return {"status": "ok"}
+
+    @items.get("/items/{item_id}")
+    async def item(item_id: str):
+        return {"id": item_id}
+
+    @a.get("/status")
+    async def a_status():
+        return {"router": "a"}
+
+    @b.get("/status")
+    async def b_status():
+        return {"router": "b"}
+
+    app.include_router(embed, prefix="/api/v1")
+    app.include_router(items, prefix="/api/v1")
+    app.include_router(a, prefix="/alpha")
+    app.include_router(b, prefix="/beta")
+    return TestClient(app)
+
+
+def _hits(service: str, endpoint: str) -> float:
+    return _counter_value(service=service, endpoint=endpoint, method="GET", status_code="200")
+
+
+class TestPrefixedRouterLabels:
+    def test_a_route_of_a_router_mounted_at_api_v1_is_labelled_with_the_full_template(self):
+        client = _prefixed_app("svc-prefix")
+        client.get("/api/v1/embed/health")
+        assert _hits("svc-prefix", "/api/v1/embed/health") == pytest.approx(1.0)
+        assert _hits("svc-prefix", "/embed/health") == 0.0
+
+    def test_a_path_parameter_under_a_prefix_keeps_its_template(self):
+        client = _prefixed_app("svc-prefix-param")
+        client.get("/api/v1/items/123e4567-e89b-12d3-a456-426614174000")
+        assert _hits("svc-prefix-param", "/api/v1/items/{item_id}") == pytest.approx(1.0)
+
+    def test_the_same_sub_path_under_two_prefixes_gives_two_labels(self):
+        client = _prefixed_app("svc-collide")
+        client.get("/alpha/status")
+        client.get("/beta/status")
+        client.get("/beta/status")
+        assert (_hits("svc-collide", "/alpha/status"), _hits("svc-collide", "/beta/status")) == (1.0, 2.0)
+        assert _hits("svc-collide", "/status") == 0.0
