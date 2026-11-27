@@ -33,7 +33,8 @@ classifiers = [
 ]
 dependencies = [
     # Web framework
-    "fastapi>=0.110.0",
+    "fastapi>=0.141.1,<0.142",  # tested on 0.141.1; 0.141 changed include_router internals
+    "starlette>=1.6.0,<1.7",  # imported directly; fastapi 0.141 alone allows 0.46+ (5-7 OSV advisories)
     "uvicorn[standard]>=0.27.0",
 
     # MCP protocol
